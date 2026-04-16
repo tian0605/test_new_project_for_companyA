@@ -1,0 +1,57 @@
+<div class="wrapper wrapper-content">
+	<div class="row">
+		<div class="col-lg-12">
+			<div class="tabs-container">
+				<uib-tabset>
+					<uib-tab heading="{{'MENU.SETTINGS.ADVANCED_REPORT' | translate}}" >
+						<div class="panel-body" ng-controller="AdvancedReportController">
+							<a ng-click="addAdvancedReport()" class="btn btn-primary btn-rounded btn-outline" href=""><i class="fa fa-plus-circle"></i> {{'ADVANCED_REPORT.ADD_ADVANCED_REPORT' | translate}}</a>
+							<a ng-click="importAdvancedReport()" class="btn btn-primary btn-rounded  btn-outline" href=""><i class="fa fa-plus-circle"></i> {{'SETTING.IMPORT' | translate}}</a>
+							<br>
+							<br>
+							<table class="footable table table-bordered table-hover" data-sort="true" data-page-size="15">
+								<thead>
+									<tr>
+										<th class="text-center" data-type="numeric">{{'SETTING.ID' | translate}}</th>
+										<th class="text-center">{{'SETTING.NAME' | translate}}</th>
+										<th class="text-center">{{'ADVANCED_REPORT.IS_ENABLED' | translate}}</th>
+										<th class="text-center">{{'ADVANCED_REPORT.EXPRESSION' | translate}}</th>
+										<th class="text-center">{{'ADVANCED_REPORT.LAST_RUN_DATETIME' | translate}}</th>
+										<th class="text-center">{{'ADVANCED_REPORT.NEXT_RUN_DATETIME' | translate}}</th>
+										<th class="text-center">{{'ADVANCED_REPORT.IS_RUN_IMMEDIATELY' | translate}}</th>
+										<th class="text-center">{{'SETTING.ACTION' | translate}}</th>
+									</tr>
+								</thead>
+								<tbody>
+									<tr ng-repeat="advancedReport in advancedReports">
+										<td class="text-center">{{ advancedReport.id }}</td>
+										<td class="text-center">{{ advancedReport.name }}</td>
+										<td class="text-center">{{ advancedReport.is_enabled==true?'SETTING.ON':'SETTING.OFF' | translate}}</td>
+										<td class="text-center">{{ advancedReport.expression}}</td>
+										<td class="text-center">{{ advancedReport.last_run_datetime}}</td>
+										<td class="text-center">{{ advancedReport.next_run_datetime}}</td>
+										<td class="text-center">{{ advancedReport.is_run_immediately==true?'SETTING.ON':'SETTING.OFF' | translate}}</td>
+										<td class="text-center">
+											<a class="btn btn-primary btn-rounded btn-xs" ng-click="editAdvancedReport(advancedReport)" >{{'SETTING.EDIT' | translate}}</a>
+											<a class="btn btn-danger btn-rounded btn-xs" ng-click="deleteAdvancedReport(advancedReport)" >{{'SETTING.DELETE' | translate}}</a>
+											<a ng-click="exportAdvancedReport(advancedReport)" class="btn btn-danger btn-rounded btn-xs" >{{'SETTING.EXPORT' | translate}}</a>
+											<a ng-click="cloneAdvancedReport(advancedReport)" class="btn btn-danger btn-rounded btn-xs" >{{'SETTING.CLONE' | translate}}</a>
+											<a class="btn btn-danger btn-rounded btn-xs" ng-click="runAdvancedReport(advancedReport)" >{{'ADVANCED_REPORT.IS_RUN_IMMEDIATELY' | translate}}</a>
+										</td>
+									</tr>
+								</tbody>
+								<tfoot class="hide-if-no-paging">
+									<tr>
+										<td colspan="6">
+											<ul class="pagination pull-right"></ul>
+										</td>
+									</tr>
+								</tfoot>
+							</table>
+						</div>
+					</uib-tab>
+				</uib-tabset>
+			</div>
+		</div>
+	</div>
+</div>

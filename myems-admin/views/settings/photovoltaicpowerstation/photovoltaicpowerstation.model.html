@@ -1,0 +1,145 @@
+<div class="inmodal">
+    <div class="modal-header">
+        <h4 class="modal-title">{{operation | translate}}(ID:{{photovoltaicpowerstation.id}})</h4>
+    </div>
+    <div class="modal-body">
+        <form role="form" name="form_photovoltaicpowerstation" novalidate class="form-horizontal">
+            <div class="form-group"><label class="col-sm-2 control-label">{{'SETTING.NAME' | translate}}<span class="text-danger">*</span></label>
+              <div class="col-sm-10">
+                  <input ng-model="photovoltaicpowerstation.name" type="text" name="photovoltaicpowerstationname" class="form-control" required>
+                  <div class="m-t-xs" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationname.$invalid && form_photovoltaicpowerstation.photovoltaicpowerstationname.$dirty">
+                      <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationname.$error.required">{{'SETTING.INPUT_NAME' | translate}}</small>
+                  </div>
+              </div>
+            </div>
+            <div class="form-group"><label class="col-sm-2 control-label">{{'PHOTOVOLTAIC_POWER_STATION.STATION_CODE' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-10">
+                    <input ng-model="photovoltaicpowerstation.station_code" type="text" name="photovoltaicpowerstationstation_code" class="form-control" required>
+                    <div class="m-t-xs" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationstation_code.$invalid && form_photovoltaicpowerstation.photovoltaicpowerstationstation_code.$dirty">
+                        <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationstation_code.$error.required">{{'PHOTOVOLTAIC_POWER_STATION.INPUT_STATION_CODE' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-2 control-label">{{'PHOTOVOLTAIC_POWER_STATION.ADDRESS' | translate}}<span class="text-danger">*</span></label>
+              <div class="col-sm-10">
+                  <input ng-model="photovoltaicpowerstation.address" type="text" name="photovoltaicpowerstationaddress" class="form-control" required>
+                  <div class="m-t-xs" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationaddress.$invalid && form_photovoltaicpowerstation.photovoltaicpowerstationaddress.$dirty">
+                      <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationaddress.$error.required">{{'PHOTOVOLTAIC_POWER_STATION.INPUT_ADDRESS' | translate}}</small>
+                  </div>
+              </div>
+            </div>
+            <div class="form-group">
+                <label class="col-sm-2 control-label">{{'PHOTOVOLTAIC_POWER_STATION.GET_COORDINATE' | translate}}</label>
+                <div class="col-sm-10">
+                    <a class="btn btn-primary btn-rounded btn-outline" href="https://docs.mapbox.com/playground/geocoding-v6/" target="_blank">Mapbox</a>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-2 control-label">{{'PHOTOVOLTAIC_POWER_STATION.LONGITUDE' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-10">
+                    <input ng-model="photovoltaicpowerstation.longitude" type="number" name="photovoltaicpowerstationlatitude" class="form-control" required>
+                    <div class="m-t-xs" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationlongitude.$invalid && form_photovoltaicpowerstation.photovoltaicpowerstationlongitude.$dirty">
+                        <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationlongitude.$error.required">{{'PHOTOVOLTAIC_POWER_STATION.INPUT_LONGITUDE' | translate}}</small>
+                        <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationlongitude.$error">{{'SETTING.INVALID_FORMAT' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-2 control-label">{{'PHOTOVOLTAIC_POWER_STATION.LATITUDE' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-10">
+                    <input ng-model="photovoltaicpowerstation.latitude" type="number" name="photovoltaicpowerstationlatitude" class="form-control" required>
+                    <div class="m-t-xs" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationlatitude.$invalid && form_photovoltaicpowerstation.photovoltaicpowerstationlatitude.$dirty">
+                        <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationlatitude.$error.required">{{'PHOTOVOLTAIC_POWER_STATION.INPUT_LATITUDE' | translate}}</small>
+                        <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationlatitude.$error">{{'SETTING.INVALID_FORMAT' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-2 control-label">{{'PHOTOVOLTAIC_POWER_STATION.RATED_CAPACITY' | translate}}(kWh)<span class="text-danger">*</span></label>
+                <div class="col-sm-10">
+                    <input ng-model="photovoltaicpowerstation.rated_capacity" type="number" name="photovoltaicpowerstationrated_capacity" class="form-control" required>
+                    <div class="m-t-xs" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationrated_capacity.$invalid && form_photovoltaicpowerstation.photovoltaicpowerstationrated_capacity.$dirty">
+                        <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationrated_capacity.$error.required">{{'ENERGY_STORAGE_POWER_STATION.INPUT_CAPACITY' | translate}}</small>
+                        <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationrated_capacity.$error">{{'SETTING.INVALID_FORMAT' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-2 control-label">{{'PHOTOVOLTAIC_POWER_STATION.RATED_POWER' | translate}}(kWp)<span class="text-danger">*</span></label>
+                <div class="col-sm-10">
+                    <input ng-model="photovoltaicpowerstation.rated_power" type="number" name="photovoltaicpowerstationrated_power" class="form-control" required>
+                    <div class="m-t-xs" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationrated_power.$invalid && form_photovoltaicpowerstation.photovoltaicpowerstationrated_power.$dirty">
+                        <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationrated_power.$error.required">{{'PHOTOVOLTAIC_POWER_STATION.INPUT_RATED_POWER' | translate}}</small>
+                        <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationrated_power.$error">{{'SETTING.INVALID_FORMAT' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-2 control-label">{{'SETTING.CONTACT' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-10">
+                    <ui-select ng-model="photovoltaicpowerstation.contact.id" theme="bootstrap" required>
+                        <ui-select-match allow-clear="false" placeholder="{{'COMMON.PLACEHOLDER' | translate}}">{{$select.selected.name}}</ui-select-match>
+                        <ui-select-choices repeat="contact.id as contact in contacts | filter: $select.search">
+                            <div ng-bind-html="contact.name | highlight: $select.search"></div>
+                            <small>{{contact.email}},{{contact.phone}}</small>
+                        </ui-select-choices>
+                    </ui-select>
+                    <div class="m-t-xs" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationcontact.$invalid && form_photovoltaicpowerstation.photovoltaicpowerstationcontact.$dirty">
+                        <small class="text-danger" ng-show="form_photovoltaicpowerstation.photovoltaicpowerstationcontact.$error.required">{{'SETTING.SELECT_CONTACT' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-2 control-label">{{'SETTING.COSTCENTER' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-10">
+                    <ui-select ng-model="photovoltaicpowerstation.cost_center.id" theme="bootstrap" required>
+                        <ui-select-match allow-clear="false" placeholder="{{'COMMON.PLACEHOLDER' | translate}}">{{$select.selected.name}}</ui-select-match>
+                        <ui-select-choices repeat="costcenter.id as costcenter in costcenters | filter: $select.search">
+                            <div ng-bind-html="costcenter.name | highlight: $select.search"></div>
+                        </ui-select-choices>
+                    </ui-select>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-2 control-label">{{'PHOTOVOLTAIC_POWER_STATION.SVG' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-10">
+                    <ui-select ng-model="photovoltaicpowerstation.svg.id" theme="bootstrap" required>
+                        <ui-select-match allow-clear="false" placeholder="{{'COMMON.PLACEHOLDER' | translate}}">{{$select.selected.name}}</ui-select-match>
+                        <ui-select-choices repeat="svg.id as svg in svgs | filter: $select.search">
+                            <div ng-bind-html="svg.name | highlight: $select.search"></div>
+                        </ui-select-choices>
+                    </ui-select>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-2 control-label">{{'PHOTOVOLTAIC_POWER_STATION.IS_COST_DATA_DISPLAYED' | translate}}</label>
+                <div class="col-sm-10">
+                    <div class="checkbox checkbox-success">
+                        <input id="chk_photovoltaicpowerstation_iscostdatadisplayed" type="checkbox" ng-model="photovoltaicpowerstation.is_cost_data_displayed"
+                            ng-checked="photovoltaicpowerstation.is_cost_data_displayed">
+                        <label for="chk_photovoltaicpowerstation_iscostdatadisplayed">{{'PHOTOVOLTAIC_POWER_STATION.IS_COST_DATA_DISPLAYED' | translate}}</label>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="col-sm-2 control-label">{{'PHOTOVOLTAIC_POWER_STATION.PHASE_OF_LIFECYCLE' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-10">
+                    <ui-select ng-model="photovoltaicpowerstation.phase_of_lifecycle" theme="bootstrap" required>
+                        <ui-select-match allow-clear="false" placeholder="{{'COMMON.PLACEHOLDER' | translate}}">{{$select.selected.name}}</ui-select-match>
+                        <ui-select-choices repeat="phaseoflifecycle.code as phaseoflifecycle in phaseoflifecycles | filter: $select.search">
+                            <div ng-bind-html="phaseoflifecycle.name | highlight: $select.search"></div>
+                        </ui-select-choices>
+                    </ui-select>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-2 control-label">{{'SETTING.DESCRIPTION' | translate}} ({{'SETTING.OPTIONAL' | translate}})</label>
+              <div class="col-sm-10">
+                  <input ng-model="photovoltaicpowerstation.description" type="text" name="photovoltaicpowerstationdescription" class="form-control">
+              </div>
+            </div>
+            <div class="form-group" ng-show="photovoltaicpowerstation.qrcode"><label class="col-sm-2 control-label">{{'COMMON.QR_CODE' | translate}}</label>
+             <div class="col-sm-10">
+                  <div>
+                       <qrcode data="{{photovoltaicpowerstation.qrcode}}" version="1" error-correction-level="L" size="100" color="#fff" background="#000" download></qrcode>
+                  </div>
+              </div>
+            </div>
+        </form>
+    </div>
+    <div class="modal-footer">
+        <button type="button" class="btn btn-white" ng-click="cancel()">{{'SETTING.CANCEL' | translate}}</button>
+        <button type="button" ng-disabled="form_photovoltaicpowerstation.$invalid" class="btn btn-primary" ng-click="ok()">{{'SETTING.SAVE' | translate}}</button>
+    </div>
+</div>

@@ -1,0 +1,236 @@
+"""
+Energy Storage Power Station Details HVAC Report API
+
+This module provides REST API endpoints for generating energy storage power station HVAC reports.
+It analyzes HVAC system data and performance metrics to provide insights into heating, ventilation,
+and air conditioning system performance, efficiency, and optimization opportunities.
+
+Key Features:
+- HVAC system performance analysis
+- Climate control efficiency analysis
+- Performance metrics calculation
+- HVAC optimization insights
+- Performance monitoring
+- HVAC system analysis
+
+Report Components:
+- HVAC system performance summary
+- Climate control efficiency metrics
+- Performance indicators
+- HVAC optimization recommendations
+- HVAC system analysis
+- Performance trends
+
+The module uses Falcon framework for REST API and includes:
+- Database queries for HVAC data
+- Performance analysis algorithms
+- HVAC monitoring tools
+- Multi-language support
+- User authentication and authorization
+"""
+
+from datetime import datetime, timedelta
+import falcon
+import mysql.connector
+import simplejson as json
+from core.useractivity import access_control, api_key_control
+import config
+
+
+class Reporting:
+    def __init__(self):
+        """Initializes Class"""
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    ####################################################################################################################
+    # PROCEDURES
+    # Step 1: valid parameters
+    # Step 2: query the energy storage power station
+    # Step 3: query associated containers
+    # Step 4: query analog points latest values
+    # Step 5: query energy points latest values
+    # Step 6: query digital points latest values
+    # Step 7: query the points of HVACs
+    # Step 8: construct the report
+    ####################################################################################################################
+    @staticmethod
+    def on_get(req, resp, id_):
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+
+        ################################################################################################################
+        # Step 1: valid parameters
+        ################################################################################################################
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_ENERGY_STORAGE_POWER_STATION_ID')
+        energy_storage_power_station_id = id_
+        ################################################################################################################
+        # Step 2: query the energy storage power station
+        ################################################################################################################
+        cnx_system = None
+        cnx_historical = None
+        cursor_system = None
+        cursor_historical = None
+        try:
+            cnx_system = mysql.connector.connect(**config.myems_system_db)
+            cnx_historical = mysql.connector.connect(**config.myems_historical_db)
+            try:
+                cursor_system = cnx_system.cursor()
+                cursor_historical = cnx_historical.cursor()
+
+                if energy_storage_power_station_id is not None:
+                    query = (" SELECT id, name, uuid "
+                             " FROM tbl_energy_storage_power_stations "
+                             " WHERE id = %s ")
+                    cursor_system.execute(query, (energy_storage_power_station_id,))
+                    row = cursor_system.fetchone()
+                    if row is None:
+                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                               description='API.ENERGY_STORAGE_POWER_STATION_NOT_FOUND')
+
+                # query all points
+                query = (" SELECT id, name, units, description "
+                         " FROM tbl_points ")
+                cursor_system.execute(query)
+                rows = cursor_system.fetchall()
+
+                points_dict = dict()
+                if rows is not None and len(rows) > 0:
+                    for row in rows:
+                        points_dict[row[0]] = [row[1], row[2], row[3]]
+                ########################################################################################################
+                # Step 3: query associated containers
+                ########################################################################################################
+                container_list = list()
+                cursor_system.execute(" SELECT c.id, c.name, c.uuid "
+                                      " FROM tbl_energy_storage_power_stations_containers espsc, "
+                                      "      tbl_energy_storage_containers c "
+                                      " WHERE espsc.energy_storage_power_station_id = %s "
+                                      "      AND espsc.energy_storage_container_id = c.id ",
+                                      (energy_storage_power_station_id,))
+                rows_containers = cursor_system.fetchall()
+                if rows_containers is not None and len(rows_containers) > 0:
+                    for row_container in rows_containers:
+                        container_list.append({"id": row_container[0],
+                                               "name": row_container[1],
+                                               "uuid": row_container[2]})
+                print('container_list:' + str(container_list))
+
+                ########################################################################################################
+                # Step 4: query analog points latest values
+                ########################################################################################################
+                latest_value_dict = dict()
+                query = (" SELECT point_id, actual_value "
+                         " FROM tbl_analog_value_latest "
+                         " WHERE utc_date_time > %s ")
+                cursor_historical.execute(query, (datetime.utcnow() - timedelta(minutes=60),))
+                rows = cursor_historical.fetchall()
+                if rows is not None and len(rows) > 0:
+                    for row in rows:
+                        latest_value_dict[row[0]] = [points_dict[row[0]][0],
+                                                     points_dict[row[0]][1],
+                                                     points_dict[row[0]][2],
+                                                     row[1]]
+
+                ########################################################################################################
+                # Step 5: query energy points latest values
+                ########################################################################################################
+                query = (" SELECT point_id, actual_value "
+                         " FROM tbl_energy_value_latest "
+                         " WHERE utc_date_time > %s ")
+                cursor_historical.execute(query, (datetime.utcnow() - timedelta(minutes=60),))
+                rows = cursor_historical.fetchall()
+                if rows is not None and len(rows) > 0:
+                    for row in rows:
+                        latest_value_dict[row[0]] = [points_dict[row[0]][0],
+                                                     points_dict[row[0]][1],
+                                                     points_dict[row[0]][2],
+                                                     row[1]]
+
+                ########################################################################################################
+                # Step 6: query digital points latest values
+                ########################################################################################################
+                query = (" SELECT point_id, actual_value "
+                         " FROM tbl_digital_value_latest "
+                         " WHERE utc_date_time > %s ")
+                cursor_historical.execute(query, (datetime.utcnow() - timedelta(minutes=60),))
+                rows = cursor_historical.fetchall()
+                if rows is not None and len(rows) > 0:
+                    for row in rows:
+                        latest_value_dict[row[0]] = [points_dict[row[0]][0],
+                                                     points_dict[row[0]][1],
+                                                     points_dict[row[0]][2],
+                                                     row[1]]
+
+                ########################################################################################################
+                # Step 7: query the points of HVACs
+                ########################################################################################################
+                # query all points with units
+                query = (" SELECT id, units "
+                         " FROM tbl_points ")
+                cursor_system.execute(query)
+                rows = cursor_system.fetchall()
+
+                units_dict = dict()
+                if rows is not None and len(rows) > 0:
+                    for row in rows:
+                        units_dict[row[0]] = row[1]
+                # query pcs parameters
+                hvac_list = list()
+                for container in container_list:
+                    cursor_system.execute(" SELECT id, name, uuid "
+                                          " FROM tbl_energy_storage_containers_hvacs "
+                                          " WHERE energy_storage_container_id = %s "
+                                          " ORDER BY id ",
+                                          (container['id'],))
+                    rows_hvacs = cursor_system.fetchall()
+                    if rows_hvacs is not None and len(rows_hvacs) > 0:
+                        for row in rows_hvacs:
+                            current_hvac = dict()
+                            current_hvac['id'] = row[0]
+                            current_hvac['name'] = row[1]
+                            current_hvac['uuid'] = row[2]
+                            current_hvac['points'] = list()
+                            hvac_list.append(current_hvac)
+
+                    for index, hvac in enumerate(hvac_list):
+                        cursor_system.execute(" SELECT p.id "
+                                              " FROM tbl_energy_storage_containers_hvacs_points bp, tbl_points p "
+                                              " WHERE bp.hvac_id = %s AND bp.point_id = p.id "
+                                              " ORDER BY bp.id ",
+                                              (hvac['id'],))
+                        rows_points = cursor_system.fetchall()
+                        if rows_points is not None and len(rows_points) > 0:
+                            point_list = list()
+                            for row in rows_points:
+                                point = latest_value_dict.get(row[0], None)
+                                if point is not None:
+                                    point_list.append(point)
+                            hvac_list[index]['points'] = point_list
+
+            finally:
+                if cursor_system is not None:
+                    cursor_system.close()
+                if cursor_historical is not None:
+                    cursor_historical.close()
+        finally:
+            if cnx_system is not None:
+                cnx_system.close()
+            if cnx_historical is not None:
+                cnx_historical.close()
+
+        ################################################################################################################
+        # Step 8: construct the report
+        ################################################################################################################
+        resp.text = json.dumps(hvac_list)

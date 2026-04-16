@@ -1,0 +1,547 @@
+import base64
+import os
+import sys
+import uuid
+from datetime import datetime, timezone, timedelta
+import falcon
+import mysql.connector
+import simplejson as json
+import redis
+from core.useractivity import user_logger, admin_control, access_control, api_key_control
+import config
+
+
+def clear_knowledgefile_cache(knowledge_file_id=None):
+    """
+    Clear knowledge file-related cache after data modification
+
+    Args:
+        knowledge_file_id: Knowledge file ID (optional, for specific file cache)
+    """
+    # Check if Redis is enabled
+    if not config.redis.get('is_enabled', False):
+        return
+
+    redis_client = None
+    try:
+        redis_client = redis.Redis(
+            host=config.redis['host'],
+            port=config.redis['port'],
+            password=config.redis['password'] if config.redis['password'] else None,
+            db=config.redis['db'],
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2
+        )
+        redis_client.ping()
+
+        # Clear knowledge file list cache
+        list_cache_key_pattern = 'knowledgefile:list*'
+        matching_keys = redis_client.keys(list_cache_key_pattern)
+        if matching_keys:
+            redis_client.delete(*matching_keys)
+
+        # Clear specific knowledge file cache if knowledge_file_id is provided
+        if knowledge_file_id:
+            item_cache_key = f'knowledgefile:item:{knowledge_file_id}'
+            redis_client.delete(item_cache_key)
+
+    except Exception:
+        # If cache clear fails, ignore and continue
+        pass
+
+
+class KnowledgeFileCollection:
+    """
+    Knowledge File Collection Resource
+
+    This class handles CRUD operations for knowledge file collection.
+    It provides endpoints for listing all knowledge files and creating new files.
+    Knowledge files contain documentation and reference materials for the energy management system.
+    """
+    def __init__(self):
+        """Initialize KnowledgeFileCollection"""
+        pass
+
+    @staticmethod
+    def on_options(req, resp):
+        """Handle OPTIONS requests for CORS preflight"""
+        _ = req
+        resp.status = falcon.HTTP_200
+
+    @staticmethod
+    def on_get(req, resp):
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+
+        # Redis cache key
+        cache_key = 'knowledgefile:list'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx_user = None
+        cursor_user = None
+        rows_user = []
+        
+        cnx_system = None
+        cursor_system = None
+        rows_system = []
+
+        # Fetch Users
+        try:
+            cnx_user = mysql.connector.connect(**config.myems_user_db)
+            try:
+                cursor_user = cnx_user.cursor()
+                query = (" SELECT uuid, display_name "
+                         " FROM tbl_users ")
+                cursor_user.execute(query)
+                rows_user = cursor_user.fetchall()
+            finally:
+                if cursor_user:
+                    cursor_user.close()
+        finally:
+            if cnx_user:
+                cnx_user.close()
+
+        user_dict = dict()
+        if rows_user is not None and len(rows_user) > 0:
+            for row in rows_user:
+                user_dict[row[0]] = row[1]
+
+        # Fetch Knowledge Files
+        try:
+            cnx_system = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor_system = cnx_system.cursor()
+                query = (" SELECT id, file_name, uuid, upload_datetime_utc, upload_user_uuid, file_object"
+                         " FROM tbl_knowledge_files "
+                         " ORDER BY upload_datetime_utc desc ")
+                cursor_system.execute(query)
+                rows_system = cursor_system.fetchall()
+            finally:
+                if cursor_system:
+                    cursor_system.close()
+        finally:
+            if cnx_system:
+                cnx_system.close()
+
+        result = list()
+        if rows_system is not None and len(rows_system) > 0:
+            timezone_offset = int(config.utc_offset[1:3]) * 60 + int(config.utc_offset[4:6])
+            if config.utc_offset[0] == '-':
+                timezone_offset = -timezone_offset
+            for row in rows_system:
+                # Base64 encode the bytes
+                # get the Base64 encoded data using human-readable characters.
+                meta_result = {"id": row[0],
+                               "file_name": row[1],
+                               "uuid": row[2],
+                               "upload_datetime": (row[3].replace(tzinfo=None)
+                                                   + timedelta(minutes=timezone_offset)).isoformat()[0:19],
+                               "user_display_name": user_dict.get(row[4], None),
+                               "file_size_bytes": sys.getsizeof(row[5]),
+                               "file_bytes_base64": (base64.b64encode(row[5])).decode('utf-8')
+                               }
+                result.append(meta_result)
+
+        # Store result in Redis cache
+        result_json = json.dumps(result)
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json
+
+    @staticmethod
+    @user_logger
+    def on_post(req, resp):
+        """Handles POST requests"""
+        admin_control(req)
+        try:
+            upload = req.get_param('file')
+            # Read upload file as binary
+            raw_blob = upload.file.read()
+            # Retrieve filename
+            filename = upload.filename
+            file_uuid = str(uuid.uuid4())
+
+            # Define file_path
+            file_path = os.path.join(config.upload_path, file_uuid)
+
+            # Write to a temporary file to prevent incomplete files from being used.
+            with open(file_path + '~', 'wb') as f:
+                f.write(raw_blob)
+
+            # Now that we know the file has been fully saved to disk move it into place.
+            os.rename(file_path + '~', file_path)
+        except OSError as ex:
+            print("Failed to stream request")
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                   description='API.FAILED_TO_UPLOAD_KNOWLEDGE_FILE')
+        except Exception as ex:
+            print("Unexpected error reading request stream")
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                   description='API.FAILED_TO_UPLOAD_KNOWLEDGE_FILE')
+
+        # Verify User Session
+        token = req.headers.get('TOKEN')
+        user_uuid = req.headers.get('USER-UUID')
+        if token is None:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.TOKEN_NOT_FOUND_IN_HEADERS_PLEASE_LOGIN')
+        if user_uuid is None:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.USER_UUID_NOT_FOUND_IN_HEADERS_PLEASE_LOGIN')
+
+        cnx = None
+        cursor = None
+
+        try:
+            cnx = mysql.connector.connect(**config.myems_user_db)
+            try:
+                cursor = cnx.cursor()
+
+                query = (" SELECT utc_expires "
+                         " FROM tbl_sessions "
+                         " WHERE user_uuid = %s AND token = %s")
+                cursor.execute(query, (user_uuid, token,))
+                row = cursor.fetchone()
+
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                           description='API.INVALID_SESSION_PLEASE_RE_LOGIN')
+                
+                utc_expires = row[0]
+                if datetime.utcnow() > utc_expires:
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                           description='API.USER_SESSION_TIMEOUT')
+
+                cursor.execute(" SELECT id "
+                               " FROM tbl_users "
+                               " WHERE uuid = %s ",
+                               (user_uuid,))
+                row = cursor.fetchone()
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                           description='API.INVALID_USER_PLEASE_RE_LOGIN')
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        cnx_sys = None
+        cursor_sys = None
+
+        try:
+            cnx_sys = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor_sys = cnx_sys.cursor()
+
+                add_values = (" INSERT INTO tbl_knowledge_files "
+                              " (file_name, uuid, upload_datetime_utc, upload_user_uuid, file_object ) "
+                              " VALUES (%s, %s, %s, %s, %s) ")
+                cursor_sys.execute(add_values, (filename,
+                                                file_uuid,
+                                                datetime.utcnow(),
+                                                user_uuid,
+                                                raw_blob))
+                new_id = cursor_sys.lastrowid
+                cnx_sys.commit()
+            finally:
+                if cursor_sys:
+                    cursor_sys.close()
+        finally:
+            if cnx_sys:
+                cnx_sys.close()
+
+        # Clear cache after creating new knowledge file
+        clear_knowledgefile_cache()
+
+        resp.status = falcon.HTTP_201
+        resp.location = '/knowledgefiles/' + str(new_id)
+
+
+class KnowledgeFileItem:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    def on_get(req, resp, id_):
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_KNOWLEDGE_FILE_ID')
+
+        # Redis cache key
+        cache_key = f'knowledgefile:item:{id_}'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx_user = None
+        cursor_user = None
+        rows_user = []
+        
+        cnx_system = None
+        cursor_system = None
+        row_system = None
+
+        # Fetch Users
+        try:
+            cnx_user = mysql.connector.connect(**config.myems_user_db)
+            try:
+                cursor_user = cnx_user.cursor()
+                query = (" SELECT uuid, display_name "
+                         " FROM tbl_users ")
+                cursor_user.execute(query)
+                rows_user = cursor_user.fetchall()
+            finally:
+                if cursor_user:
+                    cursor_user.close()
+        finally:
+            if cnx_user:
+                cnx_user.close()
+
+        user_dict = dict()
+        if rows_user is not None and len(rows_user) > 0:
+            for row in rows_user:
+                user_dict[row[0]] = row[1]
+
+        # Fetch Knowledge File
+        try:
+            cnx_system = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor_system = cnx_system.cursor()
+                query = (" SELECT id, file_name, uuid, upload_datetime_utc, upload_user_uuid "
+                         " FROM tbl_knowledge_files "
+                         " WHERE id = %s ")
+                cursor_system.execute(query, (id_,))
+                row_system = cursor_system.fetchone()
+            finally:
+                if cursor_system:
+                    cursor_system.close()
+        finally:
+            if cnx_system:
+                cnx_system.close()
+
+        if row_system is None:
+            raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                   description='API.KNOWLEDGE_FILE_NOT_FOUND')
+
+        timezone_offset = int(config.utc_offset[1:3]) * 60 + int(config.utc_offset[4:6])
+        if config.utc_offset[0] == '-':
+            timezone_offset = -timezone_offset
+
+        result = {"id": row_system[0],
+                  "file_name": row_system[1],
+                  "uuid": row_system[2],
+                  "upload_datetime": (row_system[3].replace(tzinfo=timezone.utc)
+                                      + timedelta(minutes=timezone_offset)).isoformat()[0:19],
+                  "user_display_name": user_dict.get(row_system[4], None)}
+
+        # Store result in Redis cache
+        result_json = json.dumps(result)
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json
+
+    @staticmethod
+    @user_logger
+    def on_delete(req, resp, id_):
+        """Handles DELETE requests"""
+        admin_control(req)
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.INVALID_KNOWLEDGE_FILE_ID')
+
+        cnx = None
+        cursor = None
+        row = None
+
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                cursor.execute(" SELECT uuid "
+                               " FROM tbl_knowledge_files "
+                               " WHERE id = %s ", (id_,))
+                row = cursor.fetchone()
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404,
+                                           title='API.NOT_FOUND',
+                                           description='API.KNOWLEDGE_FILE_NOT_FOUND')
+
+                file_uuid = row[0]
+                # Define file_path
+                file_path = os.path.join(config.upload_path, file_uuid)
+                
+                # Remove file from disk
+                try:
+                    os.remove(file_path)
+                except OSError as ex:
+                    print("Failed to stream request")
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                           description='API.KNOWLEDGE_FILE_CANNOT_BE_REMOVED_FROM_DISK')
+                except Exception as ex:
+                    print("Unexpected error reading request stream")
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                           description='API.KNOWLEDGE_FILE_CANNOT_BE_REMOVED_FROM_DISK')
+
+                cursor.execute(" DELETE FROM tbl_knowledge_files WHERE id = %s ", (id_,))
+                cnx.commit()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Clear cache after deleting knowledge file
+        clear_knowledgefile_cache(knowledge_file_id=id_)
+
+        resp.status = falcon.HTTP_204
+
+
+class KnowledgeFileRestore:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    def on_get(req, resp, id_):
+        admin_control(req)
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_KNOWLEDGE_FILE_ID')
+
+        cnx = None
+        cursor = None
+        row = None
+
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                query = (" SELECT uuid, file_object "
+                         " FROM tbl_knowledge_files "
+                         " WHERE id = %s ")
+                cursor.execute(query, (id_,))
+                row = cursor.fetchone()
+                
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.KNOWLEDGE_FILE_NOT_FOUND')
+                
+                result = {"uuid": row[0],
+                          "file_object": row[1]}
+                
+                raw_blob = result["file_object"]
+                file_uuid = result["uuid"]
+
+                # Define file_path
+                file_path = os.path.join(config.upload_path, file_uuid)
+
+                # Write to a temporary file to prevent incomplete files from
+                # being used.
+                temp_file_path = file_path + '~'
+
+                try:
+                    with open(temp_file_path, 'wb') as f:
+                        f.write(raw_blob)
+
+                    # Now that we know the file has been fully saved to disk
+                    # move it into place.
+                    os.replace(temp_file_path, file_path)
+                except OSError as ex:
+                    print("Failed to stream request")
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                           description='API.FAILED_TO_RESTORE_KNOWLEDGE_FILE')
+                except Exception as ex:
+                    print("Unexpected error reading request stream")
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                           description='API.FAILED_TO_RESTORE_KNOWLEDGE_FILE')
+                    
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        resp.text = json.dumps('success')

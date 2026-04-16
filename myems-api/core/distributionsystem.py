@@ -1,0 +1,1052 @@
+import uuid
+from datetime import datetime, timedelta
+import falcon
+import mysql.connector
+import simplejson as json
+import redis
+from core.useractivity import user_logger, admin_control, access_control, api_key_control
+import config
+
+
+def clear_distribution_system_cache(distribution_system_id=None):
+    """
+    Clear distribution system-related cache after data modification
+
+    Args:
+        distribution_system_id: Distribution System ID (optional, for specific system cache)
+    """
+    # Check if Redis is enabled
+    if not config.redis.get('is_enabled', False):
+        return
+
+    redis_client = None
+    try:
+        redis_client = redis.Redis(
+            host=config.redis['host'],
+            port=config.redis['port'],
+            password=config.redis['password'] if config.redis['password'] else None,
+            db=config.redis['db'],
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2
+        )
+        redis_client.ping()
+
+        # Clear distribution system list cache (all search query variations)
+        list_cache_key_pattern = 'distributionsystem:list:*'
+        matching_keys = redis_client.keys(list_cache_key_pattern)
+        if matching_keys:
+            redis_client.delete(*matching_keys)
+
+        # Clear specific distribution system item cache if distribution_system_id is provided
+        if distribution_system_id:
+            item_cache_key = f'distributionsystem:item:{distribution_system_id}'
+            redis_client.delete(item_cache_key)
+            circuit_cache_key = f'distributionsystem:circuit:{distribution_system_id}'
+            redis_client.delete(circuit_cache_key)
+            export_cache_key = f'distributionsystem:export:{distribution_system_id}'
+            redis_client.delete(export_cache_key)
+
+    except Exception:
+        # If cache clear fails, ignore and continue
+        pass
+
+
+class DistributionSystemCollection:
+    """
+    Distribution System Collection Resource
+
+    This class handles CRUD operations for distribution system collection.
+    It provides endpoints for listing all distribution systems and creating new ones.
+    Distribution systems represent electrical distribution networks in the energy management system.
+    """
+    def __init__(self):
+        """Initialize DistributionSystemCollection"""
+        pass
+
+    @staticmethod
+    def on_options(req, resp):
+        """Handle OPTIONS requests for CORS preflight"""
+        _ = req
+        resp.status = falcon.HTTP_200
+
+    @staticmethod
+    def on_get(req, resp):
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+
+        search_query = req.get_param('q', default=None)
+        if search_query is not None:
+            search_query = search_query.strip()
+        else:
+            search_query = ''
+
+        # Redis cache key (include search query in key for proper caching)
+        cache_key = f'distributionsystem:list:{search_query}'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx = None
+        cursor = None
+        rows_svgs = []
+        rows_distribution_systems = []
+        
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                svg_dict = dict()
+                query = (" SELECT id, name, uuid, source_code "
+                         " FROM tbl_svgs ")
+                cursor.execute(query)
+                rows_svgs = cursor.fetchall()
+                if rows_svgs is not None and len(rows_svgs) > 0:
+                    for row in rows_svgs:
+                        svg_dict[row[0]] = {"id": row[0],
+                                            "name": row[1],
+                                            "uuid": row[2],
+                                            "source_code": row[3]}
+
+                query = (" SELECT id, name, uuid, "
+                         "        svg_id, description "
+                         " FROM tbl_distribution_systems ")
+
+                params = []
+                if search_query:
+                    query += " WHERE name LIKE %s   OR  description LIKE %s "
+                    params = [f'%{search_query}%', f'%{search_query}%']
+                query += " ORDER BY id "
+                cursor.execute(query, params)
+                rows_distribution_systems = cursor.fetchall()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        result = list()
+        if rows_distribution_systems is not None and len(rows_distribution_systems) > 0:
+            for row in rows_distribution_systems:
+                meta_result = {"id": row[0],
+                               "name": row[1],
+                               "uuid": row[2],
+                               "svg": svg_dict.get(row[3], None),
+                               "description": row[4]}
+                result.append(meta_result)
+
+        # Store result in Redis cache
+        result_json = json.dumps(result)
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json
+
+    @staticmethod
+    @user_logger
+    def on_post(req, resp):
+        """Handles POST requests"""
+        admin_control(req)
+        try:
+            raw_json = req.stream.read().decode('utf-8')
+        except UnicodeDecodeError as ex:
+            print("Failed to decode request")
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.INVALID_ENCODING')
+        except Exception as ex:
+            print("Unexpected error reading request stream")
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.FAILED_TO_READ_REQUEST_STREAM')
+
+        new_values = json.loads(raw_json)
+
+        if 'name' not in new_values['data'].keys() or \
+                not isinstance(new_values['data']['name'], str) or \
+                len(str.strip(new_values['data']['name'])) == 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_DISTRIBUTION_SYSTEM_NAME')
+        name = str.strip(new_values['data']['name'])
+
+        if 'svg_id' not in new_values['data'].keys() or \
+                not isinstance(new_values['data']['svg_id'], int) or \
+                new_values['data']['svg_id'] <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_SVG_ID')
+        svg_id = new_values['data']['svg_id']
+
+        if 'description' in new_values['data'].keys() and \
+                new_values['data']['description'] is not None and \
+                len(str(new_values['data']['description'])) > 0:
+            description = str.strip(new_values['data']['description'])
+        else:
+            description = None
+
+        cnx = None
+        cursor = None
+        new_id = None
+        
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                cursor.execute(" SELECT name "
+                               " FROM tbl_distribution_systems "
+                               " WHERE name = %s ", (name,))
+                if cursor.fetchone() is not None:
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                           description='API.DISTRIBUTION_SYSTEM_NAME_IS_ALREADY_IN_USE')
+
+                cursor.execute(" SELECT name "
+                               " FROM tbl_svgs "
+                               " WHERE id = %s ",
+                               (svg_id,))
+                row = cursor.fetchone()
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.SVG_NOT_FOUND')
+
+                add_values = (" INSERT INTO tbl_distribution_systems "
+                              "    (name, uuid, svg_id, description) "
+                              " VALUES (%s, %s, %s, %s) ")
+                cursor.execute(add_values, (name,
+                                            str(uuid.uuid4()),
+                                            svg_id,
+                                            description))
+                new_id = cursor.lastrowid
+                cnx.commit()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Clear distribution system API cache
+        clear_distribution_system_cache()
+
+        resp.status = falcon.HTTP_201
+        resp.location = '/distributionsystems/' + str(new_id)
+
+
+class DistributionSystemItem:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    def on_get(req, resp, id_):
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_DISTRIBUTION_SYSTEM_ID')
+
+        # Redis cache key
+        cache_key = f'distributionsystem:item:{id_}'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx = None
+        cursor = None
+        rows_svgs = []
+        row = None
+        
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                svg_dict = dict()
+                query = (" SELECT id, name, uuid, source_code "
+                         " FROM tbl_svgs ")
+                cursor.execute(query)
+                rows_svgs = cursor.fetchall()
+                if rows_svgs is not None and len(rows_svgs) > 0:
+                    for row_svg in rows_svgs:
+                        svg_dict[row_svg[0]] = {"id": row_svg[0],
+                                                "name": row_svg[1],
+                                                "uuid": row_svg[2],
+                                                "source_code": row_svg[3]}
+
+                query = (" SELECT id, name, uuid, "
+                         "        svg_id, description "
+                         " FROM tbl_distribution_systems "
+                         " WHERE id = %s ")
+                cursor.execute(query, (id_,))
+                row = cursor.fetchone()
+                
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.DISTRIBUTION_SYSTEM_NOT_FOUND')
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        meta_result = {"id": row[0],
+                       "name": row[1],
+                       "uuid": row[2],
+                       "svg": svg_dict.get(row[3], None),
+                       "description": row[4]}
+
+        # Store result in Redis cache
+        result_json = json.dumps(meta_result)
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json
+
+    @staticmethod
+    @user_logger
+    def on_delete(req, resp, id_):
+        admin_control(req)
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_DISTRIBUTION_SYSTEM_ID')
+        
+        cnx = None
+        cursor = None
+        rows_spaces = []
+        
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                cursor.execute(" SELECT name "
+                               " FROM tbl_distribution_systems "
+                               " WHERE id = %s ", (id_,))
+                if cursor.fetchone() is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.DISTRIBUTION_SYSTEM_NOT_FOUND')
+
+                # check relation with spaces
+                cursor.execute(" SELECT id "
+                               " FROM tbl_spaces_distribution_systems "
+                               " WHERE distribution_system_id = %s ", (id_,))
+                rows_spaces = cursor.fetchall()
+                if rows_spaces is not None and len(rows_spaces) > 0:
+                    raise falcon.HTTPError(status=falcon.HTTP_400,
+                                           title='API.BAD_REQUEST',
+                                           description='API.THERE_IS_RELATION_WITH_SPACES')
+
+                cursor.execute(" DELETE FROM tbl_distribution_circuits_points WHERE distribution_circuit_id "
+                               "IN (SELECT id FROM tbl_distribution_circuits WHERE distribution_system_id = %s) ",
+                               (id_,))
+                cursor.execute(" DELETE FROM tbl_distribution_circuits WHERE distribution_system_id = %s ", (id_,))
+                cursor.execute(" DELETE FROM tbl_distribution_systems WHERE id = %s ", (id_,))
+                cnx.commit()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Clear distribution system API cache
+        clear_distribution_system_cache(distribution_system_id=id_)
+
+        resp.status = falcon.HTTP_204
+
+    @staticmethod
+    @user_logger
+    def on_put(req, resp, id_):
+        """Handles PUT requests"""
+        admin_control(req)
+        try:
+            raw_json = req.stream.read().decode('utf-8')
+        except UnicodeDecodeError as ex:
+            print("Failed to decode request")
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.INVALID_ENCODING')
+        except Exception as ex:
+            print("Unexpected error reading request stream")
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.FAILED_TO_READ_REQUEST_STREAM')
+
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_DISTRIBUTION_SYSTEM_ID')
+
+        new_values = json.loads(raw_json)
+
+        if 'name' not in new_values['data'].keys() or \
+                not isinstance(new_values['data']['name'], str) or \
+                len(str.strip(new_values['data']['name'])) == 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_DISTRIBUTION_SYSTEM_NAME')
+        name = str.strip(new_values['data']['name'])
+
+        if 'svg_id' not in new_values['data'].keys() or \
+                not isinstance(new_values['data']['svg_id'], int) or \
+                new_values['data']['svg_id'] <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_SVG_ID')
+        svg_id = new_values['data']['svg_id']
+
+        if 'description' in new_values['data'].keys() and \
+                new_values['data']['description'] is not None and \
+                len(str(new_values['data']['description'])) > 0:
+            description = str.strip(new_values['data']['description'])
+        else:
+            description = None
+
+        cnx = None
+        cursor = None
+        
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                cursor.execute(" SELECT name "
+                               " FROM tbl_distribution_systems "
+                               " WHERE name = %s AND id != %s ", (name, id_))
+                if cursor.fetchone() is not None:
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                           description='API.DISTRIBUTION_SYSTEM_NAME_IS_ALREADY_IN_USE')
+
+                cursor.execute(" SELECT name "
+                               " FROM tbl_svgs "
+                               " WHERE id = %s ",
+                               (new_values['data']['svg_id'],))
+                row = cursor.fetchone()
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.SVG_NOT_FOUND')
+
+                update_row = (" UPDATE tbl_distribution_systems "
+                              " SET name = %s, svg_id = %s, description = %s "
+                              " WHERE id = %s ")
+                cursor.execute(update_row, (name,
+                                            svg_id,
+                                            description,
+                                            id_))
+                cnx.commit()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Clear distribution system API cache
+        clear_distribution_system_cache(distribution_system_id=id_)
+
+        resp.status = falcon.HTTP_200
+
+
+class DistributionSystemDistributionCircuitCollection:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    def on_get(req, resp, id_):
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_DISTRIBUTION_SYSTEM_ID')
+
+        # Redis cache key
+        cache_key = f'distributionsystem:circuit:{id_}'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx = None
+        cursor = None
+        rows = []
+        
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                cursor.execute(" SELECT name "
+                               " FROM tbl_distribution_systems "
+                               " WHERE id = %s ", (id_,))
+                if cursor.fetchone() is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.DISTRIBUTION_SYSTEM_NOT_FOUND')
+
+                query = (" SELECT id, name, uuid, "
+                         "        distribution_room, switchgear, peak_load, peak_current, customers, meters "
+                         " FROM tbl_distribution_circuits "
+                         " WHERE distribution_system_id = %s "
+                         " ORDER BY name ")
+                cursor.execute(query, (id_,))
+                rows = cursor.fetchall()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        result = list()
+        if rows is not None and len(rows) > 0:
+            for row in rows:
+                meta_result = {"id": row[0], "name": row[1], "uuid": row[2],
+                               "distribution_room": row[3], "switchgear": row[4],
+                               "peak_load": row[5], "peak_current": row[6],
+                               "customers": row[7], "meters": row[8]}
+                result.append(meta_result)
+
+        # Store result in Redis cache
+        result_json = json.dumps(result)
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json
+
+
+class DistributionSystemExport:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    def on_get(req, resp, id_):
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_DISTRIBUTION_SYSTEM_ID')
+
+        # Redis cache key
+        cache_key = f'distributionsystem:export:{id_}'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx = None
+        cursor = None
+        rows_svgs = []
+        row = None
+        rows_circuits = []
+        
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                query = (" SELECT id, name, uuid "
+                         " FROM tbl_svgs ")
+                cursor.execute(query)
+                rows_svgs = cursor.fetchall()
+
+                svg_dict = dict()
+                if rows_svgs is not None and len(rows_svgs) > 0:
+                    for row_svg in rows_svgs:
+                        svg_dict[row_svg[0]] = {"id": row_svg[0],
+                                                "name": row_svg[1],
+                                                "uuid": row_svg[2]}
+
+                query = (" SELECT id, name, uuid, "
+                         "        svg_id, description "
+                         " FROM tbl_distribution_systems "
+                         " WHERE id = %s ")
+                cursor.execute(query, (id_,))
+                row = cursor.fetchone()
+
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.DISTRIBUTION_SYSTEM_NOT_FOUND')
+                
+                meta_result = {
+                               "name": row[1],
+                               "svg": svg_dict.get(row[3], None),
+                               "description": row[4],
+                               "circuits": None}
+                
+                query = (" SELECT id, name, uuid, "
+                         "        distribution_room, switchgear, peak_load, peak_current, customers, meters "
+                         " FROM tbl_distribution_circuits "
+                         " WHERE distribution_system_id = %s "
+                         " ORDER BY name ")
+                cursor.execute(query, (id_,))
+                rows_circuits = cursor.fetchall()
+
+                result = list()
+                if rows_circuits is not None and len(rows_circuits) > 0:
+                    for row_circuit in rows_circuits:
+                        circuit_result = {"id": row_circuit[0], "name": row_circuit[1], "uuid": row_circuit[2],
+                                          "distribution_room": row_circuit[3], "switchgear": row_circuit[4],
+                                          "peak_load": row_circuit[5], "peak_current": row_circuit[6],
+                                          "customers": row_circuit[7], "meters": row_circuit[8],
+                                          "points": None}
+                        
+                        query_points = (" SELECT p.id AS point_id, p.name AS point_name, "
+                                        "        dc.id AS distribution_circuit_id, "
+                                        "        dc.name AS distribution_circuit_name, "
+                                        "        dc.uuid AS distribution_circuit_uuid "
+                                        " FROM tbl_points p, "
+                                        "      tbl_distribution_circuits_points dcp, "
+                                        "      tbl_distribution_circuits dc "
+                                        " WHERE dcp.distribution_circuit_id = %s AND p.id = dcp.point_id "
+                                        "       AND dcp.distribution_circuit_id = dc.id "
+                                        " ORDER BY p.name ")
+                        cursor.execute(query_points, (circuit_result['id'],))
+                        rows_points = cursor.fetchall()
+
+                        points = list()
+                        if rows_points is not None and len(rows_points) > 0:
+                            for point_row in rows_points:
+                                point_result = {"id": point_row[0], "name": point_row[1]}
+                                points.append(point_result)
+                            circuit_result['points'] = points
+
+                        result.append(circuit_result)
+                    meta_result['circuits'] = result
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Store result in Redis cache
+        result_json = json.dumps(meta_result)
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json
+
+
+class DistributionSystemImport:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp):
+        _ = req
+        resp.status = falcon.HTTP_200
+
+    @staticmethod
+    @user_logger
+    def on_post(req, resp):
+        """Handles POST requests"""
+        admin_control(req)
+        try:
+            raw_json = req.stream.read().decode('utf-8')
+        except UnicodeDecodeError as ex:
+            print("Failed to decode request")
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.INVALID_ENCODING')
+        except Exception as ex:
+            print("Unexpected error reading request stream")
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.FAILED_TO_READ_REQUEST_STREAM')
+
+        new_values = json.loads(raw_json)
+
+        if 'name' not in new_values.keys() or \
+                not isinstance(new_values['name'], str) or \
+                len(str.strip(new_values['name'])) == 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_DISTRIBUTION_SYSTEM_NAME')
+        name = str.strip(new_values['name'])
+
+        if 'svg' not in new_values.keys() or \
+                'id' not in new_values['svg'].keys() or \
+                not isinstance(new_values['svg']['id'], int) or \
+                new_values['svg']['id'] <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_SVG_ID')
+        svg_id = new_values['svg']['id']
+
+        if 'description' in new_values.keys() and \
+                new_values['description'] is not None and \
+                len(str(new_values['description'])) > 0:
+            description = str.strip(new_values['description'])
+        else:
+            description = None
+
+        cnx = None
+        cursor = None
+        new_id = None
+        
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                cursor.execute(" SELECT name "
+                               " FROM tbl_distribution_systems "
+                               " WHERE name = %s ", (name,))
+                if cursor.fetchone() is not None:
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                           description='API.DISTRIBUTION_SYSTEM_NAME_IS_ALREADY_IN_USE')
+
+                cursor.execute(" SELECT name "
+                               " FROM tbl_svgs "
+                               " WHERE id = %s ",
+                               (svg_id,))
+                row = cursor.fetchone()
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.SVG_NOT_FOUND')
+
+                add_values = (" INSERT INTO tbl_distribution_systems "
+                              "    (name, uuid, svg_id, description) "
+                              " VALUES (%s, %s, %s, %s) ")
+                cursor.execute(add_values, (name,
+                                            str(uuid.uuid4()),
+                                            svg_id,
+                                            description))
+                new_id = cursor.lastrowid
+                # Clear distribution system API cache
+                clear_distribution_system_cache()
+                
+                if new_values['circuits'] is not None and len(new_values['circuits']) > 0:
+                    for circuit in new_values['circuits']:
+                        add_values_circuit = (" INSERT INTO tbl_distribution_circuits "
+                                              "    (name, "
+                                              "     uuid, "
+                                              "     distribution_system_id,"
+                                              "     distribution_room, switchgear, peak_load, "
+                                              "     peak_current, customers, meters) "
+                                              " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ")
+                        cursor.execute(add_values_circuit, (circuit['name'],
+                                                            str(uuid.uuid4()),
+                                                            new_id,
+                                                            circuit['distribution_room'],
+                                                            circuit['switchgear'],
+                                                            circuit['peak_load'],
+                                                            circuit['peak_current'],
+                                                            circuit['customers'],
+                                                            circuit['meters']))
+                        circuit_id = cursor.lastrowid
+                        if circuit['points'] is not None and len(circuit['points']) > 0:
+                            for point in circuit['points']:
+                                cursor.execute(" SELECT name "
+                                               " FROM tbl_points "
+                                               " WHERE id = %s ", (point['id'],))
+                                if cursor.fetchone() is None:
+                                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                                           description='API.POINT_NOT_FOUND')
+
+                                query_rel = (" SELECT id "
+                                             " FROM tbl_distribution_circuits_points "
+                                             " WHERE distribution_circuit_id = %s AND point_id = %s")
+                                cursor.execute(query_rel, (circuit_id, point['id'],))
+                                if cursor.fetchone() is not None:
+                                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                                           description='API.DISTRIBUTION_CIRCUIT_POINT_RELATION_EXISTS')
+
+                                add_row = (" INSERT INTO tbl_distribution_circuits_points "
+                                           " (distribution_circuit_id, point_id) "
+                                           " VALUES (%s, %s) ")
+                                cursor.execute(add_row, (circuit_id, point['id'],))
+
+                cnx.commit()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        resp.status = falcon.HTTP_201
+        resp.location = '/distributionsystems/' + str(new_id)
+
+
+class DistributionSystemClone:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    @user_logger
+    def on_post(req, resp, id_):
+        admin_control(req)
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_DISTRIBUTION_SYSTEM_ID')
+
+        cnx = None
+        cursor = None
+        row = None
+        rows_circuits = []
+        new_id = None
+        
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                query = (" SELECT id, name, uuid, "
+                         "        svg_id, description "
+                         " FROM tbl_distribution_systems "
+                         " WHERE id = %s ")
+                cursor.execute(query, (id_,))
+                row = cursor.fetchone()
+
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.DISTRIBUTION_SYSTEM_NOT_FOUND')
+                
+                meta_result = {"id": row[0],
+                               "name": row[1],
+                               "uuid": row[2],
+                               "svg_id": row[3],
+                               "description": row[4],
+                               "circuits": None}
+                
+                query_circuits = (" SELECT id, name, uuid, "
+                                  "        distribution_room, switchgear, peak_load, peak_current, customers, meters "
+                                  " FROM tbl_distribution_circuits "
+                                  " WHERE distribution_system_id = %s "
+                                  " ORDER BY name ")
+                cursor.execute(query_circuits, (id_,))
+                rows_circuits = cursor.fetchall()
+
+                result = list()
+                if rows_circuits is not None and len(rows_circuits) > 0:
+                    for row_circuit in rows_circuits:
+                        circuit_result = {"id": row_circuit[0], "name": row_circuit[1], "uuid": row_circuit[2],
+                                          "distribution_room": row_circuit[3], "switchgear": row_circuit[4],
+                                          "peak_load": row_circuit[5], "peak_current": row_circuit[6],
+                                          "customers": row_circuit[7], "meters": row_circuit[8],
+                                          "points": None}
+                        
+                        query_points = (" SELECT p.id AS point_id, p.name AS point_name, p.address AS point_address, "
+                                        "        dc.id AS distribution_circuit_id, "
+                                        "        dc.name AS distribution_circuit_name, "
+                                        "        dc.uuid AS distribution_circuit_uuid "
+                                        " FROM tbl_points p, "
+                                        "      tbl_distribution_circuits_points dcp, "
+                                        "      tbl_distribution_circuits dc "
+                                        " WHERE dcp.distribution_circuit_id = %s AND p.id = dcp.point_id "
+                                        "       AND dcp.distribution_circuit_id = dc.id "
+                                        " ORDER BY p.name ")
+                        cursor.execute(query_points, (circuit_result['id'],))
+                        rows_points = cursor.fetchall()
+
+                        points = list()
+                        if rows_points is not None and len(rows_points) > 0:
+                            for point_row in rows_points:
+                                point_result = {"id": point_row[0], "name": point_row[1], "address": point_row[2]}
+                                points.append(point_result)
+                            circuit_result['points'] = points
+
+                        result.append(circuit_result)
+                    meta_result['circuits'] = result
+                
+                timezone_offset = int(config.utc_offset[1:3]) * 60 + int(config.utc_offset[4:6])
+                if config.utc_offset[0] == '-':
+                    timezone_offset = -timezone_offset
+                new_name = (str.strip(meta_result['name']) +
+                            (datetime.utcnow() +
+                            timedelta(minutes=timezone_offset)).isoformat(sep='-', timespec='seconds'))
+                
+                add_values = (" INSERT INTO tbl_distribution_systems "
+                              "    (name, uuid, svg_id, description) "
+                              " VALUES (%s, %s, %s, %s) ")
+                cursor.execute(add_values, (new_name,
+                                            str(uuid.uuid4()),
+                                            meta_result['svg_id'],
+                                            meta_result['description']))
+                new_id = cursor.lastrowid
+                # Clear distribution system API cache
+                clear_distribution_system_cache()
+                
+                if meta_result['circuits'] is not None and len(meta_result['circuits']) > 0:
+                    for circuit in meta_result['circuits']:
+                        add_values_circuit = (" INSERT INTO tbl_distribution_circuits "
+                                              "    (name, uuid, distribution_system_id,"
+                                              "     distribution_room, switchgear, peak_load, "
+                                              "     peak_current, customers, meters) "
+                                              " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ")
+                        cursor.execute(add_values_circuit, (circuit['name'],
+                                                            str(uuid.uuid4()),
+                                                            new_id,
+                                                            circuit['distribution_room'],
+                                                            circuit['switchgear'],
+                                                            circuit['peak_load'],
+                                                            circuit['peak_current'],
+                                                            circuit['customers'],
+                                                            circuit['meters']))
+                        circuit_id = cursor.lastrowid
+                        if circuit['points'] is not None and len(circuit['points']) > 0:
+                            for point in circuit['points']:
+                                cursor.execute(" SELECT name "
+                                               " FROM tbl_points "
+                                               " WHERE id = %s ", (point['id'],))
+                                if cursor.fetchone() is None:
+                                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                                           description='API.POINT_NOT_FOUND')
+
+                                query_rel = (" SELECT id "
+                                             " FROM tbl_distribution_circuits_points "
+                                             " WHERE distribution_circuit_id = %s AND point_id = %s")
+                                cursor.execute(query_rel, (circuit_id, point['id'],))
+                                if cursor.fetchone() is not None:
+                                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                                           description='API.DISTRIBUTION_CIRCUIT_POINT_RELATION_EXISTS')
+
+                                add_row = (
+                                    " INSERT INTO tbl_distribution_circuits_points (distribution_circuit_id, point_id) "
+                                    " VALUES (%s, %s) ")
+                                cursor.execute(add_row, (circuit_id, point['id'],))
+                
+                cnx.commit()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        resp.status = falcon.HTTP_201
+        resp.location = '/distributionsystems/' + str(new_id)

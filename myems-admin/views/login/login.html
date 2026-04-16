@@ -1,0 +1,64 @@
+<div class="" ng-controller="LoginController">
+    <div class="">
+        <div class="row">
+            <div class="paddingtop">
+                <div class="margincenter">
+                    <div class="panel panel-warning loginform">
+                        <div class="panel-body">
+                            <p class="text-center">
+                                {{'LOGIN.USERLOGIN' | translate}}
+                            </p>
+                            <div class="input-group m-b">
+                                <span class="input-group-addon">{{'LOGIN.USERNAME' | translate}}</span>
+                                <input ng-keypress="onKeypress($event)" type="text" ng-model="user.name" placeholder="Username" class="form-control" required="" autofocus="autofocus">
+                            </div>
+                            <div class="input-group m-b">
+                                <span class="input-group-addon"> {{'LOGIN.PASSWORD' | translate}}</span>
+                                <input ng-keypress="onKeypress($event)" ng-model="user.password" type="password" placeholder="Password" class="form-control" required="" maxlength="100">
+                            </div>
+                            <div class="input-group m-b table-parent">
+                                <span class="input-group-addon cell-span"> {{'LOGIN.CAPTCHA' | translate}}</span>
+                                <input ng-keypress="onKeypress($event)" ng-model="captcha" type="text" placeholder="Captcha" class="form-control cell-input" required="">
+                                <captcha refresh="refreshCaptcha" captcha-text="captchaText"></captcha>
+                            </div>
+                            <div class="input-group m-x">
+                                <span class="input-group-addon"> {{'LANGUAGE' | translate}}</span>
+                                <select ng-change="changeLanguage(language)"  ng-model="language" class="form-control" >
+                                    <option value="de">Deutsch</option>
+                                    <option value="en">English</option>
+                                    <option value="zh_CN" selected>简体中文</option>
+                                    <option value="fr">Français</option>
+                                    <option value="es">Español</option>
+                                    <option value="ru">Русский язык</option>
+                                    <option value="ar">العربية</option>
+                                    <option value="vi">Tiếng Việt</option>
+                                    <option value="th">ภาษาไทย</option>
+                                    <option value="tr">Türkçe</option>
+                                    <option value="ms">Bahasa Melayu</option>
+                                    <option value="id">Bahasa Indonesia</option>
+                                    <option value="zh_TW">繁體中文</option>
+                                    <option value="pt">Português</option>
+                                    <option value="ko_KR">언어</option>
+                                    <option value="it">Italiano</option>
+                                    <option value="pol">Polski</option>
+                                    <option value="nl">Nederlands</option>
+                                    <option value="jp">日本語</option>
+									<option value="fa">فارسی</option>
+                                </select>
+                            </div>
+                            <div>
+                                <button  ng-click="login(user, captcha, captchaText, refreshCaptcha)" type="submit" class="btn btn-block " >{{'LOGIN' | translate}}</button>
+
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+
+
+
+            </div>
+
+        </div>
+    </div>
+</div>

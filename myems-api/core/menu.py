@@ -1,0 +1,667 @@
+import falcon
+import mysql.connector
+import simplejson as json
+import redis
+from core.useractivity import user_logger, admin_control, access_control, api_key_control
+import config
+
+
+def clear_menu_cache(menu_id=None):
+    """
+    Clear menu-related cache after data modification
+
+    Args:
+        menu_id: Menu ID (optional, for specific item cache)
+    """
+    # Check if Redis is enabled
+    if not config.redis.get('is_enabled', False):
+        return
+
+    redis_client = None
+    try:
+        redis_client = redis.Redis(
+            host=config.redis['host'],
+            port=config.redis['port'],
+            password=config.redis['password'] if config.redis['password'] else None,
+            db=config.redis['db'],
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2
+        )
+        redis_client.ping()
+
+        # Clear menu list cache
+        list_cache_key_pattern = 'menu:list*'
+        matching_keys = redis_client.keys(list_cache_key_pattern)
+        if matching_keys:
+            redis_client.delete(*matching_keys)
+
+        # Clear menu web cache
+        web_cache_key_pattern = 'menu:web*'
+        matching_keys = redis_client.keys(web_cache_key_pattern)
+        if matching_keys:
+            redis_client.delete(*matching_keys)
+
+        # Clear specific menu item cache if menu_id is provided
+        if menu_id:
+            item_cache_key = f'menu:item:{menu_id}'
+            redis_client.delete(item_cache_key)
+
+        # Clear menu children cache if menu_id is provided
+        if menu_id:
+            children_cache_key = f'menu:children:{menu_id}'
+            redis_client.delete(children_cache_key)
+
+    except Exception:
+        # If cache clear fails, ignore and continue
+        pass
+
+
+class MenuCollection:
+    """
+    Menu Collection Resource
+
+    This class handles menu operations for the MyEMS system.
+    It provides functionality to retrieve all menus and their hierarchical structure
+    used for navigation in the MyEMS web interface.
+    """
+
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp):
+        """
+        Handle OPTIONS request for CORS preflight
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+        """
+        _ = req
+        resp.status = falcon.HTTP_200
+
+    @staticmethod
+    def on_get(req, resp):
+        """
+        Handle GET requests to retrieve all menus
+
+        Returns a list of all menus with their metadata including:
+        - Menu ID and name
+        - Route path
+        - Parent menu ID (for hierarchical structure)
+        - Hidden status
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+        """
+        # Check authentication method (API key or session)
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+
+        # Redis cache key
+        cache_key = 'menu:list'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx = None
+        cursor = None
+        rows_menus = []
+
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                # Query to retrieve all menus ordered by ID
+                query = (" SELECT id, name, route, parent_menu_id, is_hidden "
+                         " FROM tbl_menus "
+                         " ORDER BY id ")
+                cursor.execute(query)
+                rows_menus = cursor.fetchall()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Build result list
+        result = list()
+        if rows_menus is not None and len(rows_menus) > 0:
+            for row in rows_menus:
+                temp = {"id": row[0],
+                        "name": row[1],
+                        "route": row[2],
+                        "parent_menu_id": row[3],
+                        "is_hidden": bool(row[4])}
+
+                result.append(temp)
+
+        # Store result in Redis cache
+        result_json = json.dumps(result)
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json
+
+
+class MenuItem:
+    """
+    Menu Item Resource
+
+    This class handles individual menu operations including:
+    - Retrieving a specific menu by ID
+    - Updating menu visibility status
+    """
+
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        """
+        Handle OPTIONS request for CORS preflight
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+            id_: Menu ID parameter
+        """
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    def on_get(req, resp, id_):
+        """
+        Handle GET requests to retrieve a specific menu by ID
+
+        Retrieves a single menu with its metadata including:
+        - Menu ID and name
+        - Route path
+        - Parent menu ID
+        - Hidden status
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+            id_: Menu ID to retrieve
+        """
+        # Check authentication method (API key or session)
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_MENU_ID')
+
+        # Redis cache key
+        cache_key = f'menu:item:{id_}'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx = None
+        cursor = None
+        rows_menu = None
+
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                # Query to retrieve specific menu by ID
+                query = (" SELECT id, name, route, parent_menu_id, is_hidden "
+                         " FROM tbl_menus "
+                         " WHERE id= %s ")
+                cursor.execute(query, (id_,))
+                rows_menu = cursor.fetchone()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Build result object
+        result = None
+        if rows_menu is not None and len(rows_menu) > 0:
+            result = {"id": rows_menu[0],
+                      "name": rows_menu[1],
+                      "route": rows_menu[2],
+                      "parent_menu_id": rows_menu[3],
+                      "is_hidden": bool(rows_menu[4])}
+
+        # Store result in Redis cache
+        result_json = json.dumps(result)
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json
+
+    @staticmethod
+    @user_logger
+    def on_put(req, resp, id_):
+        """
+        Handle PUT requests to update menu visibility
+
+        Updates the hidden status of a specific menu.
+        Requires admin privileges.
+
+        Args:
+            req: Falcon request object containing update data:
+                - is_hidden: Boolean value for menu visibility
+            resp: Falcon response object
+            id_: Menu ID to update
+        """
+        admin_control(req)
+        try:
+            raw_json = req.stream.read().decode('utf-8')
+        except UnicodeDecodeError as ex:
+            print("Failed to decode request")
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.INVALID_ENCODING')
+        except Exception as ex:
+            print("Unexpected error reading request stream")
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.FAILED_TO_READ_REQUEST_STREAM')
+
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_MENU_ID')
+
+        new_values = json.loads(raw_json)
+
+        # Validate hidden status
+        if 'is_hidden' not in new_values['data'].keys() or \
+                not isinstance(new_values['data']['is_hidden'], bool):
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_IS_HIDDEN')
+        is_hidden = new_values['data']['is_hidden']
+
+        cnx = None
+        cursor = None
+
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                # Update menu visibility status
+                update_row = (" UPDATE tbl_menus "
+                              " SET is_hidden = %s "
+                              " WHERE id = %s ")
+                cursor.execute(update_row, (is_hidden,
+                                            id_))
+                cnx.commit()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Clear cache after updating menu
+        clear_menu_cache(menu_id=id_)
+
+        resp.status = falcon.HTTP_200
+
+
+class MenuChildrenCollection:
+    """
+    Menu Children Collection Resource
+
+    This class handles retrieval of menu hierarchy including:
+    - Current menu information
+    - Parent menu information
+    - Child menus
+    """
+
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        """
+        Handle OPTIONS request for CORS preflight
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+            id_: Menu ID parameter
+        """
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    def on_get(req, resp, id_):
+        """
+        Handle GET requests to retrieve menu hierarchy
+
+        Returns detailed menu information including:
+        - Current menu details
+        - Parent menu information
+        - List of child menus
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+            id_: Menu ID to retrieve hierarchy for
+        """
+        # Check authentication method (API key or session)
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_MENU_ID')
+
+        # Redis cache key
+        cache_key = f'menu:children:{id_}'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx = None
+        cursor = None
+        row_current_menu = None
+        rows_menus = []
+        rows_children = []
+
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                # Query to retrieve current menu
+                query = (" SELECT id, name, route, parent_menu_id, is_hidden "
+                         " FROM tbl_menus "
+                         " WHERE id = %s ")
+                cursor.execute(query, (id_,))
+                row_current_menu = cursor.fetchone()
+                
+                if row_current_menu is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.MENU_NOT_FOUND')
+
+                # Query to retrieve all menus for parent lookup
+                query = (" SELECT id, name "
+                         " FROM tbl_menus "
+                         " ORDER BY id ")
+                cursor.execute(query)
+                rows_menus = cursor.fetchall()
+
+                # Build menu dictionary for parent lookup
+                menu_dict = dict()
+                if rows_menus is not None and len(rows_menus) > 0:
+                    for row in rows_menus:
+                        menu_dict[row[0]] = {"id": row[0],
+                                             "name": row[1]}
+
+                # Build result structure
+                result = dict()
+                result['current'] = dict()
+                result['current']['id'] = row_current_menu[0]
+                result['current']['name'] = row_current_menu[1]
+                result['current']['parent_menu'] = menu_dict.get(row_current_menu[3], None)
+                result['current']['is_hidden'] = bool(row_current_menu[4])
+
+                result['children'] = list()
+
+                # Query to retrieve child menus
+                query = (" SELECT id, name, route, parent_menu_id, is_hidden "
+                         " FROM tbl_menus "
+                         " WHERE parent_menu_id = %s "
+                         " ORDER BY id ")
+                cursor.execute(query, (id_, ))
+                rows_children = cursor.fetchall()
+
+                # Build children list
+                if rows_children is not None and len(rows_children) > 0:
+                    for row in rows_children:
+                        meta_result = {"id": row[0],
+                                       "name": row[1],
+                                       "parent_menu": menu_dict.get(row[3], None),
+                                       "is_hidden": bool(row[4])}
+                        result['children'].append(meta_result)
+                
+                # Serialize here so we can use it outside the DB block
+                result_json = json.dumps(result)
+
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Store result in Redis cache
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json
+
+
+class MenuWebCollection:
+    """
+    Menu Web Collection Resource
+
+    This class provides menu data specifically formatted for web interface.
+    It returns a hierarchical structure of routes organized by parent-child relationships.
+    """
+
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp):
+        """
+        Handle OPTIONS request for CORS preflight
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+        """
+        _ = req
+        resp.status = falcon.HTTP_200
+
+    @staticmethod
+    def on_get(req, resp):
+        """
+        Handle GET requests to retrieve web menu structure
+
+        Returns a hierarchical menu structure formatted for web interface:
+        - First level routes (parent menus)
+        - Child routes organized under their parents
+        - Only non-hidden menus are included
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+        """
+        # Check authentication method (API key or session)
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+
+        # Redis cache key
+        cache_key = 'menu:web'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx = None
+        cursor = None
+        rows_menus = []
+
+        try:
+            cnx = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor = cnx.cursor()
+
+                # Optimized: Single query to retrieve all non-hidden menus
+                # This reduces database round trips from 2 to 1
+                # MySQL compatible: parent_menu_id IS NULL comes first in ORDER BY
+                query = (" SELECT id, route, parent_menu_id "
+                         " FROM tbl_menus "
+                         " WHERE is_hidden = 0 "
+                         " ORDER BY (parent_menu_id IS NULL) DESC, id ")
+                cursor.execute(query)
+                rows_menus = cursor.fetchall()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Build first level routes dictionary and result structure in one pass
+        first_level_routes = {}
+        result = {}
+
+        if rows_menus:
+            for row in rows_menus:
+                menu_id, route, parent_menu_id = row
+
+                if parent_menu_id is None:
+                    # First level menu (parent)
+                    first_level_routes[menu_id] = {
+                        'route': route,
+                        'children': []
+                    }
+                    result[route] = []
+                else:
+                    # Child menu - optimized: direct dictionary lookup instead of .keys()
+                    if parent_menu_id in first_level_routes:
+                        first_level_routes[parent_menu_id]['children'].append(route)
+                        # Update result directly
+                        parent_route = first_level_routes[parent_menu_id]['route']
+                        result[parent_route].append(route)
+
+        # Store result in Redis cache
+        result_json = json.dumps(result)
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json

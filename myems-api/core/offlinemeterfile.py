@@ -1,0 +1,600 @@
+import os
+import uuid
+from datetime import datetime, timezone, timedelta
+import falcon
+import mysql.connector
+from mysql.connector.errors import InterfaceError, OperationalError, ProgrammingError, DataError
+import simplejson as json
+import redis
+from core.useractivity import user_logger, admin_control, access_control, api_key_control
+import config
+
+
+def clear_offline_meter_file_cache(offline_meter_file_id=None):
+    """
+    Clear offline meter file-related cache after data modification
+
+    Args:
+        offline_meter_file_id: Offline meter file ID (optional, for specific file cache)
+    """
+    # Check if Redis is enabled
+    if not config.redis.get('is_enabled', False):
+        return
+
+    redis_client = None
+    try:
+        redis_client = redis.Redis(
+            host=config.redis['host'],
+            port=config.redis['port'],
+            password=config.redis['password'] if config.redis['password'] else None,
+            db=config.redis['db'],
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2
+        )
+        redis_client.ping()
+
+        # Clear offline meter file list cache
+        list_cache_key = 'offlinemeterfile:list'
+        redis_client.delete(list_cache_key)
+
+        # Clear specific offline meter file item cache if offline_meter_file_id is provided
+        if offline_meter_file_id:
+            item_cache_key = f'offlinemeterfile:item:{offline_meter_file_id}'
+            redis_client.delete(item_cache_key)
+
+    except Exception:
+        # If cache clear fails, ignore and continue
+        pass
+
+
+class OfflineMeterFileCollection:
+    """
+    Offline Meter File Collection Resource
+
+    This class handles CRUD operations for offline meter file collection.
+    It provides endpoints for listing all uploaded offline meter files and uploading new files.
+    Offline meter files are used for importing energy data from external sources.
+    """
+    def __init__(self):
+        """Initialize OfflineMeterFileCollection"""
+        pass
+
+    @staticmethod
+    def on_options(req, resp):
+        """Handle OPTIONS requests for CORS preflight"""
+        _ = req
+        resp.status = falcon.HTTP_200
+
+    @staticmethod
+    def on_get(req, resp):
+        """
+        Handle GET requests to retrieve all offline meter files
+
+        Returns a list of all uploaded offline meter files with their metadata including:
+        - File ID, name, and UUID
+        - Upload datetime (converted to local timezone)
+        - Processing status
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+        """
+        # Check authentication - use API key if provided, otherwise use access control
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+
+        # Redis cache key
+        cache_key = 'offlinemeterfile:list'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx = None
+        cursor = None
+        rows = []
+
+        try:
+            # Connect to historical database
+            cnx = mysql.connector.connect(**config.myems_historical_db)
+            try:
+                cursor = cnx.cursor()
+
+                # Get all offline meter files ordered by upload time
+                query = (" SELECT id, file_name, uuid, upload_datetime_utc, status "
+                         " FROM tbl_offline_meter_files "
+                         " ORDER BY upload_datetime_utc desc ")
+                cursor.execute(query)
+                rows = cursor.fetchall()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Calculate timezone offset for datetime conversion
+        timezone_offset = int(config.utc_offset[1:3]) * 60 + int(config.utc_offset[4:6])
+        if config.utc_offset[0] == '-':
+            timezone_offset = -timezone_offset
+
+        # Build result list with converted datetime
+        result = list()
+        if rows is not None and len(rows) > 0:
+            for row in rows:
+                meta_result = {"id": row[0],
+                               "file_name": row[1],
+                               "uuid": row[2],
+                               "upload_datetime": (row[3].replace(tzinfo=timezone.utc) +
+                                                   timedelta(minutes=timezone_offset)).isoformat()[0:19],
+                               "status": row[4]}
+                result.append(meta_result)
+
+        # Store result in Redis cache
+        result_json = json.dumps(result)
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json
+
+    @staticmethod
+    @user_logger
+    def on_post(req, resp):
+        """
+        Handle POST requests to upload a new offline meter file
+
+        Uploads a file containing offline meter data for processing.
+        The file is saved to disk and metadata is stored in the database.
+
+        Args:
+            req: Falcon request object containing file upload
+            resp: Falcon response object
+        """
+        admin_control(req)
+
+        try:
+            # Get uploaded file from request
+            upload = req.get_param('file')
+            # Read upload file as binary
+            raw_blob = upload.file.read()
+            # Retrieve filename
+            filename = upload.filename
+            file_uuid = str(uuid.uuid4())
+
+            # Define file_path
+            file_path = os.path.join(config.upload_path, file_uuid)
+
+            # Write to a temporary file to prevent incomplete files from being used.
+            with open(file_path + '~', 'wb') as f:
+                f.write(raw_blob)
+
+            # Now that we know the file has been fully saved to disk move it into place.
+            os.rename(file_path + '~', file_path)
+        except OSError as ex:
+            print("Failed to stream request")
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                   description='API.FAILED_TO_UPLOAD_OFFLINE_METER_FILE')
+        except Exception as ex:
+            print("Unexpected error reading request stream")
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                   description='API.FAILED_TO_UPLOAD_OFFLINE_METER_FILE')
+
+        # Verify User Session
+        token = req.headers.get('TOKEN')
+        user_uuid = req.headers.get('USER-UUID')
+        if token is None:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.TOKEN_NOT_FOUND_IN_HEADERS_PLEASE_LOGIN')
+        if user_uuid is None:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.USER_UUID_NOT_FOUND_IN_HEADERS_PLEASE_LOGIN')
+
+        cnx_user = None
+        cursor_user = None
+        cnx_hist = None
+        cursor_hist = None
+        new_id = None
+
+        # Validate user session
+        try:
+            cnx_user = mysql.connector.connect(**config.myems_user_db)
+            try:
+                cursor_user = cnx_user.cursor()
+
+                query = (" SELECT utc_expires "
+                         " FROM tbl_sessions "
+                         " WHERE user_uuid = %s AND token = %s")
+                cursor_user.execute(query, (user_uuid, token,))
+                row = cursor_user.fetchone()
+
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                           description='API.INVALID_SESSION_PLEASE_RE_LOGIN')
+                    
+                utc_expires = row[0]
+                if datetime.utcnow() > utc_expires:
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                           description='API.USER_SESSION_TIMEOUT')
+
+                # Verify user exists
+                cursor_user.execute(" SELECT id "
+                                    " FROM tbl_users "
+                                    " WHERE uuid = %s ",
+                                    (user_uuid,))
+                row = cursor_user.fetchone()
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                           description='API.INVALID_USER_PLEASE_RE_LOGIN')
+            finally:
+                if cursor_user:
+                    cursor_user.close()
+        finally:
+            if cnx_user:
+                cnx_user.close()
+
+        # Save file metadata to database
+        try:
+            cnx_hist = mysql.connector.connect(**config.myems_historical_db)
+            try:
+                cursor_hist = cnx_hist.cursor()
+
+                add_values = (" INSERT INTO tbl_offline_meter_files "
+                              " (file_name, uuid, upload_datetime_utc, status, file_object ) "
+                              " VALUES (%s, %s, %s, %s, %s) ")
+                cursor_hist.execute(add_values, (filename,
+                                                 file_uuid,
+                                                 datetime.utcnow(),
+                                                 'new',
+                                                 raw_blob))
+                new_id = cursor_hist.lastrowid
+                cnx_hist.commit()
+            finally:
+                if cursor_hist:
+                    cursor_hist.close()
+        except InterfaceError as e:
+            print("Failed to connect request")
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                   description='API.FAILED_TO_SAVE_OFFLINE_METER_FILE')
+        except OperationalError as e:
+            print("Failed to SQL operate request")
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                   description='API.FAILED_TO_SAVE_OFFLINE_METER_FILE')
+        except ProgrammingError as e:
+            print("Failed to SQL request")
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                   description='API.FAILED_TO_SAVE_OFFLINE_METER_FILE')
+        except DataError as e:
+            print("Failed to SQL Data request")
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                   description='API.FAILED_TO_SAVE_OFFLINE_METER_FILE')
+        except Exception as e:
+            print("API.FAILED_TO_SAVE_OFFLINE_METER_FILE " + str(e))
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                   description='API.FAILED_TO_SAVE_OFFLINE_METER_FILE')
+        finally:
+            if cnx_hist:
+                cnx_hist.close()
+
+        # Clear cache after creating new offline meter file
+        clear_offline_meter_file_cache()
+
+        resp.status = falcon.HTTP_201
+        resp.location = '/offlinemeterfiles/' + str(new_id)
+
+
+class OfflineMeterFileItem:
+    """
+    Offline Meter File Item Resource
+
+    This class handles individual offline meter file operations.
+    It provides endpoints for retrieving and deleting specific offline meter files.
+    """
+
+    def __init__(self):
+        """Initialize OfflineMeterFileItem"""
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        """Handle OPTIONS requests for CORS preflight"""
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    def on_get(req, resp, id_):
+        """
+        Handle GET requests to retrieve a specific offline meter file
+
+        Returns the offline meter file details for the specified ID.
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+            id_: Offline meter file ID to retrieve
+        """
+        admin_control(req)
+
+        # Validate file ID
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.INVALID_OFFLINE_METER_FILE_ID')
+
+        # Redis cache key
+        cache_key = f'offlinemeterfile:item:{id_}'
+        cache_expire = 28800  # 8 hours in seconds (long-term cache)
+
+        # Try to get from Redis cache (only if Redis is enabled)
+        redis_client = None
+        if config.redis.get('is_enabled', False):
+            try:
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                # If Redis connection fails, continue to database query
+                pass
+
+        # Cache miss or Redis error - query database
+        cnx = None
+        cursor = None
+        row = None
+
+        try:
+            # Connect to historical database
+            cnx = mysql.connector.connect(**config.myems_historical_db)
+            try:
+                cursor = cnx.cursor()
+
+                # Get file details
+                query = (" SELECT id, file_name, uuid, upload_datetime_utc, status "
+                         " FROM tbl_offline_meter_files "
+                         " WHERE id = %s ")
+                cursor.execute(query, (id_,))
+                row = cursor.fetchone()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Check if file exists
+        if row is None:
+            raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                   description='API.OFFLINE_METER_FILE_NOT_FOUND')
+
+        # Calculate timezone offset for datetime conversion
+        timezone_offset = int(config.utc_offset[1:3]) * 60 + int(config.utc_offset[4:6])
+        if config.utc_offset[0] == '-':
+            timezone_offset = -timezone_offset
+
+        # Build result with converted datetime
+        result = {"id": row[0],
+                  "file_name": row[1],
+                  "uuid": row[2],
+                  "upload_datetime": (row[3].replace(tzinfo=timezone.utc) +
+                                      timedelta(minutes=timezone_offset)).isoformat()[0:19],
+                  "status": row[4]}
+
+        # Store result in Redis cache
+        result_json = json.dumps(result)
+        if redis_client:
+            try:
+                redis_client.setex(cache_key, cache_expire, result_json)
+            except Exception:
+                # If cache set fails, ignore and continue
+                pass
+
+        resp.text = result_json
+
+    @staticmethod
+    @user_logger
+    def on_delete(req, resp, id_):
+        """
+        Handle DELETE requests to delete a specific offline meter file
+
+        Deletes the offline meter file with the specified ID.
+        Removes both the file from disk and metadata from database.
+        Note: Energy data imported from the deleted file will not be deleted.
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+            id_: Offline meter file ID to delete
+        """
+        admin_control(req)
+
+        # Validate file ID
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_OFFLINE_METER_FILE_ID')
+
+        cnx = None
+        cursor = None
+        row = None
+        file_uuid = None
+
+        try:
+            # Connect to historical database
+            cnx = mysql.connector.connect(**config.myems_historical_db)
+            try:
+                cursor = cnx.cursor()
+
+                # Get file UUID for file deletion
+                cursor.execute(" SELECT uuid "
+                               " FROM tbl_offline_meter_files "
+                               " WHERE id = %s ", (id_,))
+                row = cursor.fetchone()
+                
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.OFFLINE_METER_FILE_NOT_FOUND')
+
+                file_uuid = row[0]
+                
+                # Remove file from disk
+                try:
+                    # Define file_path
+                    file_path = os.path.join(config.upload_path, file_uuid)
+                    # remove the file from disk
+                    os.remove(file_path)
+                except OSError as ex:
+                    print("Failed to stream request")
+                except Exception as ex:
+                    print("Unexpected error reading request stream")
+                    # ignore exception and don't return API.OFFLINE_METER_FILE_NOT_FOUND error
+                    pass
+
+                # Note: the energy data imported from the deleted file will not be deleted
+                cursor.execute(" DELETE FROM tbl_offline_meter_files WHERE id = %s ", (id_,))
+                cnx.commit()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Clear cache after deleting offline meter file
+        clear_offline_meter_file_cache(offline_meter_file_id=int(id_))
+
+        resp.status = falcon.HTTP_204
+
+
+class OfflineMeterFileRestore:
+    """
+    Offline Meter File Restore Resource
+
+    This class handles restoring offline meter files from database to disk.
+    It provides functionality to restore files that may have been lost from disk.
+    """
+
+    def __init__(self):
+        """Initialize OfflineMeterFileRestore"""
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        """Handle OPTIONS requests for CORS preflight"""
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    def on_get(req, resp, id_):
+        """
+        Handle GET requests to restore a specific offline meter file
+
+        Restores the offline meter file from database to disk.
+        This is useful when files have been lost from disk but metadata still exists.
+
+        Args:
+            req: Falcon request object
+            resp: Falcon response object
+            id_: Offline meter file ID to restore
+        """
+        admin_control(req)
+
+        # Validate file ID
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_OFFLINE_METER_FILE_ID')
+
+        cnx = None
+        cursor = None
+        row = None
+
+        try:
+            # Connect to historical database
+            cnx = mysql.connector.connect(**config.myems_historical_db)
+            try:
+                cursor = cnx.cursor()
+
+                # Get file data from database
+                query = (" SELECT uuid, file_object "
+                         " FROM tbl_offline_meter_files "
+                         " WHERE id = %s ")
+                cursor.execute(query, (id_,))
+                row = cursor.fetchone()
+            finally:
+                if cursor:
+                    cursor.close()
+        finally:
+            if cnx:
+                cnx.close()
+
+        # Check if file exists in database
+        if row is None:
+            raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                   description='API.OFFLINE_METER_FILE_NOT_FOUND')
+
+        # Restore file to disk
+        result = {"uuid": row[0],
+                  "file_object": row[1]}
+        try:
+            raw_blob = result["file_object"]
+            file_uuid = result["uuid"]
+
+            # Define file_path
+            file_path = os.path.join(config.upload_path, file_uuid)
+
+            # Write to a temporary file to prevent incomplete files from being used.
+            temp_file_path = file_path + '~'
+
+            with open(temp_file_path, 'wb') as f:
+                f.write(raw_blob)
+
+            # Now that we know the file has been fully saved to disk move it into place.
+            os.replace(temp_file_path, file_path)
+        except OSError as ex:
+            print("Failed to stream request")
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                   description='API.FAILED_TO_RESTORE_OFFLINE_METER_FILE')
+        except Exception as ex:
+            print("Unexpected error reading request stream")
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                   description='API.FAILED_TO_RESTORE_OFFLINE_METER_FILE')
+        
+        resp.text = json.dumps('success')

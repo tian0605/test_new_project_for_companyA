@@ -1,0 +1,154 @@
+<div class="inmodal">
+    <div class="modal-header">
+        <h4 class="modal-title">{{operation | translate}}(ID:{{point.id}})</h4>
+    </div>
+    <div class="modal-body">
+        <form role="form" name="form_point" novalidate class="form-horizontal">
+            <div class="form-group"><label class="col-sm-4 control-label">{{'SETTING.NAME' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-8">
+                    <input ng-model="point.name" type="text" name="pointname" class="form-control" required="">
+                    <div class="m-t-xs" ng-show="form_point.pointname.$invalid && form_point.pointname.$dirty">
+                        <small class="text-danger" ng-show="form_point.pointname.$error.required">{{'SETTING.INPUT_NAME' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+            <div class="hr-line-dashed"></div>
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.OBJECT_TYPE' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-8">
+                    <select name="pointobject_type"  ng-model="point.object_type" ng-disabled="is_edit" class="form-control m-b">
+                                <option value="ENERGY_VALUE">{{'POINT.ENERGY_VALUE' | translate}}</option>
+                                <option value="ANALOG_VALUE">{{'POINT.ANALOG_VALUE' | translate}}</option>
+                                <option value="DIGITAL_VALUE">{{'POINT.DIGITAL_VALUE' | translate}}</option>
+                                <option value="TEXT_VALUE">{{'POINT.TEXT_VALUE' | translate}}</option>
+                            </select>
+                    <div class="m-t-xs" ng-show="form_point.pointobject_type.$invalid && form_point.pointobject_type.$dirty">
+                        <small class="text-danger" ng-show="form_point.pointobject_type.$error.required">--</small>
+
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.UNIT' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-8">
+                    <input ng-model="point.units" type="text" name="pointunits" class="form-control" required="">
+                    <div class="m-t-xs" ng-show="form_point.pointunits.$invalid && form_point.pointunits.$dirty">
+                        <small class="text-danger" ng-show="form_point.pointunits.$error.required">{{'SETTING.INPUT_UNIT' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.HIGH_LIMIT' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-8">
+                    <input ng-model="point.high_limit" type="number" name="pointhigh_limit" class="form-control" required>
+                    <div class="m-t-xs" ng-show="form_point.pointhigh_limit.$dirty">
+                        <small class="text-danger" ng-show="form_point.pointhigh_limit.$error.required">{{'POINT.INPUT_HIGH_LIMIT' | translate}}</small>
+                        <small class="text-danger" ng-show="point.low_limit >= point.high_limit">{{'POINT.INVALID_RANGE_HINT' | translate}}</small>
+                        <small class="text-danger" ng-show="point.higher_limit != null && point.high_limit >= point.higher_limit">{{'POINT.INVALID_RANGE_HINT_2' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.LOW_LIMIT' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-8">
+                    <input ng-model="point.low_limit" type="number" name="pointlow_limit" class="form-control" required>
+                    <div class="m-t-xs" ng-show="form_point.pointlow_limit.$dirty">
+                        <small class="text-danger" ng-show="form_point.pointlow_limit.$error.required">{{'POINT.INPUT_LOW_LIMIT' | translate}}</small>
+                        <small class="text-danger" ng-show="point.low_limit >= point.high_limit">{{'POINT.INVALID_RANGE_HINT' | translate}}</small>
+                        <small class="text-danger" ng-show="point.lower_limit != null && point.lower_limit >= point.low_limit">{{'POINT.INVALID_RANGE_HINT_3' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <h3 style="text-align: center;">{{'POINT.OUTPUT_FUNCTION' | translate}}</h3>
+                <label class="col-sm-4 control-label">{{'POINT.RATIO' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-8">
+                    <input ng-model="point.ratio" type="number" name="pointratio" class="form-control"  required="">
+                    <div class="m-t-xs" ng-show="form_point.pointratio.$invalid && form_point.pointratio.$dirty">
+                        <small class="text-danger" ng-show="form_point.pointratio.$error.required">{{'POINT.INPUT_RATIO' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.OFFSET_CONSTANT' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-8">
+                    <input ng-model="point.offset_constant" type="number" name="pointoffset_constant" class="form-control"  required="">
+                    <div class="m-t-xs" ng-show="form_point.pointoffset_constant.$invalid && form_point.pointoffset_constant.$dirty">
+                        <small class="text-danger" ng-show="form_point.pointoffset_constant.$error.required">{{'POINT.INPUT_OFFSET_CONSTANT' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.IS_TREND' | translate}}</label>
+                <div class="col-sm-8">
+                    <div class="checkbox checkbox-success">
+                        <input id="chk_point_istrend" type="checkbox" ng-model="point.is_trend" ng-checked="point.is_trend">
+                        <label for="chk_point_istrend">{{'POINT.IS_TREND' | translate}}</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.IS_VIRTUAL' | translate}}</label>
+                <div class="col-sm-8">
+                    <div class="checkbox checkbox-success">
+                        <input id="chk_point_isvirtual" type="checkbox" ng-model="point.is_virtual" ng-checked="point.is_virtual"
+                        ng-disabled="form_point.pointobject_type.$modelValue == 'DIGITAL_VALUE' || form_point.pointobject_type.$modelValue == 'TEXT_VALUE'">
+                        <label for="chk_point_isvirtual">{{'POINT.IS_VIRTUAL' | translate}}</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.ADDRESS' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-8">
+                    <textarea rows="3" ng-model="point.address" type="text" name="pointaddress" class="form-control" required=""></textarea>
+                    <div class="m-t-xs" ng-show="form_point.pointaddress.$invalid && form_point.pointaddress.$dirty">
+                        <small class="text-danger" ng-show="form_point.pointaddress.$error.required">{{'POINT.INPUT_ADDRESS' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-4 control-label">{{'SETTING.DESCRIPTION' | translate}} ({{'SETTING.OPTIONAL' | translate}})</label>
+                <div class="col-sm-8">
+                    <input ng-model="point.description" type="text" name="pointdescription" class="form-control">
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.HIGHER_LIMIT' | translate}} ({{'SETTING.OPTIONAL' | translate}})</label>
+                <div class="col-sm-8">
+                    <input ng-model="point.higher_limit" type="number" name="pointhigher_limit" class="form-control">
+                    <div class="m-t-xs" ng-show="form_point.pointhigher_limit.$dirty">
+                        <small class="text-danger" ng-show="(point.lower_limit !== null && point.lower_limit !== '') && (point.higher_limit !== null && point.higher_limit !== '') && point.lower_limit >= point.higher_limit">{{'POINT.INVALID_RANGE_HINT_1' | translate}}</small>
+                        <small class="text-danger" ng-show="point.higher_limit != null && point.higher_limit <= point.high_limit">{{'POINT.INVALID_RANGE_HINT_2' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.LOWER_LIMIT' | translate}} ({{'SETTING.OPTIONAL' | translate}})</label>
+                <div class="col-sm-8">
+                    <input ng-model="point.lower_limit" type="number" name="pointlower_limit" class="form-control">
+                    <div class="m-t-xs" ng-show="form_point.pointlower_limit.$dirty">
+                        <small class="text-danger" ng-show="(point.lower_limit !== null && point.lower_limit !== '') && (point.higher_limit !== null && point.higher_limit !== '') && point.lower_limit >= point.higher_limit">{{'POINT.INVALID_RANGE_HINT_1' | translate}}</small>
+                        <small class="text-danger" ng-show="point.lower_limit != null && point.lower_limit >= point.low_limit">{{'POINT.INVALID_RANGE_HINT_3' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.FAULTS' | translate}} ({{'SETTING.OPTIONAL' | translate}})</label>
+                <div class="col-sm-8">
+                    <textarea rows="3" ng-model="point.faults" type="text" name="pointfaults" class="form-control" ></textarea>
+                </div>
+            </div>
+            <div class="form-group"><label class="col-sm-4 control-label">{{'POINT.DEFINITIONS' | translate}} ({{'SETTING.OPTIONAL' | translate}})</label>
+                <div class="col-sm-8">
+                    <textarea rows="3" ng-model="point.definitions" type="text" name="pointdefinitions" class="form-control" ></textarea>
+                </div>
+            </div>
+        </form>
+    </div>
+    <div class="modal-footer">
+        <button type="button" class="btn btn-white" ng-click="cancel()">{{'SETTING.CANCEL' | translate}}</button>
+        <button type="button" ng-disabled="form_point.$invalid ||
+                        (point.lower_limit != null && point.lower_limit >= point.low_limit) ||
+                        point.low_limit >= point.high_limit ||
+                        (point.lower_limit != null && point.higher_limit != null && point.lower_limit >= point.higher_limit) ||
+                        (point.higher_limit != null && point.higher_limit <= point.high_limit)"
+                class="btn btn-primary" ng-click="ok()">{{'SETTING.SAVE' | translate}}
+        </button>
+    </div>
+</div>

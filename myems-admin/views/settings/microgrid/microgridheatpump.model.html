@@ -1,0 +1,77 @@
+<div class="inmodal">
+    <div class="modal-header">
+        <h4 class="modal-title">{{operation | translate}}(ID:{{microgridheatpump.id}})</h4>
+    </div>
+    <div class="modal-body">
+        <form role="form" name="form_microgridheatpump" novalidate class="form-horizontal">
+            <div class="form-group">
+              <label class="col-sm-3 control-label">{{'MICROGRID.MICROGRID_HEATPUMP_NAME' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-9">
+                    <input ng-model="microgridheatpump.name" type="text" name="microgridheatpumpname" class="form-control" required="">
+                    <div class="m-t-xs" ng-show="form_microgridheatpump.microgridheatpumpname.$invalid && form_microgridheatpump.microgridheatpumpname.$dirty">
+                        <small class="text-danger" ng-show="form_microgridheatpump.microgridheatpumpname.$error.required">{{'MICROGRID.INPUT_MICROGRID_HEATPUMP_NAME' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="col-sm-3 control-label">{{'MICROGRID.POWER_POINT' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-9">
+                    <ui-select ng-model="microgridheatpump.power_point.id" theme="bootstrap" required>
+                        <ui-select-match allow-clear="false" placeholder="{{'COMMON.PLACEHOLDER' | translate}}">{{$select.selected.name}}</ui-select-match>
+                        <ui-select-choices repeat="point.id as point in points | filter: $select.search">
+                            <div ng-bind-html="point.name | highlight: $select.search"></div>
+                        </ui-select-choices>
+                    </ui-select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="col-sm-3 control-label">{{'MICROGRID.ELECTRICITY_METER' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-9">
+                    <ui-select ng-model="microgridheatpump.electricity_meter.id" theme="bootstrap" required>
+                        <ui-select-match allow-clear="false" placeholder="{{'COMMON.PLACEHOLDER' | translate}}">{{$select.selected.name}}</ui-select-match>
+                        <ui-select-choices repeat="meter.id as meter in meters | filter: $select.search">
+                            <div ng-bind-html="meter.name | highlight: $select.search"></div>
+                        </ui-select-choices>
+                    </ui-select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="col-sm-3 control-label">{{'MICROGRID.HEAT_METER' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-9">
+                    <ui-select ng-model="microgridheatpump.heat_meter.id" theme="bootstrap" required>
+                        <ui-select-match allow-clear="false" placeholder="{{'COMMON.PLACEHOLDER' | translate}}">{{$select.selected.name}}</ui-select-match>
+                        <ui-select-choices repeat="meter.id as meter in meters | filter: $select.search">
+                            <div ng-bind-html="meter.name | highlight: $select.search"></div>
+                        </ui-select-choices>
+                    </ui-select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="col-sm-3 control-label">{{'MICROGRID.COOLING_METER' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-9">
+                    <ui-select ng-model="microgridheatpump.cooling_meter.id" theme="bootstrap" required>
+                        <ui-select-match allow-clear="false" placeholder="{{'COMMON.PLACEHOLDER' | translate}}">{{$select.selected.name}}</ui-select-match>
+                        <ui-select-choices repeat="meter.id as meter in meters | filter: $select.search">
+                            <div ng-bind-html="meter.name | highlight: $select.search"></div>
+                        </ui-select-choices>
+                    </ui-select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label class="col-sm-3 control-label">{{'MICROGRID.RATED_INPUT_POWER' | translate}}(kW)<span class="text-danger">*</span></label>
+                <div class="col-sm-9">
+                    <input ng-model="microgridheatpump.rated_input_power" type="number" name="microgridheatpumprated_input_power" class="form-control" required="" min="0" max="999999">
+                    <div class="m-t-xs" ng-show="form_microgridheatpump.microgridheatpumprated_input_power.$invalid && form_microgridheatpump.microgridheatpumprated_input_power.$dirty">
+                        <small class="text-danger" ng-show="form_microgridheatpump.microgridheatpumprated_input_power.$error.required">{{'MICROGRID.INPUT_CAPACITY' | translate}}</small>
+                        <small class="text-danger" ng-show="form_microgridheatpump.microgridheatpumprated_input_power.$error.min">{{'MICROGRID.INVALID_INPUT_HINT' | translate}}</small>
+                        <small class="text-danger" ng-show="form_microgridheatpump.microgridheatpumprated_input_power.$error.max">{{'MICROGRID.INVALID_INPUT_HINT' | translate}}</small>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </div>
+    <div class="modal-footer">
+        <button type="button" class="btn btn-white" ng-click="cancel()">{{'SETTING.CANCEL' | translate}}</button>
+        <button type="button" ng-disabled="form_microgridheatpump.$invalid" class="btn btn-primary" ng-click="ok()">{{'SETTING.SAVE' | translate}}</button>
+    </div>
+</div>
