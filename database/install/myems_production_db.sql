@@ -22,6 +22,11 @@ CREATE TABLE IF NOT EXISTS `myems_production_db`.`tbl_products` (
   PRIMARY KEY (`id`));
 CREATE INDEX `tbl_products_index_1` ON `myems_production_db`.`tbl_products` (`name`);
 
+INSERT INTO `myems_production_db`.`tbl_products`
+  (`name`, `uuid`, `unit_of_measure`, `tag`, `standard_product_coefficient`)
+VALUES
+  ('单丝', UUID(), '吨', '废旧涤纶布料再生利用产品', 1.000000);
+
 -- --------------------------------------------------------------------------------------------------------------------------------------------------------
 -- Table `myems_production_db`.`tbl_shifts`
 -- ---------------------------------------------------------------------------------------------------------------------

@@ -30,6 +30,15 @@ import mysql.connector
 import config
 
 
+def _get_source_latest_datetime(cursor, table_name, id_column, source_id):
+    query = f" SELECT MAX(start_datetime_utc) FROM {table_name} WHERE {id_column} = %s "
+    cursor.execute(query, (source_id,))
+    row = cursor.fetchone()
+    if row is None or len(row) == 0 or not isinstance(row[0], datetime):
+        return None
+    return row[0].replace(second=0, microsecond=0, tzinfo=None)
+
+
 ########################################################################################################################
 # PROCEDURES
 # Step 1: get all shopfloors
@@ -360,6 +369,13 @@ def worker(shopfloor):
         print(error_string)
         return error_string
 
+    has_existing_aggregation = row_datetime is not None and len(row_datetime) > 0 and isinstance(row_datetime[0], datetime)
+    blocking_sources = list()
+    active_meter_list = list()
+    active_virtual_meter_list = list()
+    active_offline_meter_list = list()
+    active_equipment_list = list()
+
     ####################################################################################################################
     # Step 6: for each meter in list, get energy input data from energy database
     ####################################################################################################################
@@ -368,6 +384,17 @@ def worker(shopfloor):
         if meter_list is not None and len(meter_list) > 0:
             for meter in meter_list:
                 meter_id = str(meter['id'])
+
+                latest_datetime_utc = _get_source_latest_datetime(cursor_energy_db, 'tbl_meter_hourly', 'meter_id', meter_id)
+                if latest_datetime_utc is None:
+                    if has_existing_aggregation:
+                        print("Skipping meter " + meter['name'] + " because it has no hourly data to continue from the current window")
+                        continue
+                    blocking_sources.append("meter:" + meter['name'])
+                    continue
+                if latest_datetime_utc < start_datetime_utc:
+                    print("Skipping meter " + meter['name'] + " because its hourly data ends before the current incremental window")
+                    continue
 
                 query = (" SELECT start_datetime_utc, actual_value "
                          " FROM tbl_meter_hourly "
@@ -378,11 +405,13 @@ def worker(shopfloor):
                 cursor_energy_db.execute(query, (meter_id, start_datetime_utc, end_datetime_utc,))
                 rows_energy_values = cursor_energy_db.fetchall()
                 if rows_energy_values is None or len(rows_energy_values) == 0:
-                    energy_meter_hourly[meter_id] = None
-                else:
-                    energy_meter_hourly[meter_id] = dict()
-                    for row_energy_value in rows_energy_values:
-                        energy_meter_hourly[meter_id][row_energy_value[0]] = row_energy_value[1]
+                    print("Skipping meter " + meter['name'] + " because it has no hourly rows inside the current incremental window")
+                    continue
+
+                active_meter_list.append(meter)
+                energy_meter_hourly[meter_id] = dict()
+                for row_energy_value in rows_energy_values:
+                    energy_meter_hourly[meter_id][row_energy_value[0]] = row_energy_value[1]
     except Exception as e:
         error_string = "Error in step 6.1 of shopfloor_energy_input_item.worker " + str(e)
         if cursor_energy_db:
@@ -401,6 +430,24 @@ def worker(shopfloor):
             for virtual_meter in virtual_meter_list:
                 virtual_meter_id = str(virtual_meter['id'])
 
+                latest_datetime_utc = _get_source_latest_datetime(
+                    cursor_energy_db,
+                    'tbl_virtual_meter_hourly',
+                    'virtual_meter_id',
+                    virtual_meter_id,
+                )
+                if latest_datetime_utc is None:
+                    if has_existing_aggregation:
+                        print("Skipping virtual meter " + virtual_meter['name']
+                              + " because it has no hourly data to continue from the current window")
+                        continue
+                    blocking_sources.append("virtual_meter:" + virtual_meter['name'])
+                    continue
+                if latest_datetime_utc < start_datetime_utc:
+                    print("Skipping virtual meter " + virtual_meter['name']
+                          + " because its hourly data ends before the current incremental window")
+                    continue
+
                 query = (" SELECT start_datetime_utc, actual_value "
                          " FROM tbl_virtual_meter_hourly "
                          " WHERE virtual_meter_id = %s "
@@ -410,11 +457,14 @@ def worker(shopfloor):
                 cursor_energy_db.execute(query, (virtual_meter_id, start_datetime_utc, end_datetime_utc,))
                 rows_energy_values = cursor_energy_db.fetchall()
                 if rows_energy_values is None or len(rows_energy_values) == 0:
-                    energy_virtual_meter_hourly[virtual_meter_id] = None
-                else:
-                    energy_virtual_meter_hourly[virtual_meter_id] = dict()
-                    for row_energy_value in rows_energy_values:
-                        energy_virtual_meter_hourly[virtual_meter_id][row_energy_value[0]] = row_energy_value[1]
+                    print("Skipping virtual meter " + virtual_meter['name']
+                          + " because it has no hourly rows inside the current incremental window")
+                    continue
+
+                active_virtual_meter_list.append(virtual_meter)
+                energy_virtual_meter_hourly[virtual_meter_id] = dict()
+                for row_energy_value in rows_energy_values:
+                    energy_virtual_meter_hourly[virtual_meter_id][row_energy_value[0]] = row_energy_value[1]
         except Exception as e:
             error_string = "Error in step 7.1 of shopfloor_energy_input_item.worker " + str(e)
             if cursor_energy_db:
@@ -433,6 +483,24 @@ def worker(shopfloor):
             for offline_meter in offline_meter_list:
                 offline_meter_id = str(offline_meter['id'])
 
+                latest_datetime_utc = _get_source_latest_datetime(
+                    cursor_energy_db,
+                    'tbl_offline_meter_hourly',
+                    'offline_meter_id',
+                    offline_meter_id,
+                )
+                if latest_datetime_utc is None:
+                    if has_existing_aggregation:
+                        print("Skipping offline meter " + offline_meter['name']
+                              + " because it has no hourly data to continue from the current window")
+                        continue
+                    blocking_sources.append("offline_meter:" + offline_meter['name'])
+                    continue
+                if latest_datetime_utc < start_datetime_utc:
+                    print("Skipping offline meter " + offline_meter['name']
+                          + " because its hourly data ends before the current incremental window")
+                    continue
+
                 query = (" SELECT start_datetime_utc, actual_value "
                          " FROM tbl_offline_meter_hourly "
                          " WHERE offline_meter_id = %s "
@@ -442,11 +510,14 @@ def worker(shopfloor):
                 cursor_energy_db.execute(query, (offline_meter_id, start_datetime_utc, end_datetime_utc,))
                 rows_energy_values = cursor_energy_db.fetchall()
                 if rows_energy_values is None or len(rows_energy_values) == 0:
-                    energy_offline_meter_hourly[offline_meter_id] = None
-                else:
-                    energy_offline_meter_hourly[offline_meter_id] = dict()
-                    for row_energy_value in rows_energy_values:
-                        energy_offline_meter_hourly[offline_meter_id][row_energy_value[0]] = row_energy_value[1]
+                    print("Skipping offline meter " + offline_meter['name']
+                          + " because it has no hourly rows inside the current incremental window")
+                    continue
+
+                active_offline_meter_list.append(offline_meter)
+                energy_offline_meter_hourly[offline_meter_id] = dict()
+                for row_energy_value in rows_energy_values:
+                    energy_offline_meter_hourly[offline_meter_id][row_energy_value[0]] = row_energy_value[1]
 
         except Exception as e:
             error_string = "Error in step 8.1 of shopfloor_energy_input_item.worker " + str(e)
@@ -465,6 +536,25 @@ def worker(shopfloor):
         try:
             for equipment in equipment_list:
                 equipment_id = str(equipment['id'])
+
+                latest_datetime_utc = _get_source_latest_datetime(
+                    cursor_energy_db,
+                    'tbl_equipment_input_item_hourly',
+                    'equipment_id',
+                    equipment_id,
+                )
+                if latest_datetime_utc is None:
+                    if has_existing_aggregation:
+                        print("Skipping equipment " + equipment['name']
+                              + " because it has no hourly data to continue from the current window")
+                        continue
+                    blocking_sources.append("equipment:" + equipment['name'])
+                    continue
+                if latest_datetime_utc < start_datetime_utc:
+                    print("Skipping equipment " + equipment['name']
+                          + " because its hourly data ends before the current incremental window")
+                    continue
+
                 query = (" SELECT start_datetime_utc, energy_item_id, actual_value "
                          " FROM tbl_equipment_input_item_hourly "
                          " WHERE equipment_id = %s "
@@ -474,17 +564,20 @@ def worker(shopfloor):
                 cursor_energy_db.execute(query, (equipment_id, start_datetime_utc, end_datetime_utc,))
                 rows_energy_values = cursor_energy_db.fetchall()
                 if rows_energy_values is None or len(rows_energy_values) == 0:
-                    energy_equipment_hourly[equipment_id] = None
-                else:
-                    energy_equipment_hourly[equipment_id] = dict()
-                    for row_value in rows_energy_values:
-                        current_datetime_utc = row_value[0]
-                        if current_datetime_utc not in energy_equipment_hourly[equipment_id]:
-                            energy_equipment_hourly[equipment_id][current_datetime_utc] = dict()
-                        energy_item_id = row_value[1]
-                        actual_value = row_value[2]
-                        energy_equipment_hourly[equipment_id][current_datetime_utc][energy_item_id] = \
-                            actual_value
+                    print("Skipping equipment " + equipment['name']
+                          + " because it has no hourly rows inside the current incremental window")
+                    continue
+
+                active_equipment_list.append(equipment)
+                energy_equipment_hourly[equipment_id] = dict()
+                for row_value in rows_energy_values:
+                    current_datetime_utc = row_value[0]
+                    if current_datetime_utc not in energy_equipment_hourly[equipment_id]:
+                        energy_equipment_hourly[equipment_id][current_datetime_utc] = dict()
+                    energy_item_id = row_value[1]
+                    actual_value = row_value[2]
+                    energy_equipment_hourly[equipment_id][current_datetime_utc][energy_item_id] = \
+                        actual_value
         except Exception as e:
             error_string = "Error in step 9 of shopfloor_energy_input_item.worker " + str(e)
             if cursor_energy_db:
@@ -497,6 +590,15 @@ def worker(shopfloor):
     ####################################################################################################################
     # Step 10: determine common time slot to aggregate
     ####################################################################################################################
+
+    if blocking_sources:
+        print("Blocking incremental aggregation because these bound sources have never produced any hourly data: "
+              + ', '.join(blocking_sources))
+        if cursor_energy_db:
+            cursor_energy_db.close()
+        if cnx_energy_db:
+            cnx_energy_db.close()
+        return None
 
     common_start_datetime_utc = start_datetime_utc
     common_end_datetime_utc = end_datetime_utc
@@ -556,13 +658,11 @@ def worker(shopfloor):
                     if common_end_datetime_utc > max(energy_hourly.keys()):
                         common_end_datetime_utc = max(energy_hourly.keys())
 
-    if (energy_meter_hourly is None or len(energy_meter_hourly) == 0) and \
-            (energy_virtual_meter_hourly is None or len(energy_virtual_meter_hourly) == 0) and \
-            (energy_offline_meter_hourly is None or len(energy_offline_meter_hourly) == 0) and \
-            (energy_equipment_hourly is None or len(energy_equipment_hourly) == 0):
-        # There isn't any energy data
-        print("There isn't any energy data")
-        # continue the for shopfloor loop to the next shopfloor
+    if len(active_meter_list) == 0 and \
+            len(active_virtual_meter_list) == 0 and \
+            len(active_offline_meter_list) == 0 and \
+            len(active_equipment_list) == 0:
+        print("There isn't any active energy data in the current incremental window")
         print("continue the for shopfloor loop to the next shopfloor")
         if cursor_energy_db:
             cursor_energy_db.close()
@@ -588,32 +688,32 @@ def worker(shopfloor):
             aggregated_value['start_datetime_utc'] = current_datetime_utc
             aggregated_value['meta_data'] = dict()
 
-            if meter_list is not None and len(meter_list) > 0:
-                for meter in meter_list:
+            if active_meter_list is not None and len(active_meter_list) > 0:
+                for meter in active_meter_list:
                     meter_id = str(meter['id'])
                     energy_item_id = meter['energy_item_id']
                     actual_value = energy_meter_hourly[meter_id].get(current_datetime_utc, Decimal(0.0))
                     aggregated_value['meta_data'][energy_item_id] = \
                         aggregated_value['meta_data'].get(energy_item_id, Decimal(0.0)) + actual_value
 
-            if virtual_meter_list is not None and len(virtual_meter_list) > 0:
-                for virtual_meter in virtual_meter_list:
+            if active_virtual_meter_list is not None and len(active_virtual_meter_list) > 0:
+                for virtual_meter in active_virtual_meter_list:
                     virtual_meter_id = str(virtual_meter['id'])
                     energy_item_id = virtual_meter['energy_item_id']
                     actual_value = energy_virtual_meter_hourly[virtual_meter_id].get(current_datetime_utc, Decimal(0.0))
                     aggregated_value['meta_data'][energy_item_id] = \
                         aggregated_value['meta_data'].get(energy_item_id, Decimal(0.0)) + actual_value
 
-            if offline_meter_list is not None and len(offline_meter_list) > 0:
-                for offline_meter in offline_meter_list:
+            if active_offline_meter_list is not None and len(active_offline_meter_list) > 0:
+                for offline_meter in active_offline_meter_list:
                     offline_meter_id = str(offline_meter['id'])
                     energy_item_id = offline_meter['energy_item_id']
                     actual_value = energy_offline_meter_hourly[offline_meter_id].get(current_datetime_utc, Decimal(0.0))
                     aggregated_value['meta_data'][energy_item_id] = \
                         aggregated_value['meta_data'].get(energy_item_id, Decimal(0.0)) + actual_value
 
-            if equipment_list is not None and len(equipment_list) > 0:
-                for equipment in equipment_list:
+            if active_equipment_list is not None and len(active_equipment_list) > 0:
+                for equipment in active_equipment_list:
                     equipment_id = str(equipment['id'])
                     meta_data_dict = energy_equipment_hourly[equipment_id].get(current_datetime_utc, None)
                     if meta_data_dict is not None and len(meta_data_dict) > 0:

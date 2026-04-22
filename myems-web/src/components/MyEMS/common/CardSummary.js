@@ -96,18 +96,6 @@ const CardSummary = ({
           </span>
         </h6>
         <div className={getContentClassNames(color)}>{children}</div>
-        <h6 className="font-weight-light fs--2 text-nowrap">
-          {footnote}{' '}
-          {footvalue && <CountUp end={footvalue} duration={2} prefix="" separator="," decimal="." decimals={2} />}{' '}
-          {footunit}
-        </h6>
-        <h6 className="font-weight-light fs--2 text-nowrap">
-          {secondfootnote}{' '}
-          {secondfootvalue && (
-            <CountUp end={secondfootvalue} duration={2} prefix="" separator="," decimal="." decimals={2} />
-          )}{' '}
-          {secondfootunit}
-        </h6>
       </CardBody>
     </Card>
   );

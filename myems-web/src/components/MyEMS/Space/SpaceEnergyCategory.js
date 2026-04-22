@@ -1303,12 +1303,6 @@ const SpaceEnergyCategory = ({ setRedirect, setRedirectUrl, t }) => {
                 UNIT: '(' + cardSummaryItem['unit'] + ')'
               })}
               color="success"
-              footnote={t('Per Unit Area')}
-              footvalue={cardSummaryItem['subtotal_per_unit_area']}
-              footunit={'(' + cardSummaryItem['unit'] + '/M²)'}
-              secondfootnote={t('Per Capita')}
-              secondfootvalue={cardSummaryItem['subtotal_per_capita']}
-              secondfootunit={'(' + cardSummaryItem['unit'] + ')'}
             >
               {cardSummaryItem['subtotal'] && (
                 <CountUp
@@ -1331,12 +1325,6 @@ const SpaceEnergyCategory = ({ setRedirect, setRedirectUrl, t }) => {
                 UNIT: '(TCE)'
               })}
               color="warning"
-              footnote={t('Per Unit Area')}
-              footvalue={totalInTCE['value_per_unit_area']}
-              footunit="(kgCE/M²)"
-              secondfootnote={t('Per Capita')}
-              secondfootvalue={totalInTCE['value_per_capita']}
-              secondfootunit="(kgCE)"
             >
               {totalInTCE['value'] && (
                 <CountUp end={totalInTCE['value']} duration={2} prefix="" separator="," decimal="." decimals={2} />
@@ -1352,12 +1340,6 @@ const SpaceEnergyCategory = ({ setRedirect, setRedirectUrl, t }) => {
               UNIT: '(TCO2E)'
             })}
             color="warning"
-            footnote={t('Per Unit Area')}
-            footvalue={totalInTCO2E['value_per_unit_area']}
-            footunit="(kgCO2E/M²)"
-            secondfootnote={t('Per Capita')}
-            secondfootvalue={totalInTCO2E['value_per_capita']}
-            secondfootunit="(kgCO2E)"
           >
             {totalInTCO2E['value'] && (
               <CountUp end={totalInTCO2E['value']} duration={2} prefix="" separator="," decimal="." decimals={2} />
@@ -1374,20 +1356,6 @@ const SpaceEnergyCategory = ({ setRedirect, setRedirectUrl, t }) => {
               UNIT: '(TCO2E/TCE)'
             })}
             color="warning"
-            footnote={t('Per Unit Area')}
-            footvalue={
-              totalInTCE['value_per_unit_area'] && totalInTCE['value_per_unit_area'] !== 0 && totalInTCO2E['value_per_unit_area']
-                ? (totalInTCO2E['value_per_unit_area'] / totalInTCE['value_per_unit_area']).toFixed(3)
-                : '--'
-            }
-            footunit="(kgCO2E/kgCE/M²)"
-            secondfootnote={t('Per Capita')}
-            secondfootvalue={
-              totalInTCE['value_per_capita'] && totalInTCE['value_per_capita'] !== 0 && totalInTCO2E['value_per_capita']
-                ? (totalInTCO2E['value_per_capita'] / totalInTCE['value_per_capita']).toFixed(3)
-                : '--'
-            }
-            secondfootunit="(kgCO2E/kgCE)"
           >
             {totalInTCE['value'] && totalInTCE['value'] !== 0 && totalInTCO2E['value'] ? (
               <CountUp
