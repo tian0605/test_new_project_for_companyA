@@ -511,6 +511,48 @@ curl -I http://127.0.0.1:8001
 curl -I http://127.0.0.1/
 ```
 
+## Version upgrade: enterprise-isolation-v1 to 6.3.4
+
+If your server is already running MyEMS `6.3.0` to `6.3.3`, this branch merge requires both database and container upgrades.
+
+The merged feature adds these schema and seed changes:
+
+- `tbl_users.enterprise_space_id`
+- `tbl_users.menu_template_id`
+- `tbl_menu_templates`
+- `tbl_cost_centers.enterprise_space_id`
+- menu visibility updates for `/space/plan`, `/space/production`, and `/space/enterproduction`
+
+Before you rebuild containers, back up MySQL first.
+
+Run the upgrade script from the repository root like this:
+
+```bash
+cd /home/ubuntu/myems/others
+chmod +x upgrade-enterprise-isolation-v1.sh
+export MYSQL_HOST=127.0.0.1
+export MYSQL_PORT=3306
+export MYSQL_USER=root
+export MYSQL_PASSWORD='REPLACE_WITH_REAL_PASSWORD'
+./upgrade-enterprise-isolation-v1.sh
+```
+
+What the script does:
+
+- reads the current version from `myems_system_db.tbl_versions`
+- applies `database/upgrade/upgrade6.3.1.sql` through `upgrade6.3.4.sql` as needed
+- rebuilds only `api`, `admin`, and `web`
+- leaves `modbus_tcp`, `aggregation`, `cleaning`, and `normalization` untouched for this release
+
+If you prefer to run the SQL manually, apply the scripts in strict order from your current version up to `6.3.4`, then run:
+
+```bash
+cd /home/ubuntu/myems/others
+docker compose -f docker-compose-on-linux.yml up -d --build api admin web
+docker compose -f docker-compose-on-linux.yml ps
+docker compose -f docker-compose-on-linux.yml logs --since=5m api admin web
+```
+
 Expected ports:
 
 - Web: `80`

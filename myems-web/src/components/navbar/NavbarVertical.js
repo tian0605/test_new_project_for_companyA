@@ -17,6 +17,26 @@ import { createCookie, getCookieValue, checkEmpty } from '../../helpers/utils';
 import { toast } from 'react-toastify';
 import withRedirect from '../../hoc/withRedirect';
 
+const buildVisibleRoutes = menuMap => {
+  const visibleRoutes = [routes[0]];
+
+  for (let i = 0; i < routes.length; i++) {
+    const route = routes[i];
+    if (route.to === routes[0].to) {
+      continue;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(menuMap, route.to) && Array.isArray(route.children)) {
+      const showChildren = route.children.filter(child => menuMap[route.to].indexOf(child.to) !== -1);
+      visibleRoutes.push({ ...route, children: showChildren });
+    } else if (Object.prototype.hasOwnProperty.call(menuMap, route.to)) {
+      visibleRoutes.push({ ...route });
+    }
+  }
+
+  return visibleRoutes;
+};
+
 const NavbarVertical = ({ setRedirectUrl, setRedirect, navbarStyle, t }) => {
   useEffect(() => {
     let is_logged_in = getCookieValue('is_logged_in');
@@ -118,26 +138,7 @@ const NavbarVertical = ({ setRedirectUrl, setRedirect, navbarStyle, t }) => {
       .then(json => {
         //console.log(json);
         if (isResponseOK) {
-          let showRoutes = [routes[0]];
-          for (let i = 0; i < routes.length; i++) {
-            let route = routes[i];
-            if (route.to in json && 'children' in route) {
-              let showChildren = [];
-              for (let j = 0; j < route.children.length; j++) {
-                const child = route.children[j];
-                if (json[route.to].indexOf(child.to) !== -1) {
-                  showChildren.push(child);
-                }
-              }
-              route.children = showChildren;
-
-              showRoutes.push(route);
-            } else if (route.to in json) {
-              showRoutes.push(route);
-            }
-          }
-
-          setShowRoutes(showRoutes);
+          setShowRoutes(buildVisibleRoutes(json));
         } else {
           toast.error(t(json.description));
         }

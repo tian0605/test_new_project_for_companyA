@@ -90,6 +90,12 @@ def get_dashboard_cache_key(permission_context, cache_material):
     return None
 
 
+def get_reporting_month_label(reporting_end_datetime_utc, timezone_offset):
+    reporting_end_datetime_local = reporting_end_datetime_utc.replace(tzinfo=None) + \
+        timedelta(minutes=timezone_offset)
+    return reporting_end_datetime_local.strftime('%Y-%m')
+
+
 class Reporting:
     def __init__(self):
         """Initializes Class"""
@@ -261,7 +267,6 @@ class Reporting:
         ################################################################################################################
         # Step 2: query the space
         ################################################################################################################
-
         cnx_system = None
         cursor_system = None
         try:
@@ -539,6 +544,7 @@ class Reporting:
                 ########################################################################################################
                 reporting_input = dict()
                 if input_energy_category_set is not None and len(input_energy_category_set) > 0:
+                    reporting_month_label = get_reporting_month_label(reporting_end_datetime_utc, timezone_offset)
                     reporting_end_datetime_local_naive = reporting_end_datetime_utc.replace(tzinfo=None) + \
                                                          timedelta(minutes=timezone_offset)
                     month_start_datetime_local = reporting_end_datetime_local_naive.replace(
@@ -562,6 +568,9 @@ class Reporting:
                         reporting_input[energy_category_id]['subtotal'] = Decimal(0.0)
                         reporting_input[energy_category_id]['subtotal_in_kgce'] = Decimal(0.0)
                         reporting_input[energy_category_id]['subtotal_in_kgco2e'] = Decimal(0.0)
+                        reporting_input[energy_category_id]['current_month_value'] = Decimal(0.0)
+                        reporting_input[energy_category_id]['this_month_subtotal_in_kgce'] = Decimal(0.0)
+                        reporting_input[energy_category_id]['this_month_subtotal_in_kgco2e'] = Decimal(0.0)
                         reporting_input[energy_category_id]['toppeak'] = Decimal(0.0)
                         reporting_input[energy_category_id]['onpeak'] = Decimal(0.0)
                         reporting_input[energy_category_id]['midpeak'] = Decimal(0.0)
@@ -597,18 +606,13 @@ class Reporting:
                             reporting_input[energy_category_id]['subtotal'] += actual_value
                             reporting_input[energy_category_id]['subtotal_in_kgce'] = actual_value * kgce
                             reporting_input[energy_category_id]['subtotal_in_kgco2e'] = actual_value * kgco2e
-                            # use the latest month value
-                            reporting_input[energy_category_id]['this_month_subtotal_in_kgce'] = actual_value * kgce
-                            # use the latest month value
-                            reporting_input[energy_category_id]['this_month_subtotal_in_kgco2e'] = actual_value * kgco2e
+                            if current_datetime == reporting_month_label:
+                                reporting_input[energy_category_id]['current_month_value'] = actual_value
+                                reporting_input[energy_category_id]['this_month_subtotal_in_kgce'] = actual_value * kgce
+                                reporting_input[energy_category_id]['this_month_subtotal_in_kgco2e'] = actual_value * kgco2e
 
                         reporting_input[energy_category_id]['same_month_last_year_value'] = \
                             base_input[energy_category_id]['subtotal']
-                        values = reporting_input[energy_category_id]['values']
-                        if isinstance(values, list) and values:
-                            reporting_input[energy_category_id]['current_month_value'] = values[-1]
-                        else:
-                            reporting_input[energy_category_id]['current_month_value'] = Decimal(0.0)
 
                         energy_category_tariff_dict = \
                             utilities.get_energy_category_peak_types(space['cost_center_id'],
@@ -635,12 +639,14 @@ class Reporting:
                 ########################################################################################################
                 reporting_cost = dict()
                 if input_energy_category_set is not None and len(input_energy_category_set) > 0:
+                    reporting_month_label = get_reporting_month_label(reporting_end_datetime_utc, timezone_offset)
                     for energy_category_id in input_energy_category_set:
 
                         reporting_cost[energy_category_id] = dict()
                         reporting_cost[energy_category_id]['timestamps'] = list()
                         reporting_cost[energy_category_id]['values'] = list()
                         reporting_cost[energy_category_id]['subtotal'] = Decimal(0.0)
+                        reporting_cost[energy_category_id]['current_month_value'] = Decimal(0.0)
 
                         cursor_billing.execute(" SELECT start_datetime_utc, actual_value "
                                                " FROM tbl_space_input_category_hourly "
@@ -669,25 +675,24 @@ class Reporting:
                             reporting_cost[energy_category_id]['timestamps'].append(current_datetime)
                             reporting_cost[energy_category_id]['values'].append(actual_value)
                             reporting_cost[energy_category_id]['subtotal'] += actual_value
+                            if current_datetime == reporting_month_label:
+                                reporting_cost[energy_category_id]['current_month_value'] = actual_value
 
                         reporting_cost[energy_category_id]['same_month_last_year_value'] = \
                             base_cost[energy_category_id]['subtotal']
-                        values = reporting_cost[energy_category_id]['values']
-                        if isinstance(values, list) and values:
-                            reporting_cost[energy_category_id]['current_month_value'] = values[-1]
-                        else:
-                            reporting_cost[energy_category_id]['current_month_value'] = Decimal(0.0)
 
                 ########################################################################################################
                 # Step 11: query reporting period energy output
                 ########################################################################################################
                 reporting_output = dict()
                 if output_energy_category_set is not None and len(output_energy_category_set) > 0:
+                    reporting_month_label = get_reporting_month_label(reporting_end_datetime_utc, timezone_offset)
                     for energy_category_id in output_energy_category_set:
                         reporting_output[energy_category_id] = dict()
                         reporting_output[energy_category_id]['timestamps'] = list()
                         reporting_output[energy_category_id]['values'] = list()
                         reporting_output[energy_category_id]['subtotal'] = Decimal(0.0)
+                        reporting_output[energy_category_id]['current_month_value'] = Decimal(0.0)
 
                         cursor_energy.execute(" SELECT start_datetime_utc, actual_value "
                                               " FROM tbl_space_output_category_hourly "
@@ -716,14 +721,11 @@ class Reporting:
                             reporting_output[energy_category_id]['timestamps'].append(current_datetime)
                             reporting_output[energy_category_id]['values'].append(actual_value)
                             reporting_output[energy_category_id]['subtotal'] += actual_value
+                            if current_datetime == reporting_month_label:
+                                reporting_output[energy_category_id]['current_month_value'] = actual_value
 
                         reporting_output[energy_category_id]['same_month_last_year_value'] = \
                             base_output[energy_category_id]['subtotal']
-                        values = reporting_output[energy_category_id]['values']
-                        if isinstance(values, list) and values:
-                            reporting_output[energy_category_id]['current_month_value'] = values[-1]
-                        else:
-                            reporting_output[energy_category_id]['current_month_value'] = Decimal(0.0)
 
                 ########################################################################################################
                 # Step 12: query child spaces energy input

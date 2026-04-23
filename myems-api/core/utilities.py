@@ -7,6 +7,23 @@ import config
 import gettext
 
 
+def _align_start_datetime_to_slot(start_datetime_utc):
+    if start_datetime_utc is None:
+        return None
+
+    aligned_datetime_utc = start_datetime_utc.replace(second=0, microsecond=0, tzinfo=None)
+    slot_minutes = config.minutes_to_count
+    remainder = aligned_datetime_utc.minute % slot_minutes
+
+    if remainder != 0:
+        aligned_datetime_utc += timedelta(minutes=slot_minutes - remainder)
+
+    if aligned_datetime_utc < start_datetime_utc.replace(tzinfo=None):
+        aligned_datetime_utc += timedelta(minutes=slot_minutes)
+
+    return aligned_datetime_utc
+
+
 ########################################################################################################################
 # Aggregate hourly data by period
 #
@@ -272,8 +289,8 @@ def get_energy_category_tariffs(cost_center_id, energy_category_id, start_dateti
 
     result = dict()
     for tariff_id, tariff_value in tariff_dict.items():
-        current_datetime_utc = tariff_value['valid_from_datetime_utc']
-        while current_datetime_utc < tariff_value['valid_through_datetime_utc']:
+        current_datetime_utc = _align_start_datetime_to_slot(tariff_value['valid_from_datetime_utc'])
+        while current_datetime_utc is not None and current_datetime_utc <= tariff_value['valid_through_datetime_utc']:
             for rate in tariff_value['rates']:
                 current_datetime_local = current_datetime_utc + timedelta(minutes=timezone_offset)
                 seconds_since_midnight = (current_datetime_local -
@@ -388,8 +405,8 @@ def get_energy_category_peak_types(cost_center_id, energy_category_id, start_dat
 
     result = dict()
     for tariff_id, tariff_value in tariff_dict.items():
-        current_datetime_utc = tariff_value['valid_from_datetime_utc']
-        while current_datetime_utc < tariff_value['valid_through_datetime_utc']:
+        current_datetime_utc = _align_start_datetime_to_slot(tariff_value['valid_from_datetime_utc'])
+        while current_datetime_utc is not None and current_datetime_utc <= tariff_value['valid_through_datetime_utc']:
             for rate in tariff_value['rates']:
                 current_datetime_local = current_datetime_utc + timedelta(minutes=timezone_offset)
                 seconds_since_midnight = (current_datetime_local -
