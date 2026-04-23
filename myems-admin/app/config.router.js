@@ -2,8 +2,16 @@ app
     .run([
         '$rootScope', '$state', '$transitions', '$location', '$window',
         function ($rootScope, $state, $transitions, $location, $window) {
+            function normalizeAdminRoutes(user) {
+                var adminRoutes = user && Array.isArray(user.admin_routes) ? user.admin_routes : [];
+                return adminRoutes.filter(function(routeName) {
+                    return angular.isString(routeName) && routeName.trim().length > 0;
+                });
+            }
+
             $rootScope.$state = $state;
             $transitions.onStart( { }, function(trans) {
+                var currentUser;
                 if ($location.$$path.indexOf('login')==-1) {
                     if ($window.localStorage.getItem("myems_admin_ui_current_user")){
                         currentUser = JSON.parse($window.localStorage.getItem("myems_admin_ui_current_user"));
@@ -12,6 +20,21 @@ app
                         $window.localStorage.removeItem("myems_admin_ui_current_user");
                         return $state.target("login.login");
                     } else {
+                        currentUser.admin_routes = normalizeAdminRoutes(currentUser);
+                        if (currentUser.enterprise_space_id != null) {
+                            var allowedRoutes = currentUser.admin_routes;
+                            var targetStateName = trans.to().name;
+                            var hasAccess = allowedRoutes.some(function(routeName) {
+                                return targetStateName === routeName || targetStateName.indexOf(routeName + '.') === 0;
+                            });
+                            if (!hasAccess && targetStateName.indexOf('login.') !== 0) {
+                                var fallbackState = allowedRoutes.length > 0 ? allowedRoutes[0] : 'login.login';
+                                if (fallbackState === targetStateName) {
+                                    return $state.target('login.login');
+                                }
+                                return $state.target(fallbackState);
+                            }
+                        }
                         $rootScope.pageTitle = trans.to().data.pageTitle;
                         return undefined;
                     }
@@ -369,6 +392,7 @@ app
                                             }, {
                                                 serie: true,
                                                 files: [
+                                                    'app/services/settings/space/space.service.js',
                                                     'app/services/settings/costcenter/costcenter.service.js',
                                                     'app/services/settings/costcenter/costcentertariff.service.js',
                                                     'app/services/settings/tariff/tariff.service.js',
@@ -1988,8 +2012,10 @@ app
                                             }, {
                                                 serie: true,
                                                 files: [
+                                                    'app/services/settings/space/space.service.js',
                                                     'app/services/users/user/user.service.js',
                                                     'app/services/users/privilege/privilege.service.js',
+                                                    'app/services/users/menutemplate/menutemplate.service.js',
                                                     'app/controllers/users/user/user.controller.js',
                                                     'app/controllers/users/user/user.master.controller.js',
                                                 ]
@@ -2030,6 +2056,41 @@ app
                                                     'app/services/users/privilege/privilege.service.js',
                                                     'app/services/settings/space/space.service.js',
                                                     'app/controllers/users/privilege/privilege.controller.js'
+                                                ]
+                                            }]);
+                                        }
+                                    );
+                                }
+                            ]
+                        }
+                    })
+                    .state('users.menutemplate', {
+                        url: "/menu-template",
+                        templateUrl: "views/users/menutemplate/menutemplate.html",
+                        data: {
+                            pageTitle: 'MENU.USERSETTING.MENU_TEMPLATE'
+                        },
+                        resolve: {
+                            deps: [
+                                '$ocLazyLoad',
+                                function ($ocLazyLoad) {
+                                    return $ocLazyLoad.load(['ui.select', 'toaster']).then(
+                                        function () {
+                                            return $ocLazyLoad.load([{
+                                                files: ['js/plugins/sweetalert/sweetalert.min.js', 'css/plugins/sweetalert/sweetalert.css']
+                                            }, {
+                                                name: 'oitozero.ngSweetAlert',
+                                                files: ['js/plugins/sweetalert/angular-sweetalert.min.js']
+                                            }, {
+                                                files: ['js/plugins/footable/footable.all.min.js', 'css/plugins/footable/footable.core.css']
+                                            }, {
+                                                name: 'ui.footable',
+                                                files: ['js/plugins/footable/angular-footable.js']
+                                            }, {
+                                                serie: true,
+                                                files: [
+                                                    'app/services/users/menutemplate/menutemplate.service.js',
+                                                    'app/controllers/users/menutemplate/menutemplate.controller.js'
                                                 ]
                                             }]);
                                         }

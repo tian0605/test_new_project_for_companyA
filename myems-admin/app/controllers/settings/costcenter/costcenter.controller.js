@@ -7,9 +7,32 @@ app.controller('CostCenterController', function(
 	$uibModal,
 	$translate,
 	CostCenterService,
+	SpaceService,
 	toaster,
 	SweetAlert) {
 	$scope.cur_user = JSON.parse($window.localStorage.getItem("myems_admin_ui_current_user"));
+	$scope.enterpriseSpaces = [];
+	$scope.getEnterpriseSpaces = function() {
+		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
+		SpaceService.getAllSpaces(headers, function (response) {
+			if (angular.isDefined(response.status) && response.status === 200) {
+				$scope.enterpriseSpaces = (response.data || []).filter(function(space) {
+					return space.parent_space && space.parent_space.id === 1;
+				});
+			} else {
+				$scope.enterpriseSpaces = [];
+			}
+		});
+	};
+	$scope.getEnterpriseSpaceName = function(enterpriseSpaceId) {
+		if (enterpriseSpaceId == null) {
+			return '-';
+		}
+		const match = ($scope.enterpriseSpaces || []).find(function(space) {
+			return space.id === enterpriseSpaceId;
+		});
+		return match ? match.name : enterpriseSpaceId;
+	};
 	$scope.getAllCostCenters = function() {
 		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
 		CostCenterService.getAllCostCenters(headers, function (response) {
@@ -26,6 +49,14 @@ app.controller('CostCenterController', function(
 			templateUrl: 'views/settings/costcenter/costcenter.model.html',
 			controller: 'ModalAddCostCenterCtrl',
 			windowClass: "animated fadeIn",
+			resolve: {
+				params:function(){
+					return {
+						currentUser: angular.copy($scope.cur_user),
+						enterpriseSpaces: angular.copy($scope.enterpriseSpaces)
+					};
+				}
+			}
 		});
 		modalInstance.result.then(function(costcenter) {
 			let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
@@ -63,7 +94,9 @@ app.controller('CostCenterController', function(
 		        params:function(){
                     return {
                         costcenter:angular.copy(costcenter),
-                        costcenters:angular.copy($scope.costcenters)
+						costcenters:angular.copy($scope.costcenters),
+						currentUser: angular.copy($scope.cur_user),
+						enterpriseSpaces: angular.copy($scope.enterpriseSpaces)
                     };
                 }
 		    }
@@ -135,11 +168,17 @@ app.controller('CostCenterController', function(
 	};
 
 	$scope.getAllCostCenters();
+	$scope.getEnterpriseSpaces();
 
 });
 
-app.controller('ModalAddCostCenterCtrl', function ($scope, $uibModalInstance) {
+app.controller('ModalAddCostCenterCtrl', function ($scope, $uibModalInstance, params) {
     $scope.operation="SETTING.ADD_COSTCENTER";
+	$scope.currentUser = (params && params.currentUser) || {};
+	$scope.enterpriseSpaces = (params && params.enterpriseSpaces) || [];
+	$scope.costcenter = {
+		enterprise_space_id: $scope.currentUser.enterprise_space_id || null
+	};
     $scope.ok = function () {
         $uibModalInstance.close($scope.costcenter);
     };
@@ -153,6 +192,11 @@ app.controller('ModalEditCostCenterCtrl', function ($scope, $uibModalInstance, p
     $scope.operation="SETTING.EDIT_COSTCENTER";
     $scope.costcenter = params.costcenter;
     $scope.costcenters=params.costcenters;
+	$scope.currentUser = params.currentUser || {};
+	$scope.enterpriseSpaces = params.enterpriseSpaces || [];
+	if ($scope.currentUser.enterprise_space_id != null) {
+		$scope.costcenter.enterprise_space_id = $scope.currentUser.enterprise_space_id;
+	}
 
     $scope.ok = function() {
         $uibModalInstance.close($scope.costcenter);

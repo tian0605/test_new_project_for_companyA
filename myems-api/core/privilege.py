@@ -6,6 +6,10 @@ from core.useractivity import user_logger, admin_control
 import config
 
 
+def get_privilege_list_cache_key():
+    return 'G:privilege:admin:list'
+
+
 def clear_privilege_cache():
     """
     Clear privilege-related cache after data modification
@@ -27,9 +31,10 @@ def clear_privilege_cache():
         )
         redis_client.ping()
 
-        # Clear privilege list cache
-        list_cache_key = 'privilege:list'
-        redis_client.delete(list_cache_key)
+        redis_client.delete('privilege:list')
+        scoped_keys = redis_client.keys('G:privilege:admin:list')
+        if scoped_keys:
+            redis_client.delete(*scoped_keys)
 
     except Exception:
         # If cache clear fails, ignore and continue
@@ -76,7 +81,7 @@ class PrivilegeCollection:
         admin_control(req)
 
         # Redis cache key
-        cache_key = 'privilege:list'
+        cache_key = get_privilege_list_cache_key()
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)

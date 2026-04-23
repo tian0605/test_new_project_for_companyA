@@ -6,8 +6,154 @@ import simplejson as json
 import redis
 from anytree import AnyNode, LevelOrderIter
 from anytree.exporter import JsonExporter
-from core.useractivity import user_logger, admin_control, access_control, api_key_control
+from core.useractivity import user_logger, admin_control, access_control, api_key_control, get_request_context_value
 import config
+
+
+def get_space_scope(req):
+    is_admin = get_request_context_value(req, 'is_admin')
+    authorized_space_ids = get_request_context_value(req, 'authorized_space_ids')
+    if is_admin or authorized_space_ids is None:
+        return None
+    return set(authorized_space_ids)
+
+
+def get_space_cache_scope_key(req):
+    is_admin = bool(get_request_context_value(req, 'is_admin'))
+    enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+
+    if is_admin and enterprise_space_id is None:
+        return 'G:space:admin'
+    if enterprise_space_id is not None:
+        return f'E:{enterprise_space_id}:space'
+    return None
+
+
+def get_space_list_cache_key(req):
+    scope_key = get_space_cache_scope_key(req)
+    if scope_key is None:
+        return None
+    return f'{scope_key}:list'
+
+
+def get_space_item_cache_key(req, space_id):
+    scope_key = get_space_cache_scope_key(req)
+    if scope_key is None:
+        return None
+    return f'{scope_key}:item:{space_id}'
+
+
+def get_space_children_cache_key(req, space_id):
+    scope_key = get_space_cache_scope_key(req)
+    if scope_key is None:
+        return None
+    return f'{scope_key}:children:{space_id}'
+
+
+def get_space_tree_cache_key(req):
+    scope_key = get_space_cache_scope_key(req)
+    if scope_key is None:
+        return None
+    return f'{scope_key}:tree'
+
+
+def is_space_visible(space_scope, space_id):
+    return space_scope is None or space_id in space_scope
+
+
+def ensure_space_visible(req, space_id, description='API.SPACE_NOT_FOUND'):
+    space_scope = get_space_scope(req)
+    if not is_space_visible(space_scope, space_id):
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description=description)
+    return space_scope
+
+
+def is_cost_center_visible_for_request(req, cursor, space_scope, cost_center_id):
+    if cost_center_id is None:
+        return True
+
+    enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+    is_admin = bool(get_request_context_value(req, 'is_admin'))
+
+    if is_admin and enterprise_space_id is None:
+        cursor.execute(" SELECT id "
+                       " FROM tbl_cost_centers "
+                       " WHERE id = %s ", (cost_center_id,))
+        return cursor.fetchone() is not None
+
+    if enterprise_space_id is not None:
+        cursor.execute(" SELECT id "
+                       " FROM tbl_cost_centers "
+                       " WHERE id = %s AND enterprise_space_id = %s ",
+                       (cost_center_id, enterprise_space_id))
+        if cursor.fetchone() is not None:
+            return True
+
+    cursor.execute(" SELECT id "
+                   " FROM tbl_spaces "
+                   " WHERE cost_center_id = %s ", (cost_center_id,))
+    rows = cursor.fetchall()
+    if rows is None or len(rows) == 0:
+        return False
+
+    return any(is_space_visible(space_scope, row[0]) for row in rows)
+
+
+def get_visible_cost_center_dict(req, cursor, space_scope, rows_spaces):
+    visible_cost_center_ids = set()
+    if rows_spaces is not None and len(rows_spaces) > 0:
+        for row in rows_spaces:
+            if is_space_visible(space_scope, row[0]) and row[10] is not None:
+                visible_cost_center_ids.add(row[10])
+
+    if len(visible_cost_center_ids) == 0:
+        return dict()
+
+    enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+    is_admin = bool(get_request_context_value(req, 'is_admin'))
+
+    scoped_visible_cost_center_ids = set()
+    placeholders = ', '.join(['%s'] * len(visible_cost_center_ids))
+    if enterprise_space_id is not None:
+        cursor.execute((" SELECT id "
+                        " FROM tbl_cost_centers "
+                        " WHERE enterprise_space_id = %s "
+                        f"    OR (enterprise_space_id IS NULL AND id IN ({placeholders})) "),
+                       (enterprise_space_id, *tuple(sorted(visible_cost_center_ids))))
+        rows = cursor.fetchall()
+        if rows is not None:
+            scoped_visible_cost_center_ids.update(row[0] for row in rows)
+    elif is_admin:
+        scoped_visible_cost_center_ids = visible_cost_center_ids
+    else:
+        cursor.execute((" SELECT id "
+                        " FROM tbl_cost_centers "
+                        " WHERE enterprise_space_id IS NULL "
+                        f"   AND id IN ({placeholders}) "),
+                       tuple(sorted(visible_cost_center_ids)))
+        rows = cursor.fetchall()
+        if rows is not None:
+            scoped_visible_cost_center_ids.update(row[0] for row in rows)
+
+    if len(scoped_visible_cost_center_ids) == 0:
+        return dict()
+
+    placeholders = ', '.join(['%s'] * len(scoped_visible_cost_center_ids))
+    cursor.execute((" SELECT id, name, uuid "
+                    " FROM tbl_cost_centers "
+                    f" WHERE id IN ({placeholders}) "),
+                   tuple(sorted(scoped_visible_cost_center_ids)))
+    rows_cost_centers = cursor.fetchall()
+
+    cost_center_dict = dict()
+    if rows_cost_centers is not None and len(rows_cost_centers) > 0:
+        for row in rows_cost_centers:
+            if row[0] in scoped_visible_cost_center_ids:
+                cost_center_dict[row[0]] = {"id": row[0],
+                                            "name": row[1],
+                                            "uuid": row[2]}
+    return cost_center_dict
 
 
 def clear_space_cache(space_id=None, parent_space_id=None):
@@ -35,27 +181,45 @@ def clear_space_cache(space_id=None, parent_space_id=None):
         )
         redis_client.ping()
 
-        # Clear space list cache
-        list_cache_key = 'space:list'
-        redis_client.delete(list_cache_key)
+        # Clear legacy and scoped space list caches
+        redis_client.delete('space:list')
+        scoped_list_keys = redis_client.keys('G:space:admin:list') + redis_client.keys('E:*:space:list')
+        if scoped_list_keys:
+            redis_client.delete(*scoped_list_keys)
 
         # Clear specific space item cache if space_id is provided
         if space_id:
-            item_cache_key = f'space:item:{space_id}'
-            redis_client.delete(item_cache_key)
-            children_cache_key = f'space:children:{space_id}'
-            redis_client.delete(children_cache_key)
+            redis_client.delete(f'space:item:{space_id}')
+            scoped_item_keys = redis_client.keys(f'G:space:admin:item:{space_id}') + \
+                redis_client.keys(f'E:*:space:item:{space_id}')
+            if scoped_item_keys:
+                redis_client.delete(*scoped_item_keys)
+            redis_client.delete(f'space:children:{space_id}')
+            scoped_children_keys = redis_client.keys(f'G:space:admin:children:{space_id}') + \
+                redis_client.keys(f'E:*:space:children:{space_id}')
+            if scoped_children_keys:
+                redis_client.delete(*scoped_children_keys)
 
         # Clear parent space children cache if parent_space_id is provided
         if parent_space_id:
-            parent_children_cache_key = f'space:children:{parent_space_id}'
-            redis_client.delete(parent_children_cache_key)
+            redis_client.delete(f'space:children:{parent_space_id}')
+            parent_children_keys = redis_client.keys(f'G:space:admin:children:{parent_space_id}') + \
+                redis_client.keys(f'E:*:space:children:{parent_space_id}')
+            if parent_children_keys:
+                redis_client.delete(*parent_children_keys)
 
-        # Clear all space tree caches
-        pattern = 'space:tree:*'
-        keys = redis_client.keys(pattern)
+        # Clear all legacy and scoped space tree caches
+        legacy_tree_keys = redis_client.keys('space:tree:*')
+        scoped_tree_keys = redis_client.keys('G:space:admin:tree') + redis_client.keys('E:*:space:tree')
+        keys = legacy_tree_keys + scoped_tree_keys
         if keys:
             redis_client.delete(*keys)
+
+        dashboard_keys = redis_client.keys('dashboard:report:*') + \
+            redis_client.keys('G:dashboard:report:admin:*') + \
+            redis_client.keys('E:*:dashboard:report:*')
+        if dashboard_keys:
+            redis_client.delete(*dashboard_keys)
 
         # Clear space-related collection caches (meters, equipments, etc.)
         if space_id:
@@ -112,13 +276,15 @@ class SpaceCollection:
         else:
             api_key_control(req)
 
+        space_scope = get_space_scope(req)
+
         # Redis cache key
-        cache_key = 'space:list'
+        cache_key = get_space_list_cache_key(req)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
         redis_client = None
-        if config.redis.get('is_enabled', False):
+        if config.redis.get('is_enabled', False) and cache_key is not None:
             try:
                 redis_client = redis.Redis(
                     host=config.redis['host'],
@@ -155,9 +321,10 @@ class SpaceCollection:
                 space_dict = dict()
                 if rows_spaces is not None and len(rows_spaces) > 0:
                     for row in rows_spaces:
-                        space_dict[row[0]] = {"id": row[0],
-                                              "name": row[1],
-                                              "uuid": row[2]}
+                        if is_space_visible(space_scope, row[0]):
+                            space_dict[row[0]] = {"id": row[0],
+                                                  "name": row[1],
+                                                  "uuid": row[2]}
 
                 query = (" SELECT id, name, utc_offset "
                          " FROM tbl_timezones ")
@@ -183,18 +350,6 @@ class SpaceCollection:
                                                 "name": row[1],
                                                 "uuid": row[2]}
 
-                query = (" SELECT id, name, uuid "
-                         " FROM tbl_cost_centers ")
-                cursor.execute(query)
-                rows_cost_centers = cursor.fetchall()
-
-                cost_center_dict = dict()
-                if rows_cost_centers is not None and len(rows_cost_centers) > 0:
-                    for row in rows_cost_centers:
-                        cost_center_dict[row[0]] = {"id": row[0],
-                                                    "name": row[1],
-                                                    "uuid": row[2]}
-
                 query = (" SELECT id, name, uuid, "
                          "      parent_space_id, area, number_of_occupants, timezone_id, "
                          "      is_input_counted, is_output_counted, "
@@ -204,9 +359,17 @@ class SpaceCollection:
                 cursor.execute(query)
                 rows_spaces = cursor.fetchall()
 
-                result = list()
+                visible_rows_spaces = list()
                 if rows_spaces is not None and len(rows_spaces) > 0:
                     for row in rows_spaces:
+                        if is_space_visible(space_scope, row[0]):
+                            visible_rows_spaces.append(row)
+
+                cost_center_dict = get_visible_cost_center_dict(req, cursor, space_scope, visible_rows_spaces)
+
+                result = list()
+                if visible_rows_spaces is not None and len(visible_rows_spaces) > 0:
+                    for row in visible_rows_spaces:
                         meta_result = {"id": row[0],
                                        "name": row[1],
                                        "uuid": row[2],
@@ -232,7 +395,7 @@ class SpaceCollection:
 
         # Store result in Redis cache
         result_json = json.dumps(result)
-        if redis_client:
+        if redis_client and cache_key is not None:
             try:
                 redis_client.setex(cache_key, cache_expire, result_json)
             except Exception:
@@ -467,13 +630,18 @@ class SpaceItem:
             raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                    description='API.INVALID_METER_ID')
 
+        space_scope = get_space_scope(req)
+        if not is_space_visible(space_scope, int(id_)):
+            raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                   description='API.SPACE_NOT_FOUND')
+
         # Redis cache key
-        cache_key = f'space:item:{id_}'
+        cache_key = get_space_item_cache_key(req, id_)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
         redis_client = None
-        if config.redis.get('is_enabled', False):
+        if config.redis.get('is_enabled', False) and cache_key is not None:
             try:
                 redis_client = redis.Redis(
                     host=config.redis['host'],
@@ -510,9 +678,10 @@ class SpaceItem:
                 space_dict = dict()
                 if rows_spaces is not None and len(rows_spaces) > 0:
                     for row in rows_spaces:
-                        space_dict[row[0]] = {"id": row[0],
-                                              "name": row[1],
-                                              "uuid": row[2]}
+                        if is_space_visible(space_scope, row[0]):
+                            space_dict[row[0]] = {"id": row[0],
+                                                  "name": row[1],
+                                                  "uuid": row[2]}
 
                 query = (" SELECT id, name, utc_offset "
                          " FROM tbl_timezones ")
@@ -538,18 +707,6 @@ class SpaceItem:
                                                 "name": row[1],
                                                 "uuid": row[2]}
 
-                query = (" SELECT id, name, uuid "
-                         " FROM tbl_cost_centers ")
-                cursor.execute(query)
-                rows_cost_centers = cursor.fetchall()
-
-                cost_center_dict = dict()
-                if rows_cost_centers is not None and len(rows_cost_centers) > 0:
-                    for row in rows_cost_centers:
-                        cost_center_dict[row[0]] = {"id": row[0],
-                                                    "name": row[1],
-                                                    "uuid": row[2]}
-
                 query = (" SELECT id, name, uuid, "
                          "       parent_space_id, area, number_of_occupants, timezone_id, "
                          "       is_input_counted, is_output_counted, "
@@ -563,6 +720,9 @@ class SpaceItem:
                     raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                            description='API.SPACE_NOT_FOUND')
                 else:
+                    cost_center_dict = get_visible_cost_center_dict(req, cursor, space_scope, [row])
+                    visible_cost_center = cost_center_dict.get(row[10], None)
+
                     meta_result = {"id": row[0],
                                    "name": row[1],
                                    "uuid": row[2],
@@ -573,7 +733,7 @@ class SpaceItem:
                                    "is_input_counted": bool(row[7]),
                                    "is_output_counted": bool(row[8]),
                                    "contact": contact_dict.get(row[9], None),
-                                   "cost_center": cost_center_dict.get(row[10], None),
+                                   "cost_center": visible_cost_center,
                                    "latitude": row[11],
                                    "longitude": row[12],
                                    "description": row[13],
@@ -587,7 +747,7 @@ class SpaceItem:
 
         # Store result in Redis cache
         result_json = json.dumps(meta_result)
-        if redis_client:
+        if redis_client and cache_key is not None:
             try:
                 redis_client.setex(cache_key, cache_expire, result_json)
             except Exception:
@@ -932,13 +1092,18 @@ class SpaceChildrenCollection:
             raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                    description='API.INVALID_SPACE_ID')
 
+        space_scope = get_space_scope(req)
+        if not is_space_visible(space_scope, int(id_)):
+            raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                   description='API.SPACE_NOT_FOUND')
+
         # Redis cache key
-        cache_key = f'space:children:{id_}'
+        cache_key = get_space_children_cache_key(req, id_)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
         redis_client = None
-        if config.redis.get('is_enabled', False):
+        if config.redis.get('is_enabled', False) and cache_key is not None:
             try:
                 redis_client = redis.Redis(
                     host=config.redis['host'],
@@ -988,9 +1153,10 @@ class SpaceChildrenCollection:
                 space_dict = dict()
                 if rows_spaces is not None and len(rows_spaces) > 0:
                     for row in rows_spaces:
-                        space_dict[row[0]] = {"id": row[0],
-                                              "name": row[1],
-                                              "uuid": row[2]}
+                        if is_space_visible(space_scope, row[0]):
+                            space_dict[row[0]] = {"id": row[0],
+                                                  "name": row[1],
+                                                  "uuid": row[2]}
 
                 query = (" SELECT id, name, utc_offset "
                          " FROM tbl_timezones ")
@@ -1016,17 +1182,19 @@ class SpaceChildrenCollection:
                                                 "name": row[1],
                                                 "uuid": row[2]}
 
-                query = (" SELECT id, name, uuid "
-                         " FROM tbl_cost_centers ")
-                cursor.execute(query)
-                rows_cost_centers = cursor.fetchall()
+                query = (" SELECT id, name, uuid, "
+                         "        parent_space_id, area, number_of_occupants, timezone_id, "
+                         "        is_input_counted, is_output_counted, "
+                         "        contact_id, cost_center_id, latitude, longitude, description "
+                         " FROM tbl_spaces "
+                         " WHERE parent_space_id = %s "
+                         " ORDER BY id ")
+                cursor.execute(query, (id_, ))
+                rows_children = cursor.fetchall()
 
-                cost_center_dict = dict()
-                if rows_cost_centers is not None and len(rows_cost_centers) > 0:
-                    for row in rows_cost_centers:
-                        cost_center_dict[row[0]] = {"id": row[0],
-                                                    "name": row[1],
-                                                    "uuid": row[2]}
+                rows_for_cost_center_scope = list(rows_children) if rows_children is not None else list()
+                rows_for_cost_center_scope.append(row_current_space)
+                cost_center_dict = get_visible_cost_center_dict(req, cursor, space_scope, rows_for_cost_center_scope)
                 result = dict()
                 result['current'] = dict()
                 result['current']['id'] = row_current_space[0]
@@ -1047,18 +1215,10 @@ class SpaceChildrenCollection:
 
                 result['children'] = list()
 
-                query = (" SELECT id, name, uuid, "
-                         "        parent_space_id, area, number_of_occupants, timezone_id, "
-                         "        is_input_counted, is_output_counted, "
-                         "        contact_id, cost_center_id, latitude, longitude, description "
-                         " FROM tbl_spaces "
-                         " WHERE parent_space_id = %s "
-                         " ORDER BY id ")
-                cursor.execute(query, (id_, ))
-                rows_spaces = cursor.fetchall()
-
-                if rows_spaces is not None and len(rows_spaces) > 0:
-                    for row in rows_spaces:
+                if rows_children is not None and len(rows_children) > 0:
+                    for row in rows_children:
+                        if not is_space_visible(space_scope, row[0]):
+                            continue
                         meta_result = {"id": row[0],
                                        "name": row[1],
                                        "uuid": row[2],
@@ -1084,7 +1244,7 @@ class SpaceChildrenCollection:
 
         # Store result in Redis cache
         result_json = json.dumps(result)
-        if redis_client:
+        if redis_client and cache_key is not None:
             try:
                 redis_client.setex(cache_key, cache_expire, result_json)
             except Exception:
@@ -3753,83 +3913,40 @@ class SpaceTreeCollection:
     @staticmethod
     def on_get(req, resp):
         access_control(req)
-        if 'USER-UUID' not in req.headers or \
-                not isinstance(req.headers['USER-UUID'], str) or \
-                len(str.strip(req.headers['USER-UUID'])) == 0:
-            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
-                                   description='API.INVALID_USER_UUID')
-        user_uuid = str.strip(req.headers['USER-UUID'])
+        space_scope = get_space_scope(req)
+        enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+        is_admin = bool(get_request_context_value(req, 'is_admin'))
 
-        if 'TOKEN' not in req.headers or \
-                not isinstance(req.headers['TOKEN'], str) or \
-                len(str.strip(req.headers['TOKEN'])) == 0:
-            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
-                                   description='API.INVALID_TOKEN')
-        token = str.strip(req.headers['TOKEN'])
+        if is_admin and enterprise_space_id is None:
+            space_id = 1
+        else:
+            space_id = enterprise_space_id
 
-        # Optimized: Use a single JOIN query to get session, user, and privilege data
-        cnx = None
-        cursor = None
-        try:
-            cnx = mysql.connector.connect(**config.myems_user_db)
+        if space_id is None:
+            raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                   description='API.SPACE_NOT_FOUND')
+
+        cache_key = get_space_tree_cache_key(req)
+        cache_expire = 28800
+        redis_client = None
+        if config.redis.get('is_enabled', False) and cache_key is not None:
             try:
-                cursor = cnx.cursor()
-                # Combined query to get session expiry, user admin status, privilege_id, and privilege data in one go
-                query = (" SELECT s.utc_expires, u.is_admin, u.privilege_id, p.data "
-                         " FROM tbl_sessions s "
-                         " INNER JOIN tbl_users u ON s.user_uuid = u.uuid "
-                         " LEFT JOIN tbl_privileges p ON u.privilege_id = p.id "
-                         " WHERE s.user_uuid = %s AND s.token = %s")
-                cursor.execute(query, (user_uuid, token,))
-                row = cursor.fetchone()
-
-                if row is None:
-                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                           description='API.USER_SESSION_NOT_FOUND')
-
-                utc_expires = row[0]
-                if datetime.utcnow() > utc_expires:
-                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
-                                           description='API.USER_SESSION_TIMEOUT')
-
-                is_admin = bool(row[1])
-                privilege_id = row[2]
-                privilege_data = row[3]
-
-                # get space_id in privilege
-                if is_admin:
-                    space_id = 1
-                elif privilege_id is None:
-                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                           description='API.PRIVILEGE_NOT_FOUND')
-                else:
-                    if privilege_data is None:
-                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                               description='API.PRIVILEGE_NOT_FOUND')
-                    try:
-                        data = json.loads(privilege_data)
-                    except json.JSONDecodeError as ex:
-                        print("Failed to parse JSON")
-                        raise falcon.HTTPError(status=falcon.HTTP_400,
-                                               title='API.BAD_REQUEST',
-                                               description='API.INVALID_JSON_FORMAT')
-                    except Exception as ex:
-                        raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR', description=str(ex))
-
-                    if 'spaces' not in data or len(data['spaces']) == 0:
-                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                               description='API.SPACE_NOT_FOUND_IN_PRIVILEGE')
-
-                    space_id = data['spaces'][0]
-                    if space_id is None:
-                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                               description='API.PRIVILEGE_NOT_FOUND')
-            finally:
-                if cursor:
-                    cursor.close()
-        finally:
-            if cnx:
-                cnx.close()
+                redis_client = redis.Redis(
+                    host=config.redis['host'],
+                    port=config.redis['port'],
+                    password=config.redis['password'] if config.redis['password'] else None,
+                    db=config.redis['db'],
+                    decode_responses=True,
+                    socket_connect_timeout=2,
+                    socket_timeout=2
+                )
+                redis_client.ping()
+                cached_result = redis_client.get(cache_key)
+                if cached_result:
+                    resp.text = cached_result
+                    return
+            except Exception:
+                pass
 
         # get all spaces
         cnx = None
@@ -3846,10 +3963,22 @@ class SpaceTreeCollection:
                 node_dict = dict()
                 if rows_spaces is not None and len(rows_spaces) > 0:
                     for row in rows_spaces:
-                        parent_node = node_dict[row[2]] if row[2] is not None else None
+                        if not is_space_visible(space_scope, row[0]):
+                            continue
+                        parent_node = node_dict.get(row[2]) if row[2] is not None else None
                         node_dict[row[0]] = AnyNode(id=row[0], parent=parent_node, name=row[1])
 
-                resp.text = JsonExporter(sort_keys=True).export(node_dict[space_id], )
+                if space_id not in node_dict:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.SPACE_NOT_FOUND')
+
+                result_json = JsonExporter(sort_keys=True).export(node_dict[space_id], )
+                if redis_client and cache_key is not None:
+                    try:
+                        redis_client.setex(cache_key, cache_expire, result_json)
+                    except Exception:
+                        pass
+                resp.text = result_json
             finally:
                 if cursor:
                     cursor.close()
@@ -3909,7 +4038,7 @@ class SpaceTreeMetersEnergyCategoryCollection:
                 node_dict = dict()
                 if rows_spaces is not None and len(rows_spaces) > 0:
                     for row in rows_spaces:
-                        parent_node = node_dict[row[2]] if row[2] is not None else None
+                        parent_node = node_dict.get(row[2]) if row[2] is not None else None
                         node_dict[row[0]] = AnyNode(id=row[0], parent=parent_node, name=row[1])
                 ####################################################################################################
                 # Step 3: query energy categories of all meters in the space tree
@@ -4351,6 +4480,8 @@ class SpaceExport:
             raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                    description='API.INVALID_METER_ID')
 
+        space_scope = ensure_space_visible(req, int(id_))
+
         cnx = None
         cursor = None
         try:
@@ -4394,18 +4525,6 @@ class SpaceExport:
                                                 "name": row[1],
                                                 "uuid": row[2]}
 
-                query = (" SELECT id, name, uuid "
-                         " FROM tbl_cost_centers ")
-                cursor.execute(query)
-                rows_cost_centers = cursor.fetchall()
-
-                cost_center_dict = dict()
-                if rows_cost_centers is not None and len(rows_cost_centers) > 0:
-                    for row in rows_cost_centers:
-                        cost_center_dict[row[0]] = {"id": row[0],
-                                                    "name": row[1],
-                                                    "uuid": row[2]}
-
                 query = (" SELECT id, name, uuid, "
                          "        parent_space_id, area, timezone_id, is_input_counted, is_output_counted, "
                          "        contact_id, cost_center_id, latitude, longitude, description "
@@ -4418,6 +4537,7 @@ class SpaceExport:
                     raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                            description='API.SPACE_NOT_FOUND')
                 else:
+                    cost_center_dict = get_visible_cost_center_dict(req, cursor, space_scope, [row])
                     meta_result = {
                                    "name": row[1],
                                    "parent_space_id": space_dict.get(row[3], None),
@@ -4492,17 +4612,6 @@ class SpaceExport:
                                                     "name": row[1],
                                                     "uuid": row[2]}
 
-                    query = (" SELECT id, name, uuid "
-                             " FROM tbl_cost_centers ")
-                    cursor.execute(query)
-                    rows_cost_centers = cursor.fetchall()
-
-                    cost_center_dict = dict()
-                    if rows_cost_centers is not None and len(rows_cost_centers) > 0:
-                        for row in rows_cost_centers:
-                            cost_center_dict[row[0]] = {"id": row[0],
-                                                        "name": row[1],
-                                                        "uuid": row[2]}
                     result = dict()
                     result['current'] = dict()
                     result['current']['id'] = row_current_space[0]
@@ -4531,8 +4640,18 @@ class SpaceExport:
                     cursor.execute(query, (id_,))
                     rows_spaces = cursor.fetchall()
 
+                    visible_rows_spaces = list()
                     if rows_spaces is not None and len(rows_spaces) > 0:
-                        for row in rows_spaces:
+                        for child_row in rows_spaces:
+                            if is_space_visible(space_scope, child_row[0]):
+                                visible_rows_spaces.append(child_row)
+
+                    rows_for_cost_center_scope = list(visible_rows_spaces)
+                    rows_for_cost_center_scope.append(row_current_space)
+                    cost_center_dict = get_visible_cost_center_dict(req, cursor, space_scope, rows_for_cost_center_scope)
+
+                    if visible_rows_spaces is not None and len(visible_rows_spaces) > 0:
+                        for row in visible_rows_spaces:
                             children_result = {"id": row[0],
                                                "name": row[1],
                                                "uuid": row[2],
@@ -4896,6 +5015,7 @@ class SpaceImport:
             cnx = mysql.connector.connect(**config.myems_system_db)
             try:
                 cursor = cnx.cursor()
+                space_scope = get_space_scope(req)
 
                 cursor.execute(" SELECT name "
                                " FROM tbl_spaces "
@@ -4905,6 +5025,9 @@ class SpaceImport:
                                            description='API.SPACE_NAME_IS_ALREADY_IN_USE')
 
                 if parent_space_id is not None:
+                    if not is_space_visible(space_scope, parent_space_id):
+                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                               description='API.PARENT_SPACE_NOT_FOUND')
                     cursor.execute(" SELECT name "
                                    " FROM tbl_spaces "
                                    " WHERE id = %s ",
@@ -4932,6 +5055,9 @@ class SpaceImport:
                                                description='API.CONTACT_NOT_FOUND')
 
                 if cost_center_id is not None:
+                    if not is_cost_center_visible_for_request(req, cursor, space_scope, cost_center_id):
+                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                               description='API.COST_CENTER_NOT_FOUND')
                     cursor.execute(" SELECT name "
                                    " FROM tbl_cost_centers "
                                    " WHERE id = %s ",
@@ -5234,6 +5360,8 @@ class SpaceClone:
             raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                    description='API.THIS_SPACE_CANNOT_BE_CLONED')
 
+        space_scope = ensure_space_visible(req, int(id_))
+
         cnx = None
         cursor = None
         try:
@@ -5303,6 +5431,12 @@ class SpaceClone:
                     raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                            description='API.SPACE_NOT_FOUND')
                 else:
+                    if row[3] is not None and not is_space_visible(space_scope, row[3]):
+                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                               description='API.PARENT_SPACE_NOT_FOUND')
+                    if row[9] is not None and not is_cost_center_visible_for_request(req, cursor, space_scope, row[9]):
+                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                               description='API.COST_CENTER_NOT_FOUND')
                     # save the source space properties to meta_result
                     meta_result = {"id": row[0],
                                    "name": row[1],

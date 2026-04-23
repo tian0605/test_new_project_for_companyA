@@ -20,6 +20,22 @@ app.controller('LoginController', function (
 	$scope.language = $window.localStorage.getItem("myems_admin_ui_language") || "zh_CN"; //zh_CN, en, de, fr, es, ru, ar, vi, th, tr, ms, id, zh_TW, pt
 	$scope.fullScreenTitle = "FULLSCREEN";
 	$scope.cur_user = JSON.parse($window.localStorage.getItem("myems_admin_ui_current_user"));
+	$scope.normalizeAdminRoutes = function(user) {
+		const adminRoutes = user && Array.isArray(user.admin_routes) ? user.admin_routes : [];
+		return adminRoutes.filter(function(route) {
+			return angular.isString(route) && route.trim().length > 0;
+		});
+	};
+	$scope.getDefaultAdminRoute = function(user) {
+		if (!user || !user.is_admin) {
+			return '/login';
+		}
+		if (user.enterprise_space_id == null) {
+			return '/settings/space';
+		}
+		const firstRoute = $scope.normalizeAdminRoutes(user)[0];
+		return firstRoute ? '/' + firstRoute.replace(/\./g, '/') : '/login';
+	};
 	// login section start
 	$scope.login = function (user, captcha, captchaText, refreshCaptcha) {
 		if(captcha.toLowerCase() !== captchaText.toLowerCase()){
@@ -52,6 +68,7 @@ app.controller('LoginController', function (
 					$scope.dataLoading = false;
 					return;
 				}
+				response.data.admin_routes = $scope.normalizeAdminRoutes(response.data);
 				// toaster type options: 'error','info','wait','success','warning'
 				toaster.pop({
 					type: "success",
@@ -62,7 +79,7 @@ app.controller('LoginController', function (
 				$window.localStorage.setItem("myems_admin_ui_current_user", JSON.stringify(response.data));
 
 				$scope.createCookie('is_logged_in', true, 1000 * 60 * 5 * 1);
-				$location.path('/settings/space');
+				$location.path($scope.getDefaultAdminRoute(response.data));
 				$scope.cur_user = JSON.parse($window.localStorage.getItem("myems_admin_ui_current_user"));
 			} else {
 				toaster.pop({

@@ -39,7 +39,55 @@ import redis
 import hashlib
 import config
 from core import utilities
-from core.useractivity import access_control, api_key_control
+from core.useractivity import access_control, api_key_control, get_request_context_value, get_user_permission_context
+
+
+def get_reporting_space_id(req, requested_user_uuid):
+    permission_context = get_request_context_value(req, 'permission_context')
+    current_user_uuid = get_request_context_value(req, 'user_uuid')
+
+    if current_user_uuid is None and requested_user_uuid is not None:
+        permission_context = get_user_permission_context(requested_user_uuid)
+
+    if permission_context is None:
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description='API.USER_NOT_FOUND')
+
+    enterprise_space_id = permission_context.get('enterprise_space_id')
+    if permission_context.get('is_admin') and enterprise_space_id is None:
+        return 1
+
+    if enterprise_space_id is None:
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description='API.SPACE_NOT_FOUND')
+
+    return enterprise_space_id
+
+
+def get_reporting_permission_context(req, requested_user_uuid):
+    permission_context = get_request_context_value(req, 'permission_context')
+    current_user_uuid = get_request_context_value(req, 'user_uuid')
+
+    if current_user_uuid is None and requested_user_uuid is not None:
+        permission_context = get_user_permission_context(requested_user_uuid)
+
+    return permission_context
+
+
+def get_dashboard_cache_key(permission_context, cache_material):
+    if permission_context is None:
+        return None
+
+    enterprise_space_id = permission_context.get('enterprise_space_id')
+    is_admin = bool(permission_context.get('is_admin'))
+    cache_material['enterprise_space_id'] = enterprise_space_id
+    cache_key_hash = hashlib.md5(json.dumps(cache_material, sort_keys=True).encode('utf-8')).hexdigest()
+
+    if is_admin and enterprise_space_id is None:
+        return f'G:dashboard:report:admin:{cache_key_hash}'
+    if enterprise_space_id is not None:
+        return f'E:{enterprise_space_id}:dashboard:report:{cache_key_hash}'
+    return None
 
 
 class Reporting:
@@ -166,6 +214,9 @@ class Reporting:
             raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                    description='API.INVALID_REPORTING_PERIOD_END_DATETIME')
 
+        permission_context = get_reporting_permission_context(req, user_uuid)
+        space_id = get_reporting_space_id(req, user_uuid)
+
         # Redis cache: cache whole report response based on request parameters.
         # Cache key uses a hash of normalized request fields to keep it short & deterministic.
         cache_expire = 1800  # 30 minutes
@@ -180,11 +231,10 @@ class Reporting:
             'reporting_start_utc': reporting_start_datetime_utc.isoformat() if reporting_start_datetime_utc is not None else None,
             'reporting_end_utc': reporting_end_datetime_utc_cache.isoformat() if reporting_end_datetime_utc_cache is not None else None,
         }
-        cache_key_hash = hashlib.md5(json.dumps(cache_material, sort_keys=True).encode('utf-8')).hexdigest()
-        cache_key = f'dashboard:report:{cache_key_hash}'
+        cache_key = get_dashboard_cache_key(permission_context, cache_material)
 
         redis_client = None
-        if config.redis.get('is_enabled'):
+        if config.redis.get('is_enabled') and cache_key is not None:
             try:
                 redis_client = redis.Redis(
                     host=config.redis['host'],
@@ -211,48 +261,6 @@ class Reporting:
         ################################################################################################################
         # Step 2: query the space
         ################################################################################################################
-
-        cnx_user = None
-        cursor_user = None
-        try:
-            cnx_user = mysql.connector.connect(**config.myems_user_db)
-            try:
-                cursor_user = cnx_user.cursor()
-                cursor_user.execute(" SELECT id, is_admin, privilege_id "
-                                    " FROM tbl_users "
-                                    " WHERE uuid = %s ", (user_uuid,))
-                row_user = cursor_user.fetchone()
-                if row_user is None:
-                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                           description='API.USER_NOT_FOUND')
-
-                user = {'id': row_user[0], 'is_admin': row_user[1], 'privilege_id': row_user[2]}
-                if user['is_admin']:
-                    # todo: make sure the space id is always 1 for admin
-                    space_id = 1
-                else:
-                    cursor_user.execute(" SELECT data "
-                                        " FROM tbl_privileges "
-                                        " WHERE id = %s ", (user['privilege_id'],))
-                    row_privilege = cursor_user.fetchone()
-                    if row_privilege is None:
-                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                               description='API.USER_PRIVILEGE_NOT_FOUND')
-
-                    privilege_data = json.loads(row_privilege[0])
-                    if 'spaces' not in privilege_data.keys() \
-                            or privilege_data['spaces'] is None \
-                            or len(privilege_data['spaces']) == 0:
-                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                               description='API.USER_PRIVILEGE_NOT_FOUND')
-                    # todo: how to deal with multiple spaces in privilege data
-                    space_id = privilege_data['spaces'][0]
-            finally:
-                if cursor_user is not None:
-                    cursor_user.close()
-        finally:
-            if cnx_user is not None:
-                cnx_user.close()
 
         cnx_system = None
         cursor_system = None

@@ -472,7 +472,7 @@ The system uses many junction tables to build many-to-many relationships:
 
 | Table | Description | Key columns |
 |------|-------------|-------------|
-| `tbl_users` | Users | `id`, `name`, `uuid`, `display_name`, `email`, `salt`, `password`, `is_admin`, `is_read_only`, `privilege_id`, `account_expiration_datetime_utc`, `password_expiration_datetime_utc`, `failed_login_count` |
+| `tbl_users` | Users | `id`, `name`, `uuid`, `display_name`, `email`, `salt`, `password`, `is_admin`, `is_read_only`, `privilege_id`, `enterprise_space_id`, `account_expiration_datetime_utc`, `password_expiration_datetime_utc`, `failed_login_count` |
 | `tbl_privileges` | Privileges | `id`, `name`, `data` (JSON format) |
 | `tbl_sessions` | Sessions | `id`, `user_uuid`, `token`, `utc_expires` |
 | `tbl_api_keys` | API keys | `id`, `name`, `token`, `created_datetime_utc`, `expires_datetime_utc` |

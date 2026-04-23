@@ -116,5 +116,13 @@ app.factory('UserService', function($http) {
                 callback(response);
             });
         },
+        getAllMenuTemplates: function(headers, callback) {
+            $http.get(getAPI()+'menu-templates', {headers})
+            .then(function (response) {
+                callback(response);
+            }, function (response) {
+                callback(response);
+            });
+        },
     };
 });  

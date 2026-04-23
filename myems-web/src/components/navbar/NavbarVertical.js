@@ -4,7 +4,6 @@ import PropTypes from 'prop-types';
 import React, { useContext, useEffect, useRef, useState } from 'react';
 import { Button, Collapse, Nav, Navbar } from 'reactstrap';
 import bgNavbarImg from '../../assets/img/generic/bg-navbar.png';
-import wechatQRCode from '../../assets/img/contact/wechat_qr_code.png';
 import { APIBaseURL, settings, navbarBreakPoint, topNavbarBreakpoint } from '../../config';
 import AppContext from '../../context/Context';
 import routes from '../../routes';
@@ -194,6 +193,7 @@ const NavbarVertical = ({ setRedirectUrl, setRedirect, navbarStyle, t }) => {
               </Nav>
             </div>
           )}
+          {/*
           <div className="navbar-vertical-divider">
             <hr className="navbar-vertical-hr my-2" />
           </div>
@@ -255,29 +255,9 @@ const NavbarVertical = ({ setRedirectUrl, setRedirect, navbarStyle, t }) => {
                   +86 130 1113 2526
                 </a>
               </div>
-              <div
-                className="text-center mt-2 pt-2"
-                style={{
-                  borderTop: `1px dashed ${isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(17, 24, 39, 0.1)'}`
-                }}
-              >
-                <div
-                  className="d-inline-block rounded p-1 mx-auto"
-                  style={{
-                    backgroundColor: isDark ? 'rgba(255, 255, 255, 0.98)' : '#fff',
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.08)'
-                  }}
-                >
-                  <img
-                    src={wechatQRCode}
-                    alt="微信二维码"
-                    className="rounded"
-                    style={{ maxWidth: 88, width: '100%', height: 'auto', display: 'block' }}
-                  />
-                </div>
-              </div>
             </div>
           </div>
+          */}
         </div>
       </Collapse>
     </Navbar>

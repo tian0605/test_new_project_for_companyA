@@ -15,6 +15,7 @@
 								<thead>
 									<tr>
 										<th class="text-center" data-type="numeric">{{'SETTING.ID' | translate}}</th>
+										<th class="text-center">{{'USER.ENTERPRISE_SPACE' | translate}}</th>
 										<th class="text-center">{{'SETTING.NAME' | translate}}</th>
 										<th class="text-center">{{'COSTCENTER.EXTERNAL_ID' | translate}}</th>
 										<th class="text-center">{{'SETTING.ACTION' | translate}}</th>
@@ -23,6 +24,7 @@
 								<tbody>
 									<tr ng-repeat="costcenter in costcenters">
 										<td class="text-center">{{ costcenter.id }}</td>
+										<td class="text-center">{{ getEnterpriseSpaceName(costcenter.enterprise_space_id) }}</td>
 										<td class="text-center">{{ costcenter.name }}</td>
 										<td class="text-center">{{ costcenter.external_id }}</td>
 										<td class="text-center">
@@ -88,7 +90,7 @@
 											{{'SETTING.TRASH' | translate}}
 										</div>
 										<div class="panel-body trash">
-											<img class="trashcan" src="img/trashcan.png" x-hjc-drop-target="true"
+											<img class="trashcan" src="img/trashcan.png" alt="trashcan" title="trashcan" x-hjc-drop-target="true"
 												x-on-drop="deleteTariffPair(dragEl,dropEl)">
 										</div>
 									</div>

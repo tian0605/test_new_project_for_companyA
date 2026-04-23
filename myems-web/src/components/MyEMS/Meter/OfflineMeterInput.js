@@ -57,9 +57,11 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
     }
   });
   const [meterList, setMeterList] = useState([]);
-  const [OfflinemeterName, setOfflinemeterName] = useState([{ value: 0, label: '' }]);
+  const [OfflinemeterName, setOfflinemeterName] = useState([]);
   const [Offlinemeter, setOfflinemeter] = useState('');
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
+
+  const hasSelectedOfflineMeter = value => value !== null && value !== undefined && String(value).trim().length > 0;
 
   //Query From
   const [reportingPeriodDateRange, setReportingPeriodDateRange] = useState([
@@ -115,9 +117,13 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
           if (typeDatadic.length >= 1) {
             tempmeterid = typeDatadic[0].value;
             setOfflinemeter(tempmeterid);
+            setSubmitButtonDisabled(false);
+          } else {
+            setOfflinemeter('');
+            setMeterList([]);
+            setSubmitButtonDisabled(true);
           }
           setOfflinemeterName(typeDatadic);
-          setSubmitButtonDisabled(false);
           setSpinnerHidden(true);
         } else {
           toast.error(json.description);
@@ -129,6 +135,14 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
   };
 
   const getmeterslistdata = async () => {
+    if (!hasSelectedOfflineMeter(Offlinemeter)) {
+      setSubmitButtonDisabled(true);
+      setSpinnerHidden(true);
+      setExportButtonHidden(true);
+      setMeterList([]);
+      return;
+    }
+
     let isResponseOK = false;
     await fetch(
       APIBaseURL +
@@ -257,6 +271,13 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
   // Handler
   const handleSubmit = e => {
     e.preventDefault();
+    if (!hasSelectedOfflineMeter(Offlinemeter)) {
+      setSubmitButtonDisabled(true);
+      setSpinnerHidden(true);
+      setExportButtonHidden(true);
+      setMeterList([]);
+      return;
+    }
     // disable submit button
     setSubmitButtonDisabled(true);
     // show spinner
@@ -271,6 +292,7 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
 
   let OfflinemeterChange = ({ target }) => {
     setOfflinemeter(target.value);
+    setSubmitButtonDisabled(!hasSelectedOfflineMeter(target.value));
   };
   const saveChange = async (oldValue, newValue, row, column) => {
     if (newValue == null || newValue === '' || newValue < 0 || oldValue === newValue) {
@@ -345,7 +367,8 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
                     {t('Offline Meter')}
                   </Label>
                   <br />
-                  <CustomInput type="select" id="CustomInput" bsSize="sm" onChange={OfflinemeterChange}>
+                  <CustomInput type="select" id="CustomInput" bsSize="sm" value={Offlinemeter} onChange={OfflinemeterChange}>
+                    <option value=""></option>
                     {OfflinemeterName.map((Offlinemeter, index) => (
                       <option value={Offlinemeter.value} key={Offlinemeter.value}>
                         {t(Offlinemeter.label)}

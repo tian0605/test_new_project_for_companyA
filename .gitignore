@@ -8,6 +8,9 @@ logs
 # Environment files
 .env
 **/.env
+.venv/
+.local/
+.backup/
 #################
 ## JetBrains
 #################

@@ -224,8 +224,10 @@ CREATE TABLE IF NOT EXISTS `myems_system_db`.`tbl_cost_centers` (
   `name` VARCHAR(128) NOT NULL,
   `uuid` CHAR(36) NOT NULL,
   `external_id` VARCHAR(36) COMMENT 'ID in external syste, such as SAP, ERP',
+  `enterprise_space_id` BIGINT,
   PRIMARY KEY (`id`));
 CREATE INDEX `tbl_cost_centers_index_1` ON `myems_system_db`.`tbl_cost_centers` (`name`);
+CREATE INDEX `tbl_cost_centers_index_2` ON `myems_system_db`.`tbl_cost_centers` (`enterprise_space_id`);
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Table `myems_system_db`.`tbl_cost_centers_tariffs`
@@ -956,9 +958,9 @@ VALUES
 (109,'Saving','/space/saving',100,1),
 (110,'Carbon','/space/carbon',100,0),
 (111,'Environment Monitor','/space/environmentmonitor',100,0),
-(112,'Plan','/space/plan',100,1),
-(113,'Production','/space/production',100,1),
-(114,'Enter Production','/space/enterproduction',100,1),
+(112,'Plan','/space/plan',100,0),
+(113,'Production','/space/production',100,0),
+(114,'Enter Production','/space/enterproduction',100,0),
 (115,'Prediction','/space/prediction',100,1),
 (116,'Space Comparison','/space/comparison',100,0),
 (200,'Equipment Data','/equipment',NULL,0),

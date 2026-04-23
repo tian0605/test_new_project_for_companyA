@@ -2,8 +2,126 @@ import falcon
 import mysql.connector
 import simplejson as json
 import redis
-from core.useractivity import user_logger, admin_control, access_control, api_key_control
+from core.useractivity import user_logger, admin_control, access_control, api_key_control, get_request_context_value
 import config
+
+
+def get_menu_scope(req):
+    path = getattr(req, 'path', '') or ''
+    if path == '/menus/web':
+        return 'web'
+    return 'admin'
+
+
+def get_routes_from_template_data(template_data, scope):
+    if not isinstance(template_data, dict):
+        return None
+
+    route_key = 'web_routes' if scope == 'web' else 'admin_routes'
+    routes = template_data.get(route_key)
+    if not isinstance(routes, list):
+        return set()
+
+    return {str.strip(route) for route in routes if isinstance(route, str) and len(str.strip(route)) > 0}
+
+
+def get_menu_route_scope(req):
+    if get_request_context_value(req, 'is_admin'):
+        return None
+
+    permission_context = get_request_context_value(req, 'permission_context')
+    if permission_context is None:
+        return None
+
+    menu_template = permission_context.get('menu_template')
+    if menu_template is not None:
+        menu_scope = get_menu_scope(req)
+        menu_template_data = menu_template.get('data') or dict()
+        return get_routes_from_template_data(menu_template_data, menu_scope)
+
+    privilege = permission_context.get('privilege')
+    if privilege is None:
+        return set()
+
+    privilege_data = privilege.get('data') or dict()
+    menu_routes = privilege_data.get('menu_routes')
+    if isinstance(menu_routes, list):
+        return {route for route in menu_routes if isinstance(route, str) and len(route) > 0}
+
+    menus = privilege_data.get('menus')
+    if isinstance(menus, list):
+        return {route for route in menus if isinstance(route, str) and len(route) > 0}
+
+    return set()
+
+
+def can_use_shared_menu_cache(req):
+    return get_menu_cache_scope_key(req) is not None
+
+
+def get_menu_cache_scope_key(req):
+    if get_request_context_value(req, 'is_admin'):
+        return 'G:menu:admin'
+
+    menu_template_id = get_request_context_value(req, 'menu_template_id')
+    if menu_template_id is not None:
+        return f'M:{menu_template_id}:menu'
+
+    privilege_id = get_request_context_value(req, 'privilege_id')
+    if privilege_id is not None:
+        return f'P:{privilege_id}:menu'
+
+    return None
+
+
+def get_menu_list_cache_key(req):
+    scope_key = get_menu_cache_scope_key(req)
+    if scope_key is None:
+        return None
+    return f'{scope_key}:list'
+
+
+def get_menu_web_cache_key(req):
+    scope_key = get_menu_cache_scope_key(req)
+    if scope_key is None:
+        return None
+    return f'{scope_key}:web'
+
+
+def get_menu_item_cache_key(req, menu_id):
+    scope_key = get_menu_cache_scope_key(req)
+    if scope_key is None:
+        return None
+    return f'{scope_key}:item:{menu_id}'
+
+
+def get_menu_children_cache_key(req, menu_id):
+    scope_key = get_menu_cache_scope_key(req)
+    if scope_key is None:
+        return None
+    return f'{scope_key}:children:{menu_id}'
+
+
+def get_visible_menu_ids(rows_menus, menu_route_scope):
+    if menu_route_scope is None:
+        return {row[0] for row in rows_menus} if rows_menus else set()
+
+    menu_by_id = dict()
+    for row in rows_menus:
+        menu_by_id[row[0]] = row
+
+    visible_menu_ids = set()
+    for row in rows_menus:
+        menu_id = row[0]
+        route = row[2]
+        parent_menu_id = row[3]
+        if route in menu_route_scope:
+            visible_menu_ids.add(menu_id)
+            while parent_menu_id is not None and parent_menu_id in menu_by_id and parent_menu_id not in visible_menu_ids:
+                visible_menu_ids.add(parent_menu_id)
+                parent_menu_id = menu_by_id[parent_menu_id][3]
+
+    return visible_menu_ids
 
 
 def clear_menu_cache(menu_id=None):
@@ -30,27 +148,33 @@ def clear_menu_cache(menu_id=None):
         )
         redis_client.ping()
 
-        # Clear menu list cache
-        list_cache_key_pattern = 'menu:list*'
-        matching_keys = redis_client.keys(list_cache_key_pattern)
+        # Clear legacy and scoped menu list cache
+        matching_keys = redis_client.keys('menu:list*') + redis_client.keys('G:menu:admin:list') + redis_client.keys('M:*:menu:list') + redis_client.keys('P:*:menu:list')
         if matching_keys:
             redis_client.delete(*matching_keys)
 
-        # Clear menu web cache
-        web_cache_key_pattern = 'menu:web*'
-        matching_keys = redis_client.keys(web_cache_key_pattern)
+        # Clear legacy and scoped menu web cache
+        matching_keys = redis_client.keys('menu:web*') + redis_client.keys('G:menu:admin:web') + redis_client.keys('M:*:menu:web') + redis_client.keys('P:*:menu:web')
         if matching_keys:
             redis_client.delete(*matching_keys)
 
         # Clear specific menu item cache if menu_id is provided
         if menu_id:
-            item_cache_key = f'menu:item:{menu_id}'
-            redis_client.delete(item_cache_key)
+            redis_client.delete(f'menu:item:{menu_id}')
+            scoped_item_keys = redis_client.keys(f'G:menu:admin:item:{menu_id}') + \
+                redis_client.keys(f'M:*:menu:item:{menu_id}') + \
+                redis_client.keys(f'P:*:menu:item:{menu_id}')
+            if scoped_item_keys:
+                redis_client.delete(*scoped_item_keys)
 
         # Clear menu children cache if menu_id is provided
         if menu_id:
-            children_cache_key = f'menu:children:{menu_id}'
-            redis_client.delete(children_cache_key)
+            redis_client.delete(f'menu:children:{menu_id}')
+            scoped_children_keys = redis_client.keys(f'G:menu:admin:children:{menu_id}') + \
+                redis_client.keys(f'M:*:menu:children:{menu_id}') + \
+                redis_client.keys(f'P:*:menu:children:{menu_id}')
+            if scoped_children_keys:
+                redis_client.delete(*scoped_children_keys)
 
     except Exception:
         # If cache clear fails, ignore and continue
@@ -104,13 +228,15 @@ class MenuCollection:
         else:
             api_key_control(req)
 
+        menu_route_scope = get_menu_route_scope(req)
+
         # Redis cache key
-        cache_key = 'menu:list'
+        cache_key = get_menu_list_cache_key(req)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
         redis_client = None
-        if config.redis.get('is_enabled', False):
+        if config.redis.get('is_enabled', False) and cache_key is not None:
             try:
                 redis_client = redis.Redis(
                     host=config.redis['host'],
@@ -155,8 +281,11 @@ class MenuCollection:
 
         # Build result list
         result = list()
+        visible_menu_ids = get_visible_menu_ids(rows_menus, menu_route_scope)
         if rows_menus is not None and len(rows_menus) > 0:
             for row in rows_menus:
+                if row[0] not in visible_menu_ids:
+                    continue
                 temp = {"id": row[0],
                         "name": row[1],
                         "route": row[2],
@@ -167,7 +296,7 @@ class MenuCollection:
 
         # Store result in Redis cache
         result_json = json.dumps(result)
-        if redis_client:
+        if redis_client and cache_key is not None:
             try:
                 redis_client.setex(cache_key, cache_expire, result_json)
             except Exception:
@@ -232,12 +361,12 @@ class MenuItem:
                                    description='API.INVALID_MENU_ID')
 
         # Redis cache key
-        cache_key = f'menu:item:{id_}'
+        cache_key = get_menu_item_cache_key(req, id_)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
         redis_client = None
-        if config.redis.get('is_enabled', False):
+        if config.redis.get('is_enabled', False) and cache_key is not None:
             try:
                 redis_client = redis.Redis(
                     host=config.redis['host'],
@@ -291,7 +420,7 @@ class MenuItem:
 
         # Store result in Redis cache
         result_json = json.dumps(result)
-        if redis_client:
+        if redis_client and cache_key is not None:
             try:
                 redis_client.setex(cache_key, cache_expire, result_json)
             except Exception:
@@ -424,13 +553,15 @@ class MenuChildrenCollection:
             raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                    description='API.INVALID_MENU_ID')
 
+        menu_route_scope = get_menu_route_scope(req)
+
         # Redis cache key
-        cache_key = f'menu:children:{id_}'
+        cache_key = get_menu_children_cache_key(req, id_)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
         redis_client = None
-        if config.redis.get('is_enabled', False):
+        if config.redis.get('is_enabled', False) and cache_key is not None:
             try:
                 redis_client = redis.Redis(
                     host=config.redis['host'],
@@ -480,6 +611,17 @@ class MenuChildrenCollection:
                 cursor.execute(query)
                 rows_menus = cursor.fetchall()
 
+                query = (" SELECT id, name, route, parent_menu_id, is_hidden "
+                         " FROM tbl_menus "
+                         " ORDER BY id ")
+                cursor.execute(query)
+                rows_all_menus = cursor.fetchall()
+                visible_menu_ids = get_visible_menu_ids(rows_all_menus, menu_route_scope)
+
+                if row_current_menu[0] not in visible_menu_ids:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.MENU_NOT_FOUND')
+
                 # Build menu dictionary for parent lookup
                 menu_dict = dict()
                 if rows_menus is not None and len(rows_menus) > 0:
@@ -508,6 +650,8 @@ class MenuChildrenCollection:
                 # Build children list
                 if rows_children is not None and len(rows_children) > 0:
                     for row in rows_children:
+                        if row[0] not in visible_menu_ids:
+                            continue
                         meta_result = {"id": row[0],
                                        "name": row[1],
                                        "parent_menu": menu_dict.get(row[3], None),
@@ -525,7 +669,7 @@ class MenuChildrenCollection:
                 cnx.close()
 
         # Store result in Redis cache
-        if redis_client:
+        if redis_client and cache_key is not None:
             try:
                 redis_client.setex(cache_key, cache_expire, result_json)
             except Exception:
@@ -580,13 +724,15 @@ class MenuWebCollection:
         else:
             api_key_control(req)
 
+        menu_route_scope = get_menu_route_scope(req)
+
         # Redis cache key
-        cache_key = 'menu:web'
+        cache_key = get_menu_web_cache_key(req)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
         redis_client = None
-        if config.redis.get('is_enabled', False):
+        if config.redis.get('is_enabled', False) and cache_key is not None:
             try:
                 redis_client = redis.Redis(
                     host=config.redis['host'],
@@ -619,7 +765,7 @@ class MenuWebCollection:
                 # Optimized: Single query to retrieve all non-hidden menus
                 # This reduces database round trips from 2 to 1
                 # MySQL compatible: parent_menu_id IS NULL comes first in ORDER BY
-                query = (" SELECT id, route, parent_menu_id "
+                query = (" SELECT id, name, route, parent_menu_id "
                          " FROM tbl_menus "
                          " WHERE is_hidden = 0 "
                          " ORDER BY (parent_menu_id IS NULL) DESC, id ")
@@ -635,10 +781,13 @@ class MenuWebCollection:
         # Build first level routes dictionary and result structure in one pass
         first_level_routes = {}
         result = {}
+        visible_menu_ids = get_visible_menu_ids(rows_menus, menu_route_scope)
 
         if rows_menus:
             for row in rows_menus:
-                menu_id, route, parent_menu_id = row
+                menu_id, _, route, parent_menu_id = row
+                if menu_id not in visible_menu_ids:
+                    continue
 
                 if parent_menu_id is None:
                     # First level menu (parent)
@@ -657,7 +806,7 @@ class MenuWebCollection:
 
         # Store result in Redis cache
         result_json = json.dumps(result)
-        if redis_client:
+        if redis_client and cache_key is not None:
             try:
                 redis_client.setex(cache_key, cache_expire, result_json)
             except Exception:

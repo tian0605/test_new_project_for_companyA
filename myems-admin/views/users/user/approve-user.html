@@ -31,6 +31,17 @@
                         </div>
                 </div>
             </div>
+
+            <div class="form-group" ng-show="currentUser.enterprise_space_id == null"><label class="col-sm-3 control-label">{{'USER.ENTERPRISE_SPACE' | translate}}<span class="text-danger" ng-hide="user.is_admin">*</span></label>
+                <div class="col-sm-9">
+                    <ui-select ng-model="user.enterprise_space_id" theme="bootstrap" ng-required="!user.is_admin">
+                        <ui-select-match allow-clear="true" placeholder="{{'COMMON.PLACEHOLDER' | translate}}">{{$select.selected.name}}</ui-select-match>
+                        <ui-select-choices repeat="space.id as space in enterpriseSpaces | filter: $select.search">
+                            <div ng-bind-html="space.name | highlight: $select.search"></div>
+                        </ui-select-choices>
+                    </ui-select>
+                </div>
+            </div>
             
             <div class="form-group"><label class="col-sm-3 control-label">{{'USER.IS_ADMIN' | translate}}</label>
                 <div class="col-sm-9">
@@ -50,8 +61,19 @@
                     </div>
                 </div>
             </div>
+
+            <div class="form-group"><label class="col-sm-3 control-label">{{'USER.MENU_PERMISSION_TEMPLATE' | translate}}</label>
+                <div class="col-sm-9">
+                    <ui-select ng-model="user.menu_template_id" theme="bootstrap">
+                        <ui-select-match allow-clear="true" placeholder="{{'COMMON.PLACEHOLDER' | translate}}">{{$select.selected.name}}</ui-select-match>
+                        <ui-select-choices repeat="menuTemplate.id as menuTemplate in menuTemplates | filter: $select.search">
+                            <div ng-bind-html="menuTemplate.name | highlight: $select.search"></div>
+                        </ui-select-choices>
+                    </ui-select>
+                </div>
+            </div>
             
-            <div class="form-group" ng-hide="user.is_admin"><label class="col-sm-3 control-label">{{'USER.PRIVILEGE' | translate}}</label>
+            <div class="form-group"><label class="col-sm-3 control-label">{{'USER.DATA_PERMISSION' | translate}}</label>
 
                 <div class="col-sm-9">
                     <ui-select ng-model="user.privilege_id" theme="bootstrap" >

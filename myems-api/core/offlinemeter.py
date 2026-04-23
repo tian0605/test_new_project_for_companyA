@@ -5,7 +5,34 @@ import mysql.connector
 import simplejson as json
 import redis
 from core.useractivity import user_logger, admin_control, access_control, api_key_control
+from core.costcenter import get_costcenter_scope, get_request_enterprise_space_id, query_visible_cost_center_ids
 import config
+
+
+def get_offlinemeter_visible_cost_center_ids(req, cursor):
+    authorized_space_ids = get_costcenter_scope(req)
+    enterprise_space_id = get_request_enterprise_space_id(req)
+    return query_visible_cost_center_ids(cursor, authorized_space_ids, enterprise_space_id)
+
+
+def get_offlinemeter_list_cache_key(req, search_query):
+    enterprise_space_id = get_request_enterprise_space_id(req)
+    is_admin = bool(getattr(req.context, 'is_admin', False) if not hasattr(req.context, 'get') else req.context.get('is_admin', False))
+    if is_admin and enterprise_space_id is None:
+        return f'offlinemeter:list:admin:{search_query}'
+    if enterprise_space_id is not None:
+        return f'offlinemeter:list:enterprise:{enterprise_space_id}:{search_query}'
+    return f'offlinemeter:list:{search_query}'
+
+
+def get_offlinemeter_item_cache_key(req, offline_meter_id):
+    enterprise_space_id = get_request_enterprise_space_id(req)
+    is_admin = bool(getattr(req.context, 'is_admin', False) if not hasattr(req.context, 'get') else req.context.get('is_admin', False))
+    if is_admin and enterprise_space_id is None:
+        return f'offlinemeter:item:admin:{offline_meter_id}'
+    if enterprise_space_id is not None:
+        return f'offlinemeter:item:enterprise:{enterprise_space_id}:{offline_meter_id}'
+    return f'offlinemeter:item:{offline_meter_id}'
 
 
 def clear_offline_meter_cache(offline_meter_id=None):
@@ -102,7 +129,7 @@ class OfflineMeterCollection:
             search_query = ''
 
         # Redis cache key
-        cache_key = f'offlinemeter:list:{search_query}'
+        cache_key = get_offlinemeter_list_cache_key(req, search_query)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
@@ -140,6 +167,7 @@ class OfflineMeterCollection:
             cnx = mysql.connector.connect(**config.myems_system_db)
             try:
                 cursor = cnx.cursor()
+                visible_cost_center_ids = get_offlinemeter_visible_cost_center_ids(req, cursor)
 
                 query = (" SELECT id, name, uuid "
                          " FROM tbl_energy_categories ")
@@ -177,18 +205,28 @@ class OfflineMeterCollection:
                                                     "name": row[1],
                                                     "uuid": row[2]}
 
-                query = (" SELECT id, name, uuid, energy_category_id, "
-                         "        is_counted, hourly_low_limit, hourly_high_limit, "
-                         "        energy_item_id, cost_center_id, description "
-                         " FROM tbl_offline_meters ")
-                params = []
-                if search_query:
-                    query += " WHERE name LIKE %s OR description LIKE %s "
-                    params = [f'%{search_query}%', f'%{search_query}%']
+                if visible_cost_center_ids == set():
+                    rows_meters = []
+                else:
+                    query = (" SELECT id, name, uuid, energy_category_id, "
+                             "        is_counted, hourly_low_limit, hourly_high_limit, "
+                             "        energy_item_id, cost_center_id, description "
+                             " FROM tbl_offline_meters ")
+                    where_clauses = []
+                    params = []
+                    if visible_cost_center_ids is not None:
+                        placeholders = ', '.join(['%s'] * len(visible_cost_center_ids))
+                        where_clauses.append(f"cost_center_id IN ({placeholders})")
+                        params.extend(sorted(visible_cost_center_ids))
+                    if search_query:
+                        where_clauses.append("(name LIKE %s OR description LIKE %s)")
+                        params.extend([f'%{search_query}%', f'%{search_query}%'])
+                    if where_clauses:
+                        query += " WHERE " + " AND ".join(where_clauses)
 
-                query += " ORDER BY id "
-                cursor.execute(query, params)
-                rows_meters = cursor.fetchall()
+                    query += " ORDER BY id "
+                    cursor.execute(query, tuple(params))
+                    rows_meters = cursor.fetchall()
             finally:
                 if cursor:
                     cursor.close()
@@ -401,7 +439,7 @@ class OfflineMeterItem:
                                    description='API.INVALID_OFFLINE_METER_ID')
 
         # Redis cache key
-        cache_key = f'offlinemeter:item:{id_}'
+        cache_key = get_offlinemeter_item_cache_key(req, id_)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
@@ -438,6 +476,7 @@ class OfflineMeterItem:
             cnx = mysql.connector.connect(**config.myems_system_db)
             try:
                 cursor = cnx.cursor()
+                visible_cost_center_ids = get_offlinemeter_visible_cost_center_ids(req, cursor)
 
                 query = (" SELECT id, name, uuid "
                          " FROM tbl_energy_categories ")
@@ -482,6 +521,8 @@ class OfflineMeterItem:
                          " WHERE id = %s ")
                 cursor.execute(query, (id_,))
                 row = cursor.fetchone()
+                if row is not None and visible_cost_center_ids is not None and row[8] not in visible_cost_center_ids:
+                    row = None
             finally:
                 if cursor:
                     cursor.close()

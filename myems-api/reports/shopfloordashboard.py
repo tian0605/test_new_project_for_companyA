@@ -35,7 +35,29 @@ import mysql.connector
 import simplejson as json
 import config
 from core import utilities
-from core.useractivity import access_control, api_key_control
+from core.useractivity import access_control, api_key_control, get_request_context_value, get_user_permission_context
+
+
+def get_reporting_space_id(req, requested_user_uuid):
+    permission_context = get_request_context_value(req, 'permission_context')
+    current_user_uuid = get_request_context_value(req, 'user_uuid')
+
+    if current_user_uuid is None and requested_user_uuid is not None:
+        permission_context = get_user_permission_context(requested_user_uuid)
+
+    if permission_context is None:
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description='API.USER_NOT_FOUND')
+
+    enterprise_space_id = permission_context.get('enterprise_space_id')
+    if permission_context.get('is_admin') and enterprise_space_id is None:
+        return 1
+
+    if enterprise_space_id is None:
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description='API.SPACE_NOT_FOUND')
+
+    return enterprise_space_id
 
 
 class Reporting:
@@ -201,35 +223,7 @@ class Reporting:
                 cursor_billing = cnx_billing.cursor()
                 cursor_historical = cnx_historical.cursor()
 
-                cursor_user.execute(" SELECT id, is_admin, privilege_id "
-                                    " FROM tbl_users "
-                                    " WHERE uuid = %s ", (user_uuid,))
-                row_user = cursor_user.fetchone()
-                if row_user is None:
-                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                           description='API.USER_NOT_FOUND')
-
-                user = {'id': row_user[0], 'is_admin': row_user[1], 'privilege_id': row_user[2]}
-                if user['is_admin']:
-                    # todo: make sure the space id is always 1 for admin
-                    space_id = 1
-                else:
-                    cursor_user.execute(" SELECT data "
-                                        " FROM tbl_privileges "
-                                        " WHERE id = %s ", (user['privilege_id'],))
-                    row_privilege = cursor_user.fetchone()
-                    if row_privilege is None:
-                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                               description='API.USER_PRIVILEGE_NOT_FOUND')
-
-                    privilege_data = json.loads(row_privilege[0])
-                    if 'spaces' not in privilege_data.keys() \
-                            or privilege_data['spaces'] is None \
-                            or len(privilege_data['spaces']) == 0:
-                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                               description='API.USER_PRIVILEGE_NOT_FOUND')
-                    # todo: how to deal with multiple spaces in privilege data
-                    space_id = privilege_data['spaces'][0]
+                space_id = get_reporting_space_id(req, user_uuid)
 
                 cursor_system.execute(" SELECT id, name, area, cost_center_id "
                                       " FROM tbl_spaces "

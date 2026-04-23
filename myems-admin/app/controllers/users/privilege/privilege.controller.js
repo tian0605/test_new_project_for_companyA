@@ -42,14 +42,14 @@ app.controller('PrivilegeController', function (
 					toaster.pop({
 						type: "success",
 						title: $translate.instant("TOASTER.SUCCESS_TITLE"),
-						body: $translate.instant("TOASTER.SUCCESS_ADD_BODY", { template: $translate.instant("USER.PRIVILEGE") }),
+						body: $translate.instant("TOASTER.SUCCESS_ADD_BODY", { template: $translate.instant("USER.DATA_PERMISSION") }),
 						showCloseButton: true,
 					});
 					$scope.getAllPrivileges();
 				} else {
 					toaster.pop({
 						type: "error",
-						title: $translate.instant("TOASTER.ERROR_ADD_BODY", { template: $translate.instant("USER.PRIVILEGE") }),
+						title: $translate.instant("TOASTER.ERROR_ADD_BODY", { template: $translate.instant("USER.DATA_PERMISSION") }),
 						body: $translate.instant(response.data.description),
 						showCloseButton: true,
 					});
@@ -83,14 +83,14 @@ app.controller('PrivilegeController', function (
 					toaster.pop({
 						type: "success",
 						title: $translate.instant("TOASTER.SUCCESS_TITLE"),
-						body: $translate.instant("TOASTER.SUCCESS_UPDATE_BODY", { template: $translate.instant("USER.PRIVILEGE") }),
+						body: $translate.instant("TOASTER.SUCCESS_UPDATE_BODY", { template: $translate.instant("USER.DATA_PERMISSION") }),
 						showCloseButton: true,
 					});
 					$scope.getAllPrivileges();
 				} else {
 					toaster.pop({
 						type: "error",
-						title: $translate.instant("TOASTER.ERROR_UPDATE_BODY", { template: $translate.instant("USER.PRIVILEGE") }),
+						title: $translate.instant("TOASTER.ERROR_UPDATE_BODY", { template: $translate.instant("USER.DATA_PERMISSION") }),
 						body: $translate.instant(response.data.description),
 						showCloseButton: true,
 					});
@@ -122,14 +122,14 @@ app.controller('PrivilegeController', function (
 						toaster.pop({
 							type: "success",
 							title: $translate.instant("TOASTER.SUCCESS_TITLE"),
-							body: $translate.instant("TOASTER.SUCCESS_DELETE_BODY", { template: $translate.instant("USER.PRIVILEGE") }),
+							body: $translate.instant("TOASTER.SUCCESS_DELETE_BODY", { template: $translate.instant("USER.DATA_PERMISSION") }),
 							showCloseButton: true,
 						});
 						$scope.getAllPrivileges();
 					} else {
 						toaster.pop({
 							type: "error",
-							title: $translate.instant("TOASTER.ERROR_DELETE_BODY", { template: $translate.instant("USER.PRIVILEGE") }),
+							title: $translate.instant("TOASTER.ERROR_DELETE_BODY", { template: $translate.instant("USER.DATA_PERMISSION") }),
 							body: $translate.instant(response.data.description),
 							showCloseButton: true,
 						});
@@ -150,7 +150,7 @@ app.controller('ModalAddPrivilegeCtrl', function ($scope,
 	$timeout,
 	params) {
 
-	$scope.operation = "USER.ADD_PRIVILEGE";
+	$scope.operation = "USER.ADD_DATA_PERMISSION";
 	$scope.cur_user = JSON.parse($window.localStorage.getItem("myems_admin_ui_current_user"));
 	$scope.spaces = [];
 	$scope.currentSpaceID = 1;
@@ -209,7 +209,7 @@ app.controller('ModalEditPrivilegeCtrl', function ($scope,
 	SpaceService,
 	$timeout,
 	params) {
-	$scope.operation = "USER.EDIT_PRIVILEGE";
+	$scope.operation = "USER.EDIT_DATA_PERMISSION";
 	$scope.privilege = params.privilege;
 	$scope.cur_user = JSON.parse($window.localStorage.getItem("myems_admin_ui_current_user"));
 	$scope.spaces = [];
