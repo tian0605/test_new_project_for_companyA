@@ -958,7 +958,7 @@ VALUES
 (109,'Saving','/space/saving',100,1),
 (110,'Carbon','/space/carbon',100,0),
 (111,'Environment Monitor','/space/environmentmonitor',100,0),
-(112,'Plan','/space/plan',100,1),
+(112,'Plan','/space/plan',100,0),
 (113,'Production','/space/production',100,0),
 (114,'Enter Production','/space/enterproduction',100,0),
 (115,'Prediction','/space/prediction',100,1),

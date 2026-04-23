@@ -8,7 +8,7 @@ START TRANSACTION;
 
 UPDATE `myems_system_db`.`tbl_menus`
 SET `is_hidden` = 0
-WHERE `route` IN ('/space/production', '/space/enterproduction');
+WHERE `route` IN ('/space/plan', '/space/production', '/space/enterproduction');
 
 UPDATE `myems_system_db`.`tbl_versions`
 SET version='6.3.4', release_date='2026-04-23'
