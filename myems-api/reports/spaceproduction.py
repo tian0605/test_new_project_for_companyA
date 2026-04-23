@@ -251,21 +251,25 @@ class Reporting:
         ################################################################################################################
         cnx_system = None
         cnx_production = None
+        cnx_energy = None
         cnx_billing = None
         cnx_historical = None
         try:
             cnx_system = mysql.connector.connect(**config.myems_system_db)
             cnx_production = mysql.connector.connect(**config.myems_production_db)
+            cnx_energy = mysql.connector.connect(**config.myems_energy_db)
             cnx_billing = mysql.connector.connect(**config.myems_billing_db)
             cnx_historical = mysql.connector.connect(**config.myems_historical_db)
 
             cursor_system = None
             cursor_production = None
+            cursor_energy = None
             cursor_billing = None
             cursor_historical = None
             try:
                 cursor_system = cnx_system.cursor()
                 cursor_production = cnx_production.cursor()
+                cursor_energy = cnx_energy.cursor()
                 cursor_billing = cnx_billing.cursor()
                 cursor_historical = cnx_historical.cursor()
 
@@ -342,25 +346,25 @@ class Reporting:
                 #################################################################################################
                 energy_category_set = set()
                 # query energy categories in base period
-                cursor_billing.execute(" SELECT DISTINCT(energy_category_id) "
-                                       " FROM tbl_space_input_category_hourly "
-                                       " WHERE space_id = %s "
-                                       "     AND start_datetime_utc >= %s "
-                                       "     AND start_datetime_utc < %s ",
-                                       (space_id, base_start_datetime_utc, base_end_datetime_utc))
-                rows_energy_categories = cursor_billing.fetchall()
+                cursor_energy.execute(" SELECT DISTINCT(energy_category_id) "
+                                      " FROM tbl_space_input_category_hourly "
+                                      " WHERE space_id = %s "
+                                      "     AND start_datetime_utc >= %s "
+                                      "     AND start_datetime_utc < %s ",
+                                      (space_id, base_start_datetime_utc, base_end_datetime_utc))
+                rows_energy_categories = cursor_energy.fetchall()
                 if rows_energy_categories is not None and len(rows_energy_categories) > 0:
                     for row_energy_category in rows_energy_categories:
                         energy_category_set.add(row_energy_category[0])
 
                 # query energy categories in reporting period
-                cursor_billing.execute(" SELECT DISTINCT(energy_category_id) "
-                                       " FROM tbl_space_input_category_hourly "
-                                       " WHERE space_id = %s "
-                                       "     AND start_datetime_utc >= %s "
-                                       "     AND start_datetime_utc < %s ",
-                                       (space_id, reporting_start_datetime_utc, reporting_end_datetime_utc))
-                rows_energy_categories = cursor_billing.fetchall()
+                cursor_energy.execute(" SELECT DISTINCT(energy_category_id) "
+                                      " FROM tbl_space_input_category_hourly "
+                                      " WHERE space_id = %s "
+                                      "     AND start_datetime_utc >= %s "
+                                      "     AND start_datetime_utc < %s ",
+                                      (space_id, reporting_start_datetime_utc, reporting_end_datetime_utc))
+                rows_energy_categories = cursor_energy.fetchall()
                 if rows_energy_categories is not None and len(rows_energy_categories) > 0:
                     for row_energy_category in rows_energy_categories:
                         energy_category_set.add(row_energy_category[0])
@@ -493,18 +497,18 @@ class Reporting:
                         base[energy_category_id]['subtotal_in_kgce'] = Decimal(0.0)
                         base[energy_category_id]['subtotal_in_kgco2e'] = Decimal(0.0)
 
-                        cursor_billing.execute(" SELECT start_datetime_utc, actual_value "
-                                               " FROM tbl_space_input_category_hourly "
-                                               " WHERE space_id = %s "
-                                               "     AND energy_category_id = %s "
-                                               "     AND start_datetime_utc >= %s "
-                                               "     AND start_datetime_utc < %s "
-                                               " ORDER BY start_datetime_utc ",
-                                               (space_id,
-                                                energy_category_id,
-                                                base_start_datetime_utc,
-                                                base_end_datetime_utc))
-                        rows_space_hourly = cursor_billing.fetchall()
+                        cursor_energy.execute(" SELECT start_datetime_utc, actual_value "
+                                              " FROM tbl_space_input_category_hourly "
+                                              " WHERE space_id = %s "
+                                              "     AND energy_category_id = %s "
+                                              "     AND start_datetime_utc >= %s "
+                                              "     AND start_datetime_utc < %s "
+                                              " ORDER BY start_datetime_utc ",
+                                              (space_id,
+                                               energy_category_id,
+                                               base_start_datetime_utc,
+                                               base_end_datetime_utc))
+                        rows_space_hourly = cursor_energy.fetchall()
 
                         rows_space_periodically = utilities.aggregate_hourly_data_by_period(rows_space_hourly,
                                                                                             base_start_datetime_utc,
@@ -548,18 +552,18 @@ class Reporting:
                         reporting[energy_category_id]['subtotal_in_kgce'] = Decimal(0.0)
                         reporting[energy_category_id]['subtotal_in_kgco2e'] = Decimal(0.0)
 
-                        cursor_billing.execute(" SELECT start_datetime_utc, actual_value "
-                                               " FROM tbl_space_input_category_hourly "
-                                               " WHERE space_id = %s "
-                                               "     AND energy_category_id = %s "
-                                               "     AND start_datetime_utc >= %s "
-                                               "     AND start_datetime_utc < %s "
-                                               " ORDER BY start_datetime_utc ",
-                                               (space_id,
-                                                energy_category_id,
-                                                reporting_start_datetime_utc,
-                                                reporting_end_datetime_utc))
-                        rows_space_hourly = cursor_billing.fetchall()
+                        cursor_energy.execute(" SELECT start_datetime_utc, actual_value "
+                                              " FROM tbl_space_input_category_hourly "
+                                              " WHERE space_id = %s "
+                                              "     AND energy_category_id = %s "
+                                              "     AND start_datetime_utc >= %s "
+                                              "     AND start_datetime_utc < %s "
+                                              " ORDER BY start_datetime_utc ",
+                                              (space_id,
+                                               energy_category_id,
+                                               reporting_start_datetime_utc,
+                                               reporting_end_datetime_utc))
+                        rows_space_hourly = cursor_energy.fetchall()
 
                         rows_space_periodically = utilities.aggregate_hourly_data_by_period(
                             rows_space_hourly,
@@ -593,6 +597,8 @@ class Reporting:
                     cursor_system.close()
                 if cursor_production:
                     cursor_production.close()
+                if cursor_energy:
+                    cursor_energy.close()
                 if cursor_billing:
                     cursor_billing.close()
                 if cursor_historical:
@@ -603,6 +609,8 @@ class Reporting:
                 cnx_system.close()
             if cnx_production:
                 cnx_production.close()
+            if cnx_energy:
+                cnx_energy.close()
             if cnx_billing:
                 cnx_billing.close()
             if cnx_historical:
@@ -693,7 +701,7 @@ class Reporting:
         for date, daily_value in zip(base_date_list, base_daily_values):
             base_period_total_production += daily_value if daily_value is not None else 0
 
-        result['reporting_period']['total_in_kgco2e_per_prodution'] = \
+        result['reporting_period']['total_in_kgce_per_prodution'] = \
             result['reporting_period']['total_in_kgce'] / reporting_period_total_production \
             if reporting_period_total_production > 0.0 else None
 
@@ -702,7 +710,7 @@ class Reporting:
             result['base_period']['total_in_kgce'] \
             if result['base_period']['total_in_kgce'] > Decimal(0.0) else None
 
-        result['reporting_period']['total_in_kgce_per_prodution'] = \
+        result['reporting_period']['total_in_kgco2e_per_prodution'] = \
             result['reporting_period']['total_in_kgco2e'] / reporting_period_total_production \
             if reporting_period_total_production > 0.0 else None
 

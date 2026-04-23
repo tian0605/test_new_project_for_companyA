@@ -10,11 +10,27 @@
                 </div>
             </div>
             <div class="hr-line-dashed"></div>
-            <div class="form-group"><label class="col-sm-3 control-label">{{'USER.VISIBLE_MENUS' | translate}}</label>
+            <div class="form-group"><label class="col-sm-3 control-label">模板类型</label>
+                <div class="col-sm-9">
+                    <select ng-model="menuTemplate.template_type" class="form-control" title="模板类型" ng-options="option.value as option.label for option in templateTypeOptions"></select>
+                    <span class="help-block" ng-if="isHybridSelected()">双端模板会同时保存管理端和用户端菜单权限。</span>
+                </div>
+            </div>
+            <div class="hr-line-dashed"></div>
+            <div class="form-group" ng-if="showAdminMenus()"><label class="col-sm-3 control-label">Admin Menus</label>
                 <div class="col-sm-9 menu-template-list-scroll">
-                    <div class="checkbox checkbox-success" ng-repeat="menu in menus track by menu.state">
-                        <input id="menu_template_route_{{menu.state | lowercase | limitTo: 128}}" type="checkbox" ng-checked="isRouteSelected(menu)" ng-click="toggleRoute(menu)">
-                        <label for="menu_template_route_{{menu.state | lowercase | limitTo: 128}}">{{menu.name | translate}}</label>
+                    <div class="checkbox checkbox-success" ng-repeat="menu in adminMenus track by menu.state">
+                        <input id="menu_template_admin_route_{{menu.state | lowercase | limitTo: 128}}" type="checkbox" ng-checked="isRouteSelected(menu, 'admin')" ng-click="toggleRoute(menu, 'admin')">
+                        <label for="menu_template_admin_route_{{menu.state | lowercase | limitTo: 128}}">{{getMenuDisplayName(menu)}}</label>
+                    </div>
+                </div>
+            </div>
+            <div class="hr-line-dashed" ng-if="showAdminMenus() && showWebMenus()"></div>
+            <div class="form-group" ng-if="showWebMenus()"><label class="col-sm-3 control-label">Web Menus</label>
+                <div class="col-sm-9 menu-template-list-scroll">
+                    <div class="checkbox checkbox-success" ng-repeat="menu in webMenus track by menu.state">
+                        <input id="menu_template_web_route_{{menu.state | lowercase | limitTo: 128}}" type="checkbox" ng-checked="isRouteSelected(menu, 'web')" ng-click="toggleRoute(menu, 'web')">
+                        <label for="menu_template_web_route_{{menu.state | lowercase | limitTo: 128}}">{{getMenuDisplayName(menu)}}</label>
                     </div>
                 </div>
             </div>

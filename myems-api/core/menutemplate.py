@@ -3,10 +3,11 @@ import mysql.connector
 import simplejson as json
 import redis
 from core.useractivity import user_logger, admin_control
+from core.menu import clear_menu_cache
 import config
 
 
-VALID_MENU_TEMPLATE_TYPES = {'admin', 'web'}
+VALID_MENU_TEMPLATE_TYPES = {'admin', 'web', 'hybrid'}
 
 
 def sanitize_template_routes(routes):
@@ -53,17 +54,35 @@ def normalize_menu_template_data(template_data):
     return normalized_data
 
 
-def get_menu_template_type_from_data(raw_template_data):
+def normalize_menu_template_data_from_raw(raw_template_data):
     try:
         template_data = json.loads(raw_template_data) if isinstance(raw_template_data, str) else raw_template_data
     except (TypeError, ValueError):
-        return 'admin'
+        return {
+            'template_type': 'admin',
+            'admin_routes': list(),
+            'web_routes': list()
+        }
 
     if not isinstance(template_data, dict):
-        return 'admin'
+        return {
+            'template_type': 'admin',
+            'admin_routes': list(),
+            'web_routes': list()
+        }
 
-    template_type = template_data.get('template_type', 'admin')
-    return template_type if template_type in VALID_MENU_TEMPLATE_TYPES else 'admin'
+    try:
+        return normalize_menu_template_data(template_data)
+    except falcon.HTTPError:
+        return {
+            'template_type': 'admin',
+            'admin_routes': list(),
+            'web_routes': list()
+        }
+
+
+def get_menu_template_type_from_data(raw_template_data):
+    return normalize_menu_template_data_from_raw(raw_template_data).get('template_type', 'admin')
 
 
 def get_menu_template_list_cache_key():
@@ -72,6 +91,7 @@ def get_menu_template_list_cache_key():
 
 def clear_menu_template_cache():
     if not config.redis.get('is_enabled', False):
+        clear_menu_cache()
         return
 
     redis_client = None
@@ -93,6 +113,8 @@ def clear_menu_template_cache():
             redis_client.delete(*scoped_keys)
     except Exception:
         pass
+
+    clear_menu_cache()
 
 
 def validate_menu_template_payload(new_values):
@@ -171,11 +193,12 @@ class MenuTemplateCollection:
                 result = list()
                 if rows is not None and len(rows) > 0:
                     for row in rows:
+                        normalized_data = normalize_menu_template_data_from_raw(row[2])
                         result.append({
                             'id': row[0],
                             'name': row[1],
-                            'data': row[2],
-                            'template_type': get_menu_template_type_from_data(row[2])
+                            'data': json.dumps(normalized_data),
+                            'template_type': normalized_data.get('template_type', 'admin')
                         })
 
                 result_json = json.dumps(result)

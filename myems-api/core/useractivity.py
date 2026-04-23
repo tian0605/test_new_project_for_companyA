@@ -9,6 +9,9 @@ from gunicorn.http.body import Body
 import config
 
 
+VALID_MENU_TEMPLATE_TYPES = {'admin', 'web', 'hybrid'}
+
+
 def _set_request_context_value(req, key, value):
     try:
         req.context[key] = value
@@ -63,7 +66,8 @@ def _filter_menu_template_data(raw_menu_template_data):
     filtered_data = dict()
     template_type = menu_template_data.get('template_type')
     if isinstance(template_type, str) and len(str.strip(template_type)) > 0:
-        filtered_data['template_type'] = str.strip(template_type).lower()
+        normalized_template_type = str.strip(template_type).lower()
+        filtered_data['template_type'] = normalized_template_type if normalized_template_type in VALID_MENU_TEMPLATE_TYPES else 'admin'
     else:
         filtered_data['template_type'] = 'admin'
 

@@ -765,7 +765,7 @@ class MenuWebCollection:
                 # Optimized: Single query to retrieve all non-hidden menus
                 # This reduces database round trips from 2 to 1
                 # MySQL compatible: parent_menu_id IS NULL comes first in ORDER BY
-                query = (" SELECT id, route, parent_menu_id "
+                query = (" SELECT id, name, route, parent_menu_id "
                          " FROM tbl_menus "
                          " WHERE is_hidden = 0 "
                          " ORDER BY (parent_menu_id IS NULL) DESC, id ")
@@ -785,7 +785,7 @@ class MenuWebCollection:
 
         if rows_menus:
             for row in rows_menus:
-                menu_id, route, parent_menu_id = row
+                menu_id, _, route, parent_menu_id = row
                 if menu_id not in visible_menu_ids:
                     continue
 

@@ -3965,7 +3965,7 @@ class SpaceTreeCollection:
                     for row in rows_spaces:
                         if not is_space_visible(space_scope, row[0]):
                             continue
-                        parent_node = node_dict[row[2]] if row[2] is not None else None
+                        parent_node = node_dict.get(row[2]) if row[2] is not None else None
                         node_dict[row[0]] = AnyNode(id=row[0], parent=parent_node, name=row[1])
 
                 if space_id not in node_dict:
@@ -4038,7 +4038,7 @@ class SpaceTreeMetersEnergyCategoryCollection:
                 node_dict = dict()
                 if rows_spaces is not None and len(rows_spaces) > 0:
                     for row in rows_spaces:
-                        parent_node = node_dict[row[2]] if row[2] is not None else None
+                        parent_node = node_dict.get(row[2]) if row[2] is not None else None
                         node_dict[row[0]] = AnyNode(id=row[0], parent=parent_node, name=row[1])
                 ####################################################################################################
                 # Step 3: query energy categories of all meters in the space tree
