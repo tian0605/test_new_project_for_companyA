@@ -9,6 +9,299 @@ from gunicorn.http.body import Body
 import config
 
 
+def _set_request_context_value(req, key, value):
+    try:
+        req.context[key] = value
+    except (TypeError, AttributeError, KeyError):
+        setattr(req.context, key, value)
+
+
+def get_request_context_value(req, key, default=None):
+    try:
+        return req.context.get(key, default)
+    except (AttributeError, TypeError):
+        return getattr(req.context, key, default)
+
+
+def _filter_privilege_data(raw_privilege_data):
+    if raw_privilege_data is None:
+        return None
+
+    try:
+        privilege_data = json.loads(raw_privilege_data)
+    except (TypeError, ValueError):
+        return None
+
+    if not isinstance(privilege_data, dict):
+        return None
+
+    filtered_data = dict()
+    if 'menu_routes' in privilege_data:
+        filtered_data['menu_routes'] = privilege_data['menu_routes']
+    if 'menus' in privilege_data:
+        filtered_data['menus'] = privilege_data['menus']
+    spaces = privilege_data.get('spaces')
+    if isinstance(spaces, list):
+        filtered_data['spaces'] = [space_id for space_id in spaces
+                                   if isinstance(space_id, int) and space_id > 0]
+
+    return filtered_data
+
+
+def _filter_menu_template_data(raw_menu_template_data):
+    if raw_menu_template_data is None:
+        return None
+
+    try:
+        menu_template_data = json.loads(raw_menu_template_data)
+    except (TypeError, ValueError):
+        return None
+
+    if not isinstance(menu_template_data, dict):
+        return None
+
+    filtered_data = dict()
+    template_type = menu_template_data.get('template_type')
+    if isinstance(template_type, str) and len(str.strip(template_type)) > 0:
+        filtered_data['template_type'] = str.strip(template_type).lower()
+    else:
+        filtered_data['template_type'] = 'admin'
+
+    admin_routes = menu_template_data.get('admin_routes')
+    if isinstance(admin_routes, list):
+        filtered_data['admin_routes'] = [route for route in admin_routes
+                                         if isinstance(route, str) and len(str.strip(route)) > 0]
+    else:
+        filtered_data['admin_routes'] = list()
+
+    web_routes = menu_template_data.get('web_routes')
+    if isinstance(web_routes, list):
+        filtered_data['web_routes'] = [route for route in web_routes
+                                       if isinstance(route, str) and len(str.strip(route)) > 0]
+    else:
+        filtered_data['web_routes'] = list()
+
+    return filtered_data
+
+
+def _get_legacy_enterprise_space_id(raw_privilege_data):
+    if raw_privilege_data is None:
+        return None
+
+    try:
+        privilege_data = json.loads(raw_privilege_data)
+    except (TypeError, ValueError):
+        return None
+
+    if not isinstance(privilege_data, dict):
+        return None
+
+    legacy_spaces = privilege_data.get('spaces')
+    if isinstance(legacy_spaces, list) and len(legacy_spaces) > 0 and isinstance(legacy_spaces[0], int):
+        return legacy_spaces[0]
+
+    return None
+
+
+def _get_all_space_rows():
+    cnx = None
+    cursor = None
+    try:
+        cnx = mysql.connector.connect(**config.myems_system_db)
+        cursor = cnx.cursor()
+        cursor.execute(" SELECT id, parent_space_id "
+                       " FROM tbl_spaces "
+                       " ORDER BY id ")
+        return cursor.fetchall()
+    finally:
+        if cursor:
+            cursor.close()
+        if cnx:
+            cnx.close()
+
+
+def _build_space_tree(rows):
+    children_by_parent = dict()
+    valid_space_ids = set()
+    for row in rows:
+        space_id = row[0]
+        parent_space_id = row[1]
+        valid_space_ids.add(space_id)
+        children_by_parent.setdefault(parent_space_id, list()).append(space_id)
+
+    return children_by_parent, valid_space_ids
+
+
+def _collect_space_subtree(root_space_id, children_by_parent, valid_space_ids):
+    if root_space_id not in valid_space_ids:
+        raise falcon.HTTPError(status=falcon.HTTP_404,
+                               title='API.NOT_FOUND',
+                               description='API.ENTERPRISE_SPACE_NOT_FOUND')
+
+    authorized_space_ids = set()
+    pending_space_ids = [root_space_id]
+    while pending_space_ids:
+        current_space_id = pending_space_ids.pop()
+        if current_space_id in authorized_space_ids:
+            continue
+        authorized_space_ids.add(current_space_id)
+        pending_space_ids.extend(children_by_parent.get(current_space_id, list()))
+
+    return authorized_space_ids
+
+
+def _get_privilege_space_ids(privilege):
+    if privilege is None:
+        return None
+
+    privilege_data = privilege.get('data') or dict()
+    spaces = privilege_data.get('spaces')
+    if not isinstance(spaces, list):
+        return None
+
+    privilege_space_ids = [space_id for space_id in spaces if isinstance(space_id, int) and space_id > 0]
+    return privilege_space_ids if privilege_space_ids else None
+
+
+def _get_authorized_space_ids(is_admin, enterprise_space_id, privilege=None):
+    rows = _get_all_space_rows()
+    if rows is None or len(rows) == 0:
+        return list()
+
+    children_by_parent, valid_space_ids = _build_space_tree(rows)
+
+    if is_admin and enterprise_space_id is None:
+        return sorted(valid_space_ids)
+
+    if enterprise_space_id is None:
+        return list()
+
+    enterprise_space_ids = _collect_space_subtree(enterprise_space_id, children_by_parent, valid_space_ids)
+    privilege_space_ids = _get_privilege_space_ids(privilege)
+    if not privilege_space_ids:
+        return sorted(enterprise_space_ids)
+
+    privilege_authorized_space_ids = set()
+    for privilege_space_id in privilege_space_ids:
+        if privilege_space_id not in valid_space_ids:
+            continue
+        privilege_authorized_space_ids.update(
+            _collect_space_subtree(privilege_space_id, children_by_parent, valid_space_ids)
+        )
+
+    if not privilege_authorized_space_ids:
+        return sorted(enterprise_space_ids)
+
+    return sorted(enterprise_space_ids.intersection(privilege_authorized_space_ids))
+
+
+def get_user_permission_context(user_uuid, cursor=None):
+    cnx = None
+    own_cursor = cursor is None
+    permission_context = None
+    try:
+        if own_cursor:
+            cnx = mysql.connector.connect(**config.myems_user_db)
+            cursor = cnx.cursor()
+
+        cursor.execute(" SELECT id, uuid, is_admin, is_read_only, privilege_id, menu_template_id, enterprise_space_id "
+                       " FROM tbl_users "
+                       " WHERE uuid = %s ", (user_uuid,))
+        row = cursor.fetchone()
+        if row is None:
+            raise falcon.HTTPError(status=falcon.HTTP_404,
+                                   title='API.NOT_FOUND',
+                                   description='API.USER_NOT_FOUND')
+
+        is_admin = True if row[2] else False
+        is_read_only = (True if row[3] else False) if row[2] else None
+        privilege_id = row[4]
+        menu_template_id = row[5]
+        stored_enterprise_space_id = row[6]
+        enterprise_space_id = stored_enterprise_space_id
+        privilege = None
+        menu_template = None
+
+        if privilege_id is not None:
+            cursor.execute(" SELECT id, name, data "
+                           " FROM tbl_privileges "
+                           " WHERE id = %s ", (privilege_id,))
+            row_privilege = cursor.fetchone()
+
+            if row_privilege is None:
+                raise falcon.HTTPError(status=falcon.HTTP_400,
+                                       title='API.BAD_REQUEST',
+                                       description='API.INVALID_PRIVILEGE')
+
+            privilege = {
+                'id': row_privilege[0],
+                'name': row_privilege[1],
+                'data': _filter_privilege_data(row_privilege[2]),
+            }
+
+            if enterprise_space_id is None and not is_admin:
+                enterprise_space_id = _get_legacy_enterprise_space_id(row_privilege[2])
+
+        if menu_template_id is not None:
+            cursor.execute(" SELECT id, name, data "
+                           " FROM tbl_menu_templates "
+                           " WHERE id = %s ", (menu_template_id,))
+            row_menu_template = cursor.fetchone()
+
+            if row_menu_template is None:
+                raise falcon.HTTPError(status=falcon.HTTP_400,
+                                       title='API.BAD_REQUEST',
+                                       description='API.INVALID_MENU_TEMPLATE_ID')
+
+            menu_template = {
+                'id': row_menu_template[0],
+                'name': row_menu_template[1],
+                'data': _filter_menu_template_data(row_menu_template[2]),
+            }
+
+        authorized_space_ids = _get_authorized_space_ids(is_admin, enterprise_space_id, privilege)
+
+        if not is_admin and enterprise_space_id is None:
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.INVALID_ENTERPRISE_SPACE_ID')
+
+        permission_context = {
+            'user_id': row[0],
+            'user_uuid': row[1],
+            'is_admin': is_admin,
+            'is_read_only': is_read_only,
+            'privilege_id': privilege_id,
+            'menu_template_id': menu_template_id,
+            'enterprise_space_id': enterprise_space_id,
+            'authorized_space_ids': authorized_space_ids,
+            'privilege': privilege,
+            'menu_template': menu_template,
+            'admin_routes': menu_template.get('data', {}).get('admin_routes') if menu_template else None,
+            'web_routes': menu_template.get('data', {}).get('web_routes') if menu_template else None,
+        }
+
+        return permission_context
+    finally:
+        if own_cursor and cursor:
+            cursor.close()
+        if cnx:
+            cnx.close()
+
+
+def set_request_permission_context(req, permission_context):
+    _set_request_context_value(req, 'user_id', permission_context.get('user_id'))
+    _set_request_context_value(req, 'user_uuid', permission_context.get('user_uuid'))
+    _set_request_context_value(req, 'is_admin', permission_context.get('is_admin'))
+    _set_request_context_value(req, 'privilege_id', permission_context.get('privilege_id'))
+    _set_request_context_value(req, 'menu_template_id', permission_context.get('menu_template_id'))
+    _set_request_context_value(req, 'enterprise_space_id', permission_context.get('enterprise_space_id'))
+    _set_request_context_value(req, 'authorized_space_ids', permission_context.get('authorized_space_ids'))
+    _set_request_context_value(req, 'admin_routes', permission_context.get('admin_routes'))
+    _set_request_context_value(req, 'web_routes', permission_context.get('web_routes'))
+    _set_request_context_value(req, 'permission_context', permission_context)
+
+
 def admin_control(req):
     """
     Check administrator privilege in request headers to protect resources from invalid access.
@@ -65,14 +358,10 @@ def admin_control(req):
                     raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                            description='API.ADMINISTRATOR_SESSION_TIMEOUT')
             
-            # check administrator privilege
-            query = (" SELECT name "
-                     " FROM tbl_users "
-                     " WHERE uuid = %s AND is_admin = 1 AND is_read_only = 0 ")
-            cursor.execute(query, (admin_user_uuid,))
-            row = cursor.fetchone()
-            
-            if row is None:
+            permission_context = get_user_permission_context(admin_user_uuid, cursor)
+            set_request_permission_context(req, permission_context)
+
+            if not permission_context['is_admin'] or permission_context['is_read_only']:
                 raise falcon.HTTPError(status=falcon.HTTP_400,
                                        title='API.BAD_REQUEST',
                                        description='API.INVALID_PRIVILEGE')
@@ -130,17 +419,8 @@ def access_control(req):
                                            title='API.BAD_REQUEST',
                                            description='API.USER_SESSION_TIMEOUT')
             
-            # todo: check user privilege
-            query = (" SELECT name "
-                     " FROM tbl_users "
-                     " WHERE uuid = %s ")
-            cursor.execute(query, (user_uuid,))
-            row = cursor.fetchone()
-            
-            if row is None:
-                raise falcon.HTTPError(status=falcon.HTTP_400,
-                                       title='API.BAD_REQUEST',
-                                       description='API.INVALID_PRIVILEGE')
+            permission_context = get_user_permission_context(user_uuid, cursor)
+            set_request_permission_context(req, permission_context)
         finally:
             if cursor:
                 cursor.close()
@@ -179,6 +459,17 @@ def api_key_control(req):
                     raise falcon.HTTPError(status=falcon.HTTP_400,
                                            title='API.BAD_REQUEST',
                                            description='API.API_KEY_HAS_EXPIRED')
+
+            set_request_permission_context(req, {
+                'user_id': None,
+                'user_uuid': None,
+                'is_admin': True,
+                'is_read_only': None,
+                'privilege_id': None,
+                'enterprise_space_id': None,
+                'authorized_space_ids': None,
+                'privilege': None,
+            })
         finally:
             if cursor:
                 cursor.close()

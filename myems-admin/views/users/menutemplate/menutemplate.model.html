@@ -1,0 +1,27 @@
+<div class="inmodal">
+    <div class="modal-header">
+        <h4 class="modal-title">{{operation | translate}}(ID:{{menuTemplate.id}})</h4>
+    </div>
+    <div class="modal-body">
+        <form role="form" name="form_menu_template" novalidate class="form-horizontal">
+            <div class="form-group"><label class="col-sm-3 control-label">{{'SETTING.NAME' | translate}}<span class="text-danger">*</span></label>
+                <div class="col-sm-9">
+                    <input ng-model="menuTemplate.name" type="text" name="menuTemplateName" class="form-control" title="{{'SETTING.NAME' | translate}}" placeholder="{{'SETTING.INPUT_NAME' | translate}}" required>
+                </div>
+            </div>
+            <div class="hr-line-dashed"></div>
+            <div class="form-group"><label class="col-sm-3 control-label">{{'USER.VISIBLE_MENUS' | translate}}</label>
+                <div class="col-sm-9 menu-template-list-scroll">
+                    <div class="checkbox checkbox-success" ng-repeat="menu in menus track by menu.state">
+                        <input id="menu_template_route_{{menu.state | lowercase | limitTo: 128}}" type="checkbox" ng-checked="isRouteSelected(menu)" ng-click="toggleRoute(menu)">
+                        <label for="menu_template_route_{{menu.state | lowercase | limitTo: 128}}">{{menu.name | translate}}</label>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </div>
+    <div class="modal-footer">
+        <button type="button" class="btn btn-white" ng-click="cancel()">{{'SETTING.CANCEL' | translate}}</button>
+        <button type="button" ng-disabled="form_menu_template.$invalid" class="btn btn-primary" ng-click="ok()">{{'SETTING.SAVE' | translate}}</button>
+    </div>
+</div>

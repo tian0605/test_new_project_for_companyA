@@ -6,19 +6,76 @@ app.controller('UserController', function ($scope,
 	$uibModal,
 	UserService,
 	PrivilegeService,
+	MenuTemplateService,
+	SpaceService,
 	toaster,
 	$translate,
 	SweetAlert) {
 	$scope.cur_user = JSON.parse($window.localStorage.getItem("myems_admin_ui_current_user"));
 	$scope.searchKeyword = '';
+	$scope.selectedEnterpriseSpaceId = '';
+	$scope.enterpriseSpaces = [];
+	$scope.allUsers = [];
+	$scope.menuTemplates = [];
+
+	$scope.applyUserFilters = function () {
+		const keyword = ($scope.searchKeyword || '').trim().toLowerCase();
+		const selectedEnterpriseSpaceId = $scope.selectedEnterpriseSpaceId === '' ? null : Number($scope.selectedEnterpriseSpaceId);
+		$scope.users = ($scope.allUsers || []).filter(function (user) {
+			const enterpriseSpaceName = $scope.getEnterpriseSpaceName(user.enterprise_space_id);
+			const matchesEnterpriseSpace = selectedEnterpriseSpaceId == null || user.enterprise_space_id === selectedEnterpriseSpaceId;
+			if (!matchesEnterpriseSpace) {
+				return false;
+			}
+			if (!keyword) {
+				return true;
+			}
+			const searchableFields = [
+				user.name,
+				user.display_name,
+				user.email,
+				user.phone,
+				user.privilege && user.privilege.name,
+				enterpriseSpaceName
+			];
+			return searchableFields.some(function (field) {
+				return field != null && String(field).toLowerCase().indexOf(keyword) >= 0;
+			});
+		});
+	};
+
+	$scope.getEnterpriseSpaces = function () {
+		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
+		SpaceService.getAllSpaces(headers, function (response) {
+			if (angular.isDefined(response.status) && response.status === 200) {
+				$scope.enterpriseSpaces = (response.data || []).filter(function(space) {
+					return space.parent_space && space.parent_space.id === 1;
+				});
+				$scope.applyUserFilters();
+			} else {
+				$scope.enterpriseSpaces = [];
+				$scope.applyUserFilters();
+			}
+		});
+	};
+	$scope.getEnterpriseSpaceName = function(enterpriseSpaceId) {
+		if (enterpriseSpaceId == null) {
+			return '-';
+		}
+		const match = ($scope.enterpriseSpaces || []).find(function(space) {
+			return space.id === enterpriseSpaceId;
+		});
+		return match ? match.name : enterpriseSpaceId;
+	};
 	$scope.getAllUsers = function () {
 		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
 		UserService.getAllUsers(headers, function (response) {
 			if (angular.isDefined(response.status) && response.status === 200) {
-				$scope.users = response.data;
+				$scope.allUsers = response.data;
 			} else {
-				$scope.users = [];
+				$scope.allUsers = [];
 			}
+			$scope.applyUserFilters();
 		});
 	};
 
@@ -34,6 +91,17 @@ app.controller('UserController', function ($scope,
 
 	};
 
+	$scope.getAllMenuTemplates = function () {
+		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
+		MenuTemplateService.getAllMenuTemplates(headers, function (response) {
+			if (angular.isDefined(response.status) && response.status === 200) {
+				$scope.menuTemplates = response.data;
+			} else {
+				$scope.menuTemplates = [];
+			}
+		});
+	};
+
 	$scope.addUser = function () {
 		var modalInstance = $uibModal.open({
 			templateUrl: 'views/users/user/user.model.html',
@@ -42,7 +110,10 @@ app.controller('UserController', function ($scope,
 			resolve: {
 				params: function () {
 					return {
-						privileges: angular.copy($scope.privileges)
+						privileges: angular.copy($scope.privileges),
+						menuTemplates: angular.copy($scope.menuTemplates),
+						currentUser: angular.copy($scope.cur_user),
+						enterpriseSpaces: angular.copy($scope.enterpriseSpaces)
 					};
 				}
 			}
@@ -82,7 +153,10 @@ app.controller('UserController', function ($scope,
 				params: function () {
 					return {
 						user: angular.copy(user),
-						privileges: angular.copy($scope.privileges)
+						privileges: angular.copy($scope.privileges),
+						menuTemplates: angular.copy($scope.menuTemplates),
+						currentUser: angular.copy($scope.cur_user),
+						enterpriseSpaces: angular.copy($scope.enterpriseSpaces)
 					};
 				}
 			}
@@ -237,35 +311,25 @@ app.controller('UserController', function ($scope,
 		}
 	}
 	$scope.searchUser = function() {
-		const headers = {
-			"User-UUID": $scope.cur_user?.uuid,
-			"Token": $scope.cur_user?.token
-		};
-
-		const rawKeyword = $scope.searchKeyword || "";
-		const trimmedKeyword = rawKeyword.trim();
-
 		if (searchDebounceTimer) {
 			clearTimeout(searchDebounceTimer);
 		}
 
 		searchDebounceTimer = setTimeout(() => {
-			if (!trimmedKeyword) {
-				$scope.getAllUsers();
-				safeApply($scope);
-				return;
-			}
-
-			UserService.searchUsers(trimmedKeyword, headers, (response) => {
-				$scope.users = (response.status === 200) ? response.data : [];
-				$scope.parentmeters = [...$scope.users];
-			});
+			$scope.applyUserFilters();
+			safeApply($scope);
 		}, 300);
+	};
+
+	$scope.filterUsersByEnterpriseSpace = function () {
+		$scope.applyUserFilters();
 	};
 
 
 	$scope.getAllUsers();
 	$scope.getAllPrivileges();
+	$scope.getAllMenuTemplates();
+	$scope.getEnterpriseSpaces();
 
 });
 
@@ -274,10 +338,26 @@ app.controller('NewUserController', function ($scope,
 	$uibModal,
 	UserService,
 	PrivilegeService,
+	MenuTemplateService,
+	SpaceService,
 	toaster,
 	$translate,
 	SweetAlert) {
 	$scope.cur_user = JSON.parse($window.localStorage.getItem("myems_admin_ui_current_user"));
+	$scope.enterpriseSpaces = [];
+	$scope.menuTemplates = [];
+	$scope.getEnterpriseSpaces = function () {
+		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
+		SpaceService.getAllSpaces(headers, function (response) {
+			if (angular.isDefined(response.status) && response.status === 200) {
+				$scope.enterpriseSpaces = (response.data || []).filter(function(space) {
+					return space.parent_space && space.parent_space.id === 1;
+				});
+			} else {
+				$scope.enterpriseSpaces = [];
+			}
+		});
+	};
 	$scope.getAllNewUsers = function () {
 		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
 		UserService.getAllNewUsers(headers, function (response) {
@@ -301,6 +381,17 @@ app.controller('NewUserController', function ($scope,
 
 	};
 
+	$scope.getAllMenuTemplates = function () {
+		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
+		MenuTemplateService.getAllMenuTemplates(headers, function (response) {
+			if (angular.isDefined(response.status) && response.status === 200) {
+				$scope.menuTemplates = response.data;
+			} else {
+				$scope.menuTemplates = [];
+			}
+		});
+	};
+
 	$scope.approveUser = function (user) {
 		var modalInstance = $uibModal.open({
 			templateUrl: 'views/users/user/approve-user.html',
@@ -310,7 +401,10 @@ app.controller('NewUserController', function ($scope,
 				params: function () {
 					return {
 						user: angular.copy(user),
-						privileges: angular.copy($scope.privileges)
+						privileges: angular.copy($scope.privileges),
+						menuTemplates: angular.copy($scope.menuTemplates),
+						currentUser: angular.copy($scope.cur_user),
+						enterpriseSpaces: angular.copy($scope.enterpriseSpaces)
 					};
 				}
 			}
@@ -380,17 +474,24 @@ app.controller('NewUserController', function ($scope,
 
 	$scope.getAllNewUsers();
 	$scope.getAllPrivileges();
+	$scope.getAllMenuTemplates();
+	$scope.getEnterpriseSpaces();
 });
 
 app.controller('ModalAddUserCtrl', function ($scope, $uibModalInstance, params, toaster, $translate) {
 	$scope.operation = "USER.ADD_USER";
 	$scope.privileges = params.privileges;
+	$scope.menuTemplates = params.menuTemplates || [];
+	$scope.currentUser = params.currentUser || {};
+	$scope.enterpriseSpaces = params.enterpriseSpaces || [];
 	$scope.user = {
 		is_admin: false,
 		is_read_only: false,
 		account_expiration_datetime:moment().add(1,'years'),
         password_expiration_datetime:moment().add(1,'years'),
-		phone: '' 
+		phone: '',
+		menu_template_id: null,
+		enterprise_space_id: $scope.currentUser.enterprise_space_id || null
 	};
 	$scope.dtOptions = {
         locale:{
@@ -414,9 +515,7 @@ app.controller('ModalAddUserCtrl', function ($scope, $uibModalInstance, params, 
 			});
 			return;
 		}
-		if ($scope.user.is_admin) {
-			$scope.user.privilege_id = undefined;
-		}else {
+		if (!$scope.user.is_admin) {
 			$scope.user.is_read_only = undefined;
 		}
 		$scope.user.account_expiration_datetime = $scope.user.account_expiration_datetime.format().slice(0,19);
@@ -433,10 +532,19 @@ app.controller('ModalEditUserCtrl', function ($scope, $uibModalInstance, params,
 	$scope.operation = "USER.EDIT_USER";
 	$scope.user = params.user;
 	$scope.privileges = params.privileges;
+	$scope.menuTemplates = params.menuTemplates || [];
+	$scope.currentUser = params.currentUser || {};
+	$scope.enterpriseSpaces = params.enterpriseSpaces || [];
 	if ($scope.user.privilege != null) {
 		$scope.user.privilege_id = $scope.user.privilege.id;
 	} else {
 		$scope.user.privilege_id = undefined;
+	}
+	if ($scope.currentUser.enterprise_space_id != null) {
+		$scope.user.enterprise_space_id = $scope.currentUser.enterprise_space_id;
+	}
+	if ($scope.user.menu_template != null) {
+		$scope.user.menu_template_id = $scope.user.menu_template.id;
 	}
 	if (!$scope.user.hasOwnProperty('phone')) {
 		$scope.user.phone = '';
@@ -464,7 +572,6 @@ app.controller('ModalEditUserCtrl', function ($scope, $uibModalInstance, params,
 			return;
 		}
 		if ($scope.user.is_admin) {
-			$scope.user.privilege_id = undefined;
 			if ($scope.user.is_read_only == null) {
 				$scope.user.is_read_only = false
 			}
@@ -509,13 +616,18 @@ app.controller('ModalApproveUserCtrl', function ($scope, $uibModalInstance, para
 
 	$scope.operation = "USER.APPROVE_USER";
 	$scope.privileges = params.privileges;
+	$scope.menuTemplates = params.menuTemplates || [];
+	$scope.currentUser = params.currentUser || {};
+	$scope.enterpriseSpaces = params.enterpriseSpaces || [];
 	$scope.user = {
 		...params.user,
 		is_admin: false,
 		is_read_only: false,
 		account_expiration_datetime:moment().add(1,'years'),
         password_expiration_datetime:moment().add(1,'years'),
-		phone: params.user.phone || '' 
+		phone: params.user.phone || '',
+		menu_template_id: null,
+		enterprise_space_id: $scope.currentUser.enterprise_space_id || null
 	};
 	$scope.dtOptions = {
         locale:{
@@ -531,7 +643,6 @@ app.controller('ModalApproveUserCtrl', function ($scope, $uibModalInstance, para
     };
 	$scope.ok = function () {
 		if ($scope.user.is_admin) {
-			$scope.user.privilege_id = undefined;
 		}else {
 			$scope.user.is_read_only = undefined;
 		}

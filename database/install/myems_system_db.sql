@@ -224,8 +224,10 @@ CREATE TABLE IF NOT EXISTS `myems_system_db`.`tbl_cost_centers` (
   `name` VARCHAR(128) NOT NULL,
   `uuid` CHAR(36) NOT NULL,
   `external_id` VARCHAR(36) COMMENT 'ID in external syste, such as SAP, ERP',
+  `enterprise_space_id` BIGINT,
   PRIMARY KEY (`id`));
 CREATE INDEX `tbl_cost_centers_index_1` ON `myems_system_db`.`tbl_cost_centers` (`name`);
+CREATE INDEX `tbl_cost_centers_index_2` ON `myems_system_db`.`tbl_cost_centers` (`enterprise_space_id`);
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Table `myems_system_db`.`tbl_cost_centers_tariffs`

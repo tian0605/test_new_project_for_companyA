@@ -5,7 +5,7 @@ from falcon_multipart.middleware import MultipartMiddleware
 from wsgiref import simple_server
 
 from core import advancedreport, apikey, command, controlmode, energyflowdiagram, \
-    privilege, textmessage, distributioncircuit, virtualmeter, \
+    privilege, menutemplate, textmessage, distributioncircuit, virtualmeter, \
     costcenter, point, knowledgefile, meter, tariff, user, storetype, timezone, \
     costfile, offlinemeterfile, version, contact, emailserver, combinedequipment, datasource, equipment, tenant, \
     shopfloor, webmessage, distributionsystem, store, emailmessage, tenanttype, wechatmessage, space, gateway, \
@@ -577,6 +577,11 @@ api.add_route('/menus/{id_}/children',
               menu.MenuChildrenCollection())
 api.add_route('/menus/web',
               menu.MenuWebCollection())
+
+api.add_route('/menu-templates',
+              menutemplate.MenuTemplateCollection())
+api.add_route('/menu-templates/{id_}',
+              menutemplate.MenuTemplateItem())
 
 api.add_route('/meters',
               meter.MeterCollection())

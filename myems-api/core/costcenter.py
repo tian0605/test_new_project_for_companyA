@@ -3,8 +3,119 @@ import falcon
 import mysql.connector
 import simplejson as json
 import redis
-from core.useractivity import user_logger, admin_control, access_control, api_key_control
+from core.useractivity import user_logger, admin_control, access_control, api_key_control, get_request_context_value
 import config
+
+
+def get_request_enterprise_space_id(req):
+    enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+    return enterprise_space_id if isinstance(enterprise_space_id, int) and enterprise_space_id > 0 else None
+
+
+def get_costcenter_scope(req):
+    is_admin = get_request_context_value(req, 'is_admin')
+    authorized_space_ids = get_request_context_value(req, 'authorized_space_ids')
+    if is_admin or authorized_space_ids is None:
+        return None
+    return [space_id for space_id in authorized_space_ids if isinstance(space_id, int)]
+
+
+def can_use_shared_costcenter_cache(req):
+    return get_costcenter_list_cache_key(req) is not None
+
+
+def get_costcenter_list_cache_key(req):
+    is_admin = bool(get_request_context_value(req, 'is_admin'))
+    enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+
+    if is_admin and enterprise_space_id is None:
+        return 'G:costcenter:admin:list'
+    if enterprise_space_id is not None:
+        return f'E:{enterprise_space_id}:costcenter:list'
+    return None
+
+
+def get_costcenter_item_cache_key(req, cost_center_id):
+    is_admin = bool(get_request_context_value(req, 'is_admin'))
+    enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+
+    if is_admin and enterprise_space_id is None:
+        return f'G:costcenter:admin:item:{cost_center_id}'
+    if enterprise_space_id is not None:
+        return f'E:{enterprise_space_id}:costcenter:item:{cost_center_id}'
+    return None
+
+
+def get_costcenter_tariff_cache_key(req, cost_center_id):
+    is_admin = bool(get_request_context_value(req, 'is_admin'))
+    enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+
+    if is_admin and enterprise_space_id is None:
+        return f'G:costcenter:admin:tariff:list:{cost_center_id}'
+    if enterprise_space_id is not None:
+        return f'E:{enterprise_space_id}:costcenter:tariff:list:{cost_center_id}'
+    return None
+
+
+def validate_costcenter_enterprise_space_id(cursor, enterprise_space_id):
+    if enterprise_space_id is None:
+        return None
+
+    if not isinstance(enterprise_space_id, int) or enterprise_space_id <= 0:
+        raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                               description='API.INVALID_ENTERPRISE_SPACE_ID')
+
+    cursor.execute(" SELECT id "
+                   " FROM tbl_spaces "
+                   " WHERE id = %s ", (enterprise_space_id,))
+    if cursor.fetchone() is None:
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description='API.ENTERPRISE_SPACE_NOT_FOUND')
+
+    return enterprise_space_id
+
+
+def query_legacy_visible_cost_center_ids(cursor, authorized_space_ids):
+    if authorized_space_ids is None:
+        return None
+    if len(authorized_space_ids) == 0:
+        return set()
+
+    placeholders = ', '.join(['%s'] * len(authorized_space_ids))
+    cursor.execute((" SELECT DISTINCT cost_center_id "
+                    " FROM tbl_spaces "
+                    f" WHERE id IN ({placeholders}) AND cost_center_id IS NOT NULL "),
+                   tuple(authorized_space_ids))
+    rows = cursor.fetchall()
+    if rows is None:
+        return set()
+    return {row[0] for row in rows}
+
+
+def query_visible_cost_center_ids(cursor, authorized_space_ids, enterprise_space_id):
+    legacy_visible_cost_center_ids = query_legacy_visible_cost_center_ids(cursor, authorized_space_ids)
+
+    if enterprise_space_id is None:
+        return legacy_visible_cost_center_ids
+
+    cursor.execute(" SELECT id "
+                   " FROM tbl_cost_centers "
+                   " WHERE enterprise_space_id = %s ", (enterprise_space_id,))
+    rows = cursor.fetchall()
+    visible_cost_center_ids = {row[0] for row in rows} if rows is not None else set()
+
+    if legacy_visible_cost_center_ids:
+        placeholders = ', '.join(['%s'] * len(legacy_visible_cost_center_ids))
+        cursor.execute((" SELECT id "
+                        " FROM tbl_cost_centers "
+                        " WHERE enterprise_space_id IS NULL "
+                        f"   AND id IN ({placeholders}) "),
+                       tuple(sorted(legacy_visible_cost_center_ids)))
+        rows = cursor.fetchall()
+        if rows is not None:
+            visible_cost_center_ids.update(row[0] for row in rows)
+
+    return visible_cost_center_ids
 
 
 def clear_costcenter_cache(cost_center_id=None):
@@ -31,19 +142,32 @@ def clear_costcenter_cache(cost_center_id=None):
         )
         redis_client.ping()
 
-        # Clear cost center list cache
-        list_cache_key_pattern = 'costcenter:list*'
-        matching_keys = redis_client.keys(list_cache_key_pattern)
+        # Clear legacy and scoped cost center list cache
+        matching_keys = redis_client.keys('costcenter:list*') + \
+            redis_client.keys('G:costcenter:admin:list') + \
+            redis_client.keys('E:*:costcenter:list')
         if matching_keys:
             redis_client.delete(*matching_keys)
 
         # Clear specific cost center item cache if cost_center_id is provided
         if cost_center_id:
-            item_cache_key = f'costcenter:item:{cost_center_id}'
-            redis_client.delete(item_cache_key)
+            redis_client.delete(f'costcenter:item:{cost_center_id}')
+            scoped_item_keys = redis_client.keys(f'G:costcenter:admin:item:{cost_center_id}') + \
+                redis_client.keys(f'E:*:costcenter:item:{cost_center_id}')
+            if scoped_item_keys:
+                redis_client.delete(*scoped_item_keys)
             # Also clear tariff list cache for this cost center
-            tariff_list_cache_key = f'costcenter:tariff:list:{cost_center_id}'
-            redis_client.delete(tariff_list_cache_key)
+            redis_client.delete(f'costcenter:tariff:list:{cost_center_id}')
+            scoped_tariff_keys = redis_client.keys(f'G:costcenter:admin:tariff:list:{cost_center_id}') + \
+                redis_client.keys(f'E:*:costcenter:tariff:list:{cost_center_id}')
+            if scoped_tariff_keys:
+                redis_client.delete(*scoped_tariff_keys)
+
+        dashboard_keys = redis_client.keys('dashboard:report:*') + \
+            redis_client.keys('G:dashboard:report:admin:*') + \
+            redis_client.keys('E:*:dashboard:report:*')
+        if dashboard_keys:
+            redis_client.delete(*dashboard_keys)
 
     except Exception:
         # If cache clear fails, ignore and continue
@@ -78,13 +202,16 @@ class CostCenterCollection:
         else:
             api_key_control(req)
 
+        authorized_space_ids = get_costcenter_scope(req)
+        enterprise_space_id = get_request_enterprise_space_id(req)
+
         # Redis cache key
-        cache_key = 'costcenter:list'
+        cache_key = get_costcenter_list_cache_key(req)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
         redis_client = None
-        if config.redis.get('is_enabled', False):
+        if config.redis.get('is_enabled', False) and cache_key is not None:
             try:
                 redis_client = redis.Redis(
                     host=config.redis['host'],
@@ -113,11 +240,21 @@ class CostCenterCollection:
             try:
                 cursor = cnx.cursor()
 
-                query = (" SELECT id, name, uuid, external_id "
-                         " FROM tbl_cost_centers "
-                         " ORDER BY id")
-                cursor.execute(query)
-                rows = cursor.fetchall()
+                visible_cost_center_ids = query_visible_cost_center_ids(cursor, authorized_space_ids, enterprise_space_id)
+
+                if visible_cost_center_ids == set():
+                    rows = list()
+                else:
+                    query = (" SELECT id, name, uuid, external_id, enterprise_space_id "
+                             " FROM tbl_cost_centers ")
+                    params = tuple()
+                    if visible_cost_center_ids is not None:
+                        placeholders = ', '.join(['%s'] * len(visible_cost_center_ids))
+                        query += f" WHERE id IN ({placeholders})"
+                        params = tuple(sorted(visible_cost_center_ids))
+                    query += " ORDER BY id"
+                    cursor.execute(query, params)
+                    rows = cursor.fetchall()
             finally:
                 if cursor:
                     cursor.close()
@@ -131,12 +268,13 @@ class CostCenterCollection:
                 meta_result = {"id": row[0],
                                "name": row[1],
                                "uuid": row[2],
-                               "external_id": row[3]}
+                               "external_id": row[3],
+                               "enterprise_space_id": row[4]}
                 result.append(meta_result)
 
         # Store result in Redis cache
         result_json = json.dumps(result)
-        if redis_client:
+        if redis_client and cache_key is not None:
             try:
                 redis_client.setex(cache_key, cache_expire, result_json)
             except Exception:
@@ -178,12 +316,16 @@ class CostCenterCollection:
         else:
             external_id = None
 
+        enterprise_space_id = new_values['data'].get('enterprise_space_id') \
+            if 'enterprise_space_id' in new_values['data'].keys() else get_request_enterprise_space_id(req)
+
         cnx = None
         cursor = None
         try:
             cnx = mysql.connector.connect(**config.myems_system_db)
             try:
                 cursor = cnx.cursor()
+                enterprise_space_id = validate_costcenter_enterprise_space_id(cursor, enterprise_space_id)
 
                 cursor.execute(" SELECT name "
                                " FROM tbl_cost_centers "
@@ -201,11 +343,12 @@ class CostCenterCollection:
                                                description='API.COST_CENTER_EXTERNAL_ID_EXISTS')
 
                 add_row = (" INSERT INTO tbl_cost_centers "
-                           "     (name, uuid, external_id) "
-                           " VALUES (%s, %s, %s) ")
+                           "     (name, uuid, external_id, enterprise_space_id) "
+                           " VALUES (%s, %s, %s, %s) ")
                 cursor.execute(add_row, (name,
                                          str(uuid.uuid4()),
-                                         external_id,))
+                                         external_id,
+                                         enterprise_space_id,))
                 new_id = cursor.lastrowid
                 cnx.commit()
             finally:
@@ -245,13 +388,16 @@ class CostCenterItem:
             raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                    description='API.INVALID_COST_CENTER_ID')
 
+        authorized_space_ids = get_costcenter_scope(req)
+        enterprise_space_id = get_request_enterprise_space_id(req)
+
         # Redis cache key
-        cache_key = f'costcenter:item:{id_}'
+        cache_key = get_costcenter_item_cache_key(req, id_)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
         redis_client = None
-        if config.redis.get('is_enabled', False):
+        if config.redis.get('is_enabled', False) and cache_key is not None:
             try:
                 redis_client = redis.Redis(
                     host=config.redis['host'],
@@ -280,7 +426,12 @@ class CostCenterItem:
             try:
                 cursor = cnx.cursor()
 
-                query = (" SELECT id, name, uuid, external_id "
+                visible_cost_center_ids = query_visible_cost_center_ids(cursor, authorized_space_ids, enterprise_space_id)
+                if visible_cost_center_ids is not None and int(id_) not in visible_cost_center_ids:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.COST_CENTER_NOT_FOUND')
+
+                query = (" SELECT id, name, uuid, external_id, enterprise_space_id "
                          " FROM tbl_cost_centers "
                          " WHERE id = %s ")
                 cursor.execute(query, (id_,))
@@ -299,11 +450,12 @@ class CostCenterItem:
         result = {"id": row[0],
                   "name": row[1],
                   "uuid": row[2],
-                  "external_id": row[3]}
+                  "external_id": row[3],
+                  "enterprise_space_id": row[4]}
 
         # Store result in Redis cache
         result_json = json.dumps(result)
-        if redis_client:
+        if redis_client and cache_key is not None:
             try:
                 redis_client.setex(cache_key, cache_expire, result_json)
             except Exception:
@@ -328,10 +480,11 @@ class CostCenterItem:
             try:
                 cursor = cnx.cursor()
 
-                cursor.execute(" SELECT name "
+                cursor.execute(" SELECT name, enterprise_space_id "
                                " FROM tbl_cost_centers "
                                " WHERE id = %s ", (id_,))
-                if cursor.fetchone() is None:
+                row = cursor.fetchone()
+                if row is None:
                     raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                            description='API.COST_CENTER_NOT_FOUND')
 
@@ -555,12 +708,21 @@ class CostCenterItem:
             try:
                 cursor = cnx.cursor()
 
-                cursor.execute(" SELECT name "
+                cursor.execute(" SELECT name, enterprise_space_id "
                                " FROM tbl_cost_centers "
                                " WHERE id = %s ", (id_,))
-                if cursor.fetchone() is None:
+                row = cursor.fetchone()
+                if row is None:
                     raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                            description='API.COST_CENTER_NOT_FOUND')
+
+                enterprise_space_id = row[1]
+                if 'enterprise_space_id' in new_values['data'].keys():
+                    enterprise_space_id = new_values['data']['enterprise_space_id']
+                elif enterprise_space_id is None:
+                    enterprise_space_id = get_request_enterprise_space_id(req)
+
+                enterprise_space_id = validate_costcenter_enterprise_space_id(cursor, enterprise_space_id)
 
                 cursor.execute(" SELECT name "
                                " FROM tbl_cost_centers "
@@ -580,21 +742,13 @@ class CostCenterItem:
                                                title='API.BAD_REQUEST',
                                                description='API.COST_CENTER_EXTERNAL_ID_EXISTS')
 
-                # Re-check existence (redundant in original code but kept for logic consistency)
-                cursor.execute(" SELECT name "
-                               " FROM tbl_cost_centers "
-                               " WHERE id = %s ", (id_,))
-                if cursor.fetchone() is None:
-                    raise falcon.HTTPError(status=falcon.HTTP_404,
-                                           title='API.NOT_FOUND',
-                                           description='API.COST_CENTER_NOT_FOUND')
-
                 update_row = (" UPDATE tbl_cost_centers "
-                              " SET name = %s, external_id = %s "
+                              " SET name = %s, external_id = %s, enterprise_space_id = %s "
                               " WHERE id = %s ")
 
                 cursor.execute(update_row, (name,
                                             external_id,
+                                            enterprise_space_id,
                                             id_,))
                 cnx.commit()
             finally:
@@ -633,13 +787,16 @@ class CostCenterTariffCollection:
             raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                    description='API.INVALID_COST_CENTER_ID')
 
+        authorized_space_ids = get_costcenter_scope(req)
+        enterprise_space_id = get_request_enterprise_space_id(req)
+
         # Redis cache key
-        cache_key = f'costcenter:tariff:list:{id_}'
+        cache_key = get_costcenter_tariff_cache_key(req, id_)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
         redis_client = None
-        if config.redis.get('is_enabled', False):
+        if config.redis.get('is_enabled', False) and cache_key is not None:
             try:
                 redis_client = redis.Redis(
                     host=config.redis['host'],
@@ -668,6 +825,11 @@ class CostCenterTariffCollection:
             try:
                 cursor = cnx.cursor()
 
+                visible_cost_center_ids = query_visible_cost_center_ids(cursor, authorized_space_ids, enterprise_space_id)
+                if visible_cost_center_ids is not None and int(id_) not in visible_cost_center_ids:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.COST_CENTER_NOT_FOUND')
+
                 query = (" SELECT t.id, t.name, t.uuid, "
                          "        t.tariff_type, t.unit_of_price "
                          " FROM tbl_tariffs t, tbl_cost_centers_tariffs ct "
@@ -694,7 +856,7 @@ class CostCenterTariffCollection:
 
         # Store result in Redis cache
         result_json = json.dumps(result)
-        if redis_client:
+        if redis_client and cache_key is not None:
             try:
                 redis_client.setex(cache_key, cache_expire, result_json)
             except Exception:

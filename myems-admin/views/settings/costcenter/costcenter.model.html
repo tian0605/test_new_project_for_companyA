@@ -6,16 +6,30 @@
         <form role="form" name="form_costcenter" novalidate class="form-horizontal">
             <div class="form-group"><label class="col-sm-3 control-label">{{'SETTING.NAME' | translate}}<span class="text-danger">*</span></label>
                 <div class="col-sm-9">
-                    <input ng-model="costcenter.name" type="text" name="costcentername" class="form-control" required="">
+                    <input ng-model="costcenter.name" type="text" name="costcentername" class="form-control" title="{{'SETTING.NAME' | translate}}" required="">
                     <div class="m-t-xs" ng-show="form_costcenter.costcentername.$invalid && form_costcenter.costcentername.$dirty">
                         <small class="text-danger" ng-show="form_costcenter.costcentername.$error.required">{{'SETTING.INPUT_NAME' | translate}}</small>
                     </div>
                 </div>
             </div>
             <div class="hr-line-dashed"></div>
+            <div class="form-group"><label class="col-sm-3 control-label">{{'USER.ENTERPRISE_SPACE' | translate}}</label>
+                <div class="col-sm-9" ng-if="currentUser.enterprise_space_id == null">
+                    <ui-select ng-model="costcenter.enterprise_space_id" theme="bootstrap" ng-required="currentUser.enterprise_space_id == null">
+                        <ui-select-match allow-clear="true" placeholder="{{'COMMON.PLACEHOLDER' | translate}}">{{$select.selected.name}}</ui-select-match>
+                        <ui-select-choices repeat="space.id as space in enterpriseSpaces | filter: $select.search">
+                            <div ng-bind-html="space.name | highlight: $select.search"></div>
+                        </ui-select-choices>
+                    </ui-select>
+                </div>
+                <div class="col-sm-9" ng-if="currentUser.enterprise_space_id != null">
+                    <input type="text" class="form-control" title="{{'USER.ENTERPRISE_SPACE' | translate}}" ng-value="(enterpriseSpaces | filter:{id: costcenter.enterprise_space_id}:true)[0].name || costcenter.enterprise_space_id" readonly>
+                </div>
+            </div>
+            <div class="hr-line-dashed"></div>
             <div class="form-group"><label class="col-sm-3 control-label">{{'COSTCENTER.EXTERNAL_ID' | translate}} ({{'SETTING.OPTIONAL' | translate}})</label>
                 <div class="col-sm-9">
-                    <input ng-model="costcenter.external_id" type="text" name="costcenterexternalid" class="form-control">
+                    <input ng-model="costcenter.external_id" type="text" name="costcenterexternalid" class="form-control" title="{{'COSTCENTER.EXTERNAL_ID' | translate}}">
                 </div>
             </div>
         </form>

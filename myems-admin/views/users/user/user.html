@@ -10,11 +10,20 @@
 								<a ng-click="addUser()" class="btn btn-primary btn-rounded btn-outline" href=""><i
 										class="fa fa-plus-circle"></i> {{'USER.ADD_USER' | translate}}</a>
 							</div>
-							<div class="col-md-9">
+							<div class="col-md-5">
 								<input type="text" class="form-control m-b-xs"
 									   placeholder="{{'SETTING.SEARCH' | translate}}"
 									   ng-model="searchKeyword"
 									   ng-keyup="searchUser()">
+							</div>
+							<div class="col-md-4">
+								<select class="form-control m-b-xs"
+										title="{{'USER.ENTERPRISE_SPACE' | translate}}"
+										ng-model="selectedEnterpriseSpaceId"
+										ng-options="space.id as space.name for space in enterpriseSpaces"
+										ng-change="filterUsersByEnterpriseSpace()">
+									<option value="">{{'USER.ENTERPRISE_SPACE' | translate}}</option>
+								</select>
 							</div>
 							<table class="footable table table-bordered table-hover" data-sort="true"
 								data-page-size="15">
@@ -27,7 +36,9 @@
 										<th class="text-center">{{'USER.PHONE' | translate}}</th>
 										<th class="text-center">{{'USER.IS_ADMIN' | translate}}</th>
 										<th class="text-center">{{'USER.IS_READ_ONLY' | translate}}</th>
-										<th class="text-center">{{'USER.PRIVILEGE' | translate}}</th>
+										<th class="text-center">{{'USER.DATA_PERMISSION' | translate}}</th>
+										<th class="text-center">{{'USER.MENU_PERMISSION_TEMPLATE' | translate}}</th>
+										<th class="text-center">{{'USER.ENTERPRISE_SPACE' | translate}}</th>
 										<th class="text-center">{{'USER.ACCOUNT_EXPIRATION_DATETIME' | translate}}</th>
 										<th class="text-center">{{'USER.PASSWORD_EXPIRATION_DATETIME' | translate}}</th>
 										<th class="text-center">{{'SETTING.ACTION' | translate}}</th>
@@ -44,6 +55,8 @@
 										<td class="text-center">{{ user.is_read_only==null? null:(user.is_read_only==1?
 											'Y': 'N') }}</td>
 										<td class="text-center">{{ user.privilege.name }}</td>
+										<td class="text-center">{{ user.menu_template && user.menu_template.name || '-' }}</td>
+										<td class="text-center">{{ getEnterpriseSpaceName(user.enterprise_space_id) }}</td>
 										<td class="text-center">{{ user.account_expiration_datetime }}</td>
 										<td class="text-center">{{ user.password_expiration_datetime }}</td>
 										<td class="text-center">
@@ -63,7 +76,7 @@
 								</tbody>
 								<tfoot class="hide-if-no-paging">
 									<tr>
-										<td colspan="11">
+										<td colspan="13">
 											<ul class="pagination pull-right"></ul>
 										</td>
 									</tr>

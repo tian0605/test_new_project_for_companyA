@@ -9,7 +9,7 @@ import falcon
 import mysql.connector
 import simplejson as json
 import redis
-from core.useractivity import user_logger, write_log, admin_control
+from core.useractivity import user_logger, write_log, admin_control, get_user_permission_context, get_request_context_value
 import config
 
 PASSWORD_RENEWAL_DELTA = timedelta(days=365)
@@ -55,9 +55,9 @@ def clear_user_cache(user_id=None):
         )
         redis_client.ping()
 
-        # Clear all user list cache (including all search queries)
-        list_cache_key_pattern = 'user:list:*'
-        matching_keys = redis_client.keys(list_cache_key_pattern)
+        matching_keys = redis_client.keys('user:list:*') + \
+            redis_client.keys('G:user:list:*:admin') + \
+            redis_client.keys('E:*:user:list:*')
         if matching_keys:
             redis_client.delete(*matching_keys)
 
@@ -65,10 +65,216 @@ def clear_user_cache(user_id=None):
         if user_id:
             item_cache_key = f'user:item:{user_id}'
             redis_client.delete(item_cache_key)
+            matching_keys = redis_client.keys(f'G:user:item:{user_id}:admin') + \
+                redis_client.keys(f'E:*:user:item:{user_id}')
+            if matching_keys:
+                redis_client.delete(*matching_keys)
 
     except Exception:
         # If cache clear fails, ignore and continue
         pass
+
+
+def get_user_list_cache_key(req, search_query):
+    enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+    is_admin = bool(get_request_context_value(req, 'is_admin'))
+
+    if is_admin and enterprise_space_id is None:
+        return f'G:user:list:{search_query}:admin'
+    if enterprise_space_id is not None:
+        return f'E:{enterprise_space_id}:user:list:{search_query}'
+    return f'user:list:{search_query}'
+
+
+def get_user_item_cache_key(req, user_id):
+    enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+    is_admin = bool(get_request_context_value(req, 'is_admin'))
+
+    if is_admin and enterprise_space_id is None:
+        return f'G:user:item:{user_id}:admin'
+    if enterprise_space_id is not None:
+        return f'E:{enterprise_space_id}:user:item:{user_id}'
+    return f'user:item:{user_id}'
+
+
+def is_user_visible_for_request(req, target_enterprise_space_id):
+    enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+    is_admin = bool(get_request_context_value(req, 'is_admin'))
+
+    if is_admin and enterprise_space_id is None:
+        return True
+
+    if enterprise_space_id is None:
+        return False
+
+    return target_enterprise_space_id == enterprise_space_id
+
+
+def get_admin_scope_by_uuid(cursor, admin_user_uuid):
+    cursor.execute(" SELECT is_admin, enterprise_space_id "
+                   " FROM tbl_users "
+                   " WHERE uuid = %s ", (admin_user_uuid,))
+    row = cursor.fetchone()
+    if row is None or not bool(row[0]):
+        raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                               description='API.INVALID_PRIVILEGE')
+
+    return {
+        'is_platform_admin': row[1] is None,
+        'enterprise_space_id': row[1]
+    }
+
+
+def ensure_target_user_visible_for_admin_scope(admin_scope, target_enterprise_space_id):
+    if admin_scope['is_platform_admin']:
+        return
+
+    if target_enterprise_space_id != admin_scope['enterprise_space_id']:
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description='API.USER_NOT_FOUND')
+
+
+def get_enterprise_summary(enterprise_space_id):
+    if enterprise_space_id is None:
+        return None
+
+    cnx = None
+    cursor = None
+    try:
+        cnx = mysql.connector.connect(**config.myems_system_db)
+        cursor = cnx.cursor()
+        cursor.execute(" SELECT id, name, uuid "
+                       " FROM tbl_spaces "
+                       " WHERE id = %s ", (enterprise_space_id,))
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            'id': row[0],
+            'name': row[1],
+            'uuid': row[2],
+        }
+    finally:
+        if cursor:
+            cursor.close()
+        if cnx:
+            cnx.close()
+
+
+def validate_menu_template_id(menu_template_id):
+    if menu_template_id is None:
+        return None
+
+    if not isinstance(menu_template_id, int) or menu_template_id <= 0:
+        raise falcon.HTTPError(status=falcon.HTTP_400,
+                               title='API.BAD_REQUEST',
+                               description='API.INVALID_MENU_TEMPLATE_ID')
+
+    cnx = None
+    cursor = None
+    try:
+        cnx = mysql.connector.connect(**config.myems_user_db)
+        cursor = cnx.cursor()
+        cursor.execute(" SELECT id "
+                       " FROM tbl_menu_templates "
+                       " WHERE id = %s ", (menu_template_id,))
+        if cursor.fetchone() is None:
+            raise falcon.HTTPError(status=falcon.HTTP_404,
+                                   title='API.NOT_FOUND',
+                                   description='API.MENU_TEMPLATE_NOT_FOUND')
+    finally:
+        if cursor:
+            cursor.close()
+        if cnx:
+            cnx.close()
+
+    return menu_template_id
+
+
+def validate_privilege_id(privilege_id):
+    if privilege_id is None:
+        return None
+
+    if not isinstance(privilege_id, int) or privilege_id <= 0:
+        raise falcon.HTTPError(status=falcon.HTTP_400,
+                               title='API.BAD_REQUEST',
+                               description='API.INVALID_PRIVILEGE_ID')
+
+    cnx = None
+    cursor = None
+    try:
+        cnx = mysql.connector.connect(**config.myems_user_db)
+        cursor = cnx.cursor()
+        cursor.execute(" SELECT id "
+                       " FROM tbl_privileges "
+                       " WHERE id = %s ", (privilege_id,))
+        if cursor.fetchone() is None:
+            raise falcon.HTTPError(status=falcon.HTTP_404,
+                                   title='API.NOT_FOUND',
+                                   description='API.PRIVILEGE_NOT_FOUND')
+    finally:
+        if cursor:
+            cursor.close()
+        if cnx:
+            cnx.close()
+
+    return privilege_id
+
+
+def validate_enterprise_space_id(enterprise_space_id, is_admin):
+    if enterprise_space_id is None:
+        if is_admin:
+            return None
+        raise falcon.HTTPError(status=falcon.HTTP_400,
+                               title='API.BAD_REQUEST',
+                               description='API.INVALID_ENTERPRISE_SPACE_ID')
+
+    if not isinstance(enterprise_space_id, int) or enterprise_space_id <= 0:
+        raise falcon.HTTPError(status=falcon.HTTP_400,
+                               title='API.BAD_REQUEST',
+                               description='API.INVALID_ENTERPRISE_SPACE_ID')
+
+    cnx = None
+    cursor = None
+    try:
+        cnx = mysql.connector.connect(**config.myems_system_db)
+        cursor = cnx.cursor()
+        cursor.execute(" SELECT id "
+                       " FROM tbl_spaces "
+                       " WHERE id = %s ", (enterprise_space_id,))
+        if cursor.fetchone() is None:
+            raise falcon.HTTPError(status=falcon.HTTP_404,
+                                   title='API.NOT_FOUND',
+                                   description='API.ENTERPRISE_SPACE_NOT_FOUND')
+    finally:
+        if cursor:
+            cursor.close()
+        if cnx:
+            cnx.close()
+
+    return enterprise_space_id
+
+
+def resolve_enterprise_space_id_for_request(req, enterprise_space_id, is_admin):
+    request_enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+    request_is_admin = bool(get_request_context_value(req, 'is_admin'))
+
+    if request_is_admin and request_enterprise_space_id is None:
+        return validate_enterprise_space_id(enterprise_space_id, is_admin)
+
+    if request_enterprise_space_id is None:
+        return validate_enterprise_space_id(enterprise_space_id, is_admin)
+
+    if enterprise_space_id is None:
+        return request_enterprise_space_id
+
+    validated_enterprise_space_id = validate_enterprise_space_id(enterprise_space_id, is_admin)
+    if validated_enterprise_space_id != request_enterprise_space_id:
+        raise falcon.HTTPError(status=falcon.HTTP_404,
+                               title='API.NOT_FOUND',
+                               description='API.ENTERPRISE_SPACE_NOT_FOUND')
+
+    return validated_enterprise_space_id
 
 
 class UserCollection:
@@ -91,6 +297,8 @@ class UserCollection:
     @staticmethod
     def on_get(req, resp):
         admin_control(req)
+        enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+        is_platform_admin = bool(get_request_context_value(req, 'is_admin')) and enterprise_space_id is None
 
         search_query = req.get_param('q', default=None)
 
@@ -100,7 +308,7 @@ class UserCollection:
             search_query = ''
 
         # Redis cache key (include search_query in key)
-        cache_key = f'user:list:{search_query}'
+        cache_key = get_user_list_cache_key(req, search_query)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
@@ -133,22 +341,30 @@ class UserCollection:
             try:
                 cursor = cnx.cursor()
                 query = (" SELECT u.id, u.name, u.display_name, u.uuid, "
-                         "        u.email, u.phone, u.is_admin, u.is_read_only, p.id, p.name, "
+                         "        u.email, u.phone, u.is_admin, u.is_read_only, p.id, p.name, mt.id, mt.name, "
                          "        u.account_expiration_datetime_utc, "
                          "        u.password_expiration_datetime_utc, "
-                         "        u.failed_login_count "
+                         "        u.failed_login_count, u.enterprise_space_id "
                          " FROM tbl_users u "
-                         " LEFT JOIN tbl_privileges p ON u.privilege_id = p.id ")
+                         " LEFT JOIN tbl_privileges p ON u.privilege_id = p.id "
+                         " LEFT JOIN tbl_menu_templates mt ON u.menu_template_id = mt.id ")
 
-                search_param = None
+                where_clauses = list()
+                params = dict()
+
+                if not is_platform_admin:
+                    where_clauses.append(" u.enterprise_space_id = %(enterprise_space_id)s ")
+                    params['enterprise_space_id'] = enterprise_space_id
+
                 if search_query:
-                    query += (" WHERE u.name LIKE %(search)s "
-                              "OR u.email LIKE %(search)s "
-                              "OR u.phone LIKE %(search)s ")
-                    search_param = f"%{search_query}%"
+                    where_clauses.append(" (u.name LIKE %(search)s OR u.email LIKE %(search)s OR u.phone LIKE %(search)s) ")
+                    params['search'] = f"%{search_query}%"
+
+                if where_clauses:
+                    query += " WHERE " + " AND ".join(where_clauses)
                 query += " ORDER BY u.name "
 
-                cursor.execute(query, {"search": search_param} if search_param else None)
+                cursor.execute(query, params if params else None)
                 rows = cursor.fetchall()
             finally:
                 if cursor:
@@ -177,13 +393,18 @@ class UserCollection:
                         "id": row[8],
                         "name": row[9]
                     } if row[8] is not None else None,
+                    "menu_template": {
+                        "id": row[10],
+                        "name": row[11]
+                    } if row[10] is not None else None,
+                    "enterprise_space_id": row[15],
                     "account_expiration_datetime":
-                        (row[10].replace(tzinfo=timezone.utc) +
+                        (row[12].replace(tzinfo=timezone.utc) +
                          timedelta(minutes=timezone_offset)).isoformat()[0:19],
                     "password_expiration_datetime":
-                        (row[11].replace(tzinfo=timezone.utc) +
+                        (row[13].replace(tzinfo=timezone.utc) +
                          timedelta(minutes=timezone_offset)).isoformat()[0:19],
-                    "is_locked": True if row[12] >=
+                    "is_locked": True if row[14] >=
                     config.maximum_failed_login_count else False
                 }
                 result.append(meta_result)
@@ -273,14 +494,13 @@ class UserCollection:
                                        description='API.INVALID_IS_READ_ONLY_VALUE')
             is_read_only = new_values['data']['is_read_only']
 
-        if 'privilege_id' in new_values['data'].keys():
-            if not isinstance(new_values['data']['privilege_id'], int) or \
-                    new_values['data']['privilege_id'] <= 0:
-                raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
-                                       description='API.INVALID_PRIVILEGE_ID')
-            privilege_id = new_values['data']['privilege_id']
-        else:
-            privilege_id = None
+        privilege_id = validate_privilege_id(new_values['data'].get('privilege_id'))
+        menu_template_id = validate_menu_template_id(new_values['data'].get('menu_template_id'))
+
+        enterprise_space_id = resolve_enterprise_space_id_for_request(
+            req,
+            new_values['data'].get('enterprise_space_id'),
+            is_admin)
 
         phone = None
         if 'phone' in new_values['data'].keys() and isinstance(new_values['data']['phone'], str):
@@ -324,21 +544,20 @@ class UserCollection:
                     raise falcon.HTTPError(status=falcon.HTTP_404, title='API.BAD_REQUEST',
                                            description='API.EMAIL_IS_ALREADY_IN_USE')
 
-                if privilege_id is not None:
+                if phone is not None:
                     cursor.execute(" SELECT name "
-                                   " FROM tbl_privileges "
-                                   " WHERE id = %s ",
-                                   (privilege_id,))
-                    if cursor.fetchone() is None:
-                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                               description='API.PRIVILEGE_NOT_FOUND')
+                                   " FROM tbl_users "
+                                   " WHERE phone = %s ", (phone,))
+                    if cursor.fetchone() is not None:
+                        raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                               description='API.PHONE_IS_ALREADY_IN_USE')
 
                 add_row = (" INSERT INTO tbl_users "
                            "     (name, uuid, display_name, email, phone, salt, password, "
-                           "      is_admin, is_read_only, privilege_id, "
+                           "      is_admin, is_read_only, privilege_id, menu_template_id, enterprise_space_id, "
                            "      account_expiration_datetime_utc, "
                            "      password_expiration_datetime_utc, failed_login_count) "
-                           " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ")
+                           " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ")
 
                 salt = uuid.uuid4().hex
                 password = new_values['data']['password']
@@ -354,6 +573,8 @@ class UserCollection:
                                          is_admin,
                                          is_read_only,
                                          privilege_id,
+                                         menu_template_id,
+                                         enterprise_space_id,
                                          account_expiration_datetime,
                                          password_expiration_datetime,
                                          0))
@@ -391,7 +612,7 @@ class UserItem:
                                    description='API.INVALID_USER_ID')
 
         # Redis cache key
-        cache_key = f'user:item:{id_}'
+        cache_key = get_user_item_cache_key(req, id_)
         cache_expire = 28800  # 8 hours in seconds (long-term cache)
 
         # Try to get from Redis cache (only if Redis is enabled)
@@ -425,17 +646,22 @@ class UserItem:
                 cursor = cnx.cursor()
 
                 query = (" SELECT u.id, u.name, u.display_name, u.uuid, "
-                         "        u.email, u.phone, u.is_admin, u.is_read_only, p.id, p.name, "
+                         "        u.email, u.phone, u.is_admin, u.is_read_only, p.id, p.name, mt.id, mt.name, "
                          "        u.account_expiration_datetime_utc, "
                          "        u.password_expiration_datetime_utc,"
-                         "        u.failed_login_count "
+                         "        u.failed_login_count, u.enterprise_space_id "
                          " FROM tbl_users u "
                          " LEFT JOIN tbl_privileges p ON u.privilege_id = p.id "
+                         " LEFT JOIN tbl_menu_templates mt ON u.menu_template_id = mt.id "
                          " WHERE u.id = %s ")
                 cursor.execute(query, (id_,))
                 row = cursor.fetchone()
                 
                 if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.USER_NOT_FOUND')
+
+                if not is_user_visible_for_request(req, row[13]):
                     raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                            description='API.USER_NOT_FOUND')
             finally:
@@ -462,13 +688,18 @@ class UserItem:
                 "id": row[8],
                 "name": row[9]
             } if row[8] is not None else None,
+            "menu_template": {
+                "id": row[10],
+                "name": row[11]
+            } if row[10] is not None else None,
+            "enterprise_space_id": row[15],
             "account_expiration_datetime":
-                (row[10].replace(tzinfo=timezone.utc) +
+                (row[12].replace(tzinfo=timezone.utc) +
                  timedelta(minutes=timezone_offset)).isoformat()[0:19],
             "password_expiration_datetime":
-                (row[11].replace(tzinfo=timezone.utc) +
+                (row[13].replace(tzinfo=timezone.utc) +
                  timedelta(minutes=timezone_offset)).isoformat()[0:19],
-            "is_locked": True if row[12] >= config.maximum_failed_login_count else False
+            "is_locked": True if row[14] >= config.maximum_failed_login_count else False
         }
 
         # Store result in Redis cache
@@ -501,7 +732,7 @@ class UserItem:
                 cursor_user_db = cnx_user_db.cursor()
                 
                 user_uuid = None
-                cursor_user_db.execute(" SELECT uuid "
+                cursor_user_db.execute(" SELECT uuid, enterprise_space_id "
                                        " FROM tbl_users "
                                        " WHERE id = %s ", (id_,))
                 row = cursor_user_db.fetchone()
@@ -510,6 +741,10 @@ class UserItem:
                                            description='API.USER_NOT_FOUND')
                 else:
                     user_uuid = row[0]
+
+                if not is_user_visible_for_request(req, row[1]):
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.USER_NOT_FOUND')
 
                 cnx_system_db = mysql.connector.connect(**config.myems_system_db)
                 try:
@@ -619,14 +854,13 @@ class UserItem:
                                        description='API.INVALID_IS_READ_ONLY_VALUE')
             is_read_only = new_values['data']['is_read_only']
 
-        if 'privilege_id' in new_values['data'].keys():
-            if not isinstance(new_values['data']['privilege_id'], int) or \
-                    new_values['data']['privilege_id'] <= 0:
-                raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
-                                       description='API.INVALID_PRIVILEGE_ID')
-            privilege_id = new_values['data']['privilege_id']
-        else:
-            privilege_id = None
+        privilege_id = validate_privilege_id(new_values['data'].get('privilege_id'))
+        menu_template_id = validate_menu_template_id(new_values['data'].get('menu_template_id'))
+
+        enterprise_space_id = resolve_enterprise_space_id_for_request(
+            req,
+            new_values['data'].get('enterprise_space_id'),
+            is_admin)
 
         phone = None
         if 'phone' in new_values['data'].keys() and isinstance(new_values['data']['phone'], str):
@@ -656,10 +890,15 @@ class UserItem:
             try:
                 cursor = cnx.cursor()
 
-                cursor.execute(" SELECT name "
+                cursor.execute(" SELECT name, enterprise_space_id "
                                " FROM tbl_users "
                                " WHERE id = %s ", (id_,))
-                if cursor.fetchone() is None:
+                row = cursor.fetchone()
+                if row is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.USER_NOT_FOUND')
+
+                if not is_user_visible_for_request(req, row[1]):
                     raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                            description='API.USER_NOT_FOUND')
 
@@ -677,18 +916,17 @@ class UserItem:
                     raise falcon.HTTPError(status=falcon.HTTP_404, title='API.BAD_REQUEST',
                                            description='API.EMAIL_IS_ALREADY_IN_USE')
 
-                if privilege_id is not None:
+                if phone is not None:
                     cursor.execute(" SELECT name "
-                                   " FROM tbl_privileges "
-                                   " WHERE id = %s ",
-                                   (privilege_id,))
-                    if cursor.fetchone() is None:
-                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                               description='API.PRIVILEGE_NOT_FOUND')
+                                   " FROM tbl_users "
+                                   " WHERE phone = %s AND id != %s ", (phone, id_))
+                    if cursor.fetchone() is not None:
+                        raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                               description='API.PHONE_IS_ALREADY_IN_USE')
 
                 update_row = (" UPDATE tbl_users "
                               " SET name = %s, display_name = %s, email = %s, phone = %s, "
-                              "     is_admin = %s, is_read_only = %s, privilege_id = %s,"
+                              "     is_admin = %s, is_read_only = %s, privilege_id = %s, menu_template_id = %s, enterprise_space_id = %s,"
                               "     account_expiration_datetime_utc = %s, "
                               "     password_expiration_datetime_utc = %s "
                               " WHERE id = %s ")
@@ -699,6 +937,8 @@ class UserItem:
                                             is_admin,
                                             is_read_only,
                                             privilege_id,
+                                            menu_template_id,
+                                            enterprise_space_id,
                                             account_expiration_datetime,
                                             password_expiration_datetime,
                                             id_,))
@@ -759,6 +999,8 @@ class UserLogin:
         cnx = None
         cursor = None
         result = None
+        permission_context = None
+        enterprise_summary = None
         try:
             cnx = mysql.connector.connect(**config.myems_user_db)
             try:
@@ -774,21 +1016,21 @@ class UserLogin:
                     phone_reg = r'^\+?\d{8,}$'
 
                     if re.match(email_reg, account):
-                        query = (" SELECT id, name, uuid, display_name, email, salt, password, is_admin, is_read_only, "
+                        query = (" SELECT id, name, uuid, display_name, email, salt, password, is_admin, is_read_only, menu_template_id, "
                                  "        account_expiration_datetime_utc, password_expiration_datetime_utc, "
                                  "        failed_login_count "
                                  " FROM tbl_users "
                                  " WHERE email = %s ")
                         cursor.execute(query, (account,))
                     elif re.match(phone_reg, account):
-                        query = (" SELECT id, name, uuid, display_name, email, salt, password, is_admin, is_read_only, "
+                        query = (" SELECT id, name, uuid, display_name, email, salt, password, is_admin, is_read_only, menu_template_id, "
                                  "        account_expiration_datetime_utc, password_expiration_datetime_utc, "
                                  "        failed_login_count "
                                  " FROM tbl_users "
                                  " WHERE phone = %s ")
                         cursor.execute(query, (account,))
                     else:
-                        query = (" SELECT id, name, uuid, display_name, email, salt, password, is_admin, is_read_only, "
+                        query = (" SELECT id, name, uuid, display_name, email, salt, password, is_admin, is_read_only, menu_template_id, "
                                  "        account_expiration_datetime_utc, password_expiration_datetime_utc, "
                                  "        failed_login_count "
                                  " FROM tbl_users "
@@ -810,9 +1052,10 @@ class UserLogin:
                         "password": row[6],
                         "is_admin": True if row[7] else False,
                         "is_read_only": (True if row[8] else False) if row[7] else None,
-                        "account_expiration_datetime_utc": row[9],
-                        "password_expiration_datetime_utc": row[10],
-                        "failed_login_count": row[11]
+                        "menu_template_id": row[9],
+                        "account_expiration_datetime_utc": row[10],
+                        "password_expiration_datetime_utc": row[11],
+                        "failed_login_count": row[12]
                     }
                 elif 'name' in new_values['data']:
                     if not isinstance(new_values['data']['name'], str) or \
@@ -820,7 +1063,7 @@ class UserLogin:
                         raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                                description='API.INVALID_USER_NAME')
 
-                    query = (" SELECT id, name, uuid, display_name, email, salt, password, is_admin, is_read_only, "
+                    query = (" SELECT id, name, uuid, display_name, email, salt, password, is_admin, is_read_only, menu_template_id, "
                              " account_expiration_datetime_utc, password_expiration_datetime_utc, failed_login_count "
                              " FROM tbl_users "
                              " WHERE name = %s ")
@@ -840,9 +1083,10 @@ class UserLogin:
                         "password": row[6],
                         "is_admin": True if row[7] else False,
                         "is_read_only": (True if row[8] else False) if row[7] else None,
-                        "account_expiration_datetime_utc": row[9],
-                        "password_expiration_datetime_utc": row[10],
-                        "failed_login_count": row[11]
+                        "menu_template_id": row[9],
+                        "account_expiration_datetime_utc": row[10],
+                        "password_expiration_datetime_utc": row[11],
+                        "failed_login_count": row[12]
                     }
                 elif 'email' in new_values['data']:
                     if not isinstance(new_values['data']['email'], str) or \
@@ -850,7 +1094,7 @@ class UserLogin:
                         raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                                description='API.INVALID_EMAIL')
 
-                    query = (" SELECT id, name, uuid, display_name, email, salt, password, is_admin, is_read_only, "
+                    query = (" SELECT id, name, uuid, display_name, email, salt, password, is_admin, is_read_only, menu_template_id, "
                              " account_expiration_datetime_utc, password_expiration_datetime_utc,failed_login_count "
                              " FROM tbl_users "
                              " WHERE email = %s ")
@@ -870,9 +1114,10 @@ class UserLogin:
                         "password": row[6],
                         "is_admin": True if row[7] else False,
                         "is_read_only": (True if row[8] else False) if row[7] else None,
-                        "account_expiration_datetime_utc": row[9],
-                        "password_expiration_datetime_utc": row[10],
-                        "failed_login_count": row[11]
+                        "menu_template_id": row[9],
+                        "account_expiration_datetime_utc": row[10],
+                        "password_expiration_datetime_utc": row[11],
+                        "failed_login_count": row[12]
                     }
                 else:
                     raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
@@ -921,6 +1166,8 @@ class UserLogin:
                                "             (user_uuid, token, utc_expires) "
                                " VALUES (%s, %s, %s) ")
                 user_uuid = result['uuid']
+                permission_context = get_user_permission_context(user_uuid, cursor)
+                enterprise_summary = get_enterprise_summary(permission_context['enterprise_space_id'])
                 token = hashlib.sha512(os.urandom(24)).hexdigest()
                 utc_expires = datetime.utcnow() + timedelta(seconds=config.session_expires_in_seconds)
                 cursor.execute(add_session, (user_uuid, token, utc_expires))
@@ -949,6 +1196,13 @@ class UserLogin:
              timedelta(minutes=timezone_offset)).isoformat()[0:19]
         del result['password_expiration_datetime_utc']
 
+        result['enterprise_space_id'] = permission_context['enterprise_space_id'] if permission_context else None
+        if enterprise_summary is not None:
+            result['enterprise'] = enterprise_summary
+        result['menu_template_id'] = permission_context['menu_template_id'] if permission_context else result.get('menu_template_id')
+        result['menu_template'] = permission_context['menu_template'] if permission_context else None
+        result['admin_routes'] = permission_context['admin_routes'] if permission_context else None
+        result['permission_context'] = permission_context
         result['token'] = token
 
         resp.text = json.dumps(result)
@@ -1259,16 +1513,9 @@ class ResetPassword:
                         raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                                description='API.ADMINISTRATOR_SESSION_TIMEOUT')
 
-                query = (" SELECT name "
-                         " FROM tbl_users "
-                         " WHERE uuid = %s AND is_admin = 1 ")
-                cursor.execute(query, (admin_user_uuid,))
-                row = cursor.fetchone()
-                if row is None:
-                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
-                                           description='API.INVALID_PRIVILEGE')
+                admin_scope = get_admin_scope_by_uuid(cursor, admin_user_uuid)
 
-                query = (" SELECT id, password_expiration_datetime_utc "
+                query = (" SELECT id, password_expiration_datetime_utc, enterprise_space_id "
                          " FROM tbl_users "
                          " WHERE name = %s ")
                 cursor.execute(query, (user_name,))
@@ -1276,6 +1523,8 @@ class ResetPassword:
                 if row is None:
                     raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                            description='API.INVALID_USERNAME')
+
+                ensure_target_user_visible_for_admin_scope(admin_scope, row[2])
 
                 user_id = row[0]
                 original_pwd_expire_utc = None
@@ -1355,7 +1604,9 @@ class Unlock:
             try:
                 cursor = cnx.cursor()
 
-                query = (" SELECT failed_login_count "
+                admin_scope = get_admin_scope_by_uuid(cursor, admin_user_uuid)
+
+                query = (" SELECT failed_login_count, enterprise_space_id "
                          " FROM tbl_users "
                          " WHERE id = %s ")
                 cursor.execute(query, (id_,))
@@ -1363,6 +1614,8 @@ class Unlock:
                 if row is None:
                     raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                            description='API.INVALID_Id')
+
+                ensure_target_user_visible_for_admin_scope(admin_scope, row[1])
 
                 failed_login_count = row[0]
                 if failed_login_count < config.maximum_failed_login_count:
@@ -2449,14 +2702,13 @@ class NewUserApprove:
                                        description='API.INVALID_IS_READ_ONLY_VALUE')
             is_read_only = new_values['data']['is_read_only']
 
-        if 'privilege_id' in new_values['data'].keys():
-            if not isinstance(new_values['data']['privilege_id'], int) or \
-                    new_values['data']['privilege_id'] <= 0:
-                raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
-                                       description='API.INVALID_PRIVILEGE_ID')
-            privilege_id = new_values['data']['privilege_id']
-        else:
-            privilege_id = None
+        privilege_id = validate_privilege_id(new_values['data'].get('privilege_id'))
+        menu_template_id = validate_menu_template_id(new_values['data'].get('menu_template_id'))
+
+        enterprise_space_id = resolve_enterprise_space_id_for_request(
+            req,
+            new_values['data'].get('enterprise_space_id'),
+            is_admin)
 
         timezone_offset = int(config.utc_offset[1:3]) * 60 + int(config.utc_offset[4:6])
         if config.utc_offset[0] == '-':
@@ -2488,15 +2740,6 @@ class NewUserApprove:
                     raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                            description='API.USER_NOT_FOUND')
 
-                if privilege_id is not None:
-                    cursor.execute(" SELECT name "
-                                   " FROM tbl_privileges "
-                                   " WHERE id = %s ",
-                                   (privilege_id,))
-                    if cursor.fetchone() is None:
-                        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
-                                               description='API.PRIVILEGE_NOT_FOUND')
-
                 cursor.execute(" SELECT name, uuid, display_name, email, salt, password"
                                " FROM tbl_new_users "
                                " WHERE id = %s ", (id_,))
@@ -2514,9 +2757,9 @@ class NewUserApprove:
 
                 add_row = (" INSERT INTO tbl_users "
                            "     (name, uuid, display_name, email, salt, password, is_admin, is_read_only, "
-                           "      privilege_id, account_expiration_datetime_utc, password_expiration_datetime_utc, "
+                           "      privilege_id, menu_template_id, enterprise_space_id, account_expiration_datetime_utc, password_expiration_datetime_utc, "
                            "      failed_login_count) "
-                           " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ")
+                           " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ")
 
                 cursor.execute(add_row, (name,
                                          user_uuid,
@@ -2527,6 +2770,8 @@ class NewUserApprove:
                                          is_admin,
                                          is_read_only,
                                          privilege_id,
+                                         menu_template_id,
+                                         enterprise_space_id,
                                          account_expiration_datetime,
                                          password_expiration_datetime,
                                          0))

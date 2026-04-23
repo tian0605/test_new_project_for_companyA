@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS `myems_user_db`.`tbl_users` (
   `is_admin` BOOL NOT NULL ,
   `is_read_only` BOOL NOT NULL DEFAULT 0,
   `privilege_id` BIGINT NULL,
+  `menu_template_id` BIGINT NULL,
+  `enterprise_space_id` BIGINT NULL,
   `account_expiration_datetime_utc` DATETIME NOT NULL,
   `password_expiration_datetime_utc` DATETIME NOT NULL,
   `failed_login_count` INT NOT NULL DEFAULT 0,
@@ -81,13 +83,13 @@ CREATE TABLE IF NOT EXISTS `myems_user_db`.`tbl_users` (
 -- default username: administrator
 -- default password: !MyEMS1
 INSERT INTO `myems_user_db`.`tbl_users`(`id`, `name`, `uuid`, `display_name`, `email`, `phone`, `salt`, `password`, `is_admin`,
- `privilege_id`, `account_expiration_datetime_utc`, `password_expiration_datetime_utc`, `failed_login_count`)
+ `privilege_id`, `menu_template_id`, `enterprise_space_id`, `account_expiration_datetime_utc`, `password_expiration_datetime_utc`, `failed_login_count`)
 VALUES
 (1, 'administrator', 'dcdb67d1-6116-4987-916f-6fc6cf2bc0e4', 'Administrator', 'administrator@myems.io',
  NULL,  
  'adfd6fb6d78d4e3780ebdd6afdec2c3a',
  'bc00df65270b1a72b9ed37136fa95a695896edc8c114391821f5edc6b1bbdbabc3d449962f8d1c7a4ec3f2d0a1a79055623963d88ecb9b778423194ff7b6be42',
- 1, NULL, '2099-12-31 16:00:00', '2099-12-31 16:00:00', 0);
+ 1, NULL, 1, NULL, '2099-12-31 16:00:00', '2099-12-31 16:00:00', 0);
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Table `myems_user_db`.`tbl_privileges`
@@ -99,6 +101,26 @@ CREATE TABLE IF NOT EXISTS `myems_user_db`.`tbl_privileges` (
   `name` VARCHAR(45) NOT NULL,
   `data` LONGTEXT NOT NULL COMMENT 'MUST be in JSON format',
   PRIMARY KEY (`id`));
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Table `myems_user_db`.`tbl_menu_templates`
+-- ---------------------------------------------------------------------------------------------------------------------
+DROP TABLE IF EXISTS `myems_user_db`.`tbl_menu_templates` ;
+
+CREATE TABLE IF NOT EXISTS `myems_user_db`.`tbl_menu_templates` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `name` VARCHAR(45) NOT NULL,
+  `data` LONGTEXT NOT NULL COMMENT 'MUST be in JSON format',
+  PRIMARY KEY (`id`));
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Example Data for table `myems_user_db`.`tbl_menu_templates`
+-- ---------------------------------------------------------------------------------------------------------------------
+INSERT INTO `myems_user_db`.`tbl_menu_templates`(`id`, `name`, `data`)
+VALUES
+(1, '平台管理员菜单', JSON_OBJECT('admin_routes', JSON_ARRAY('settings.category','settings.tariff','settings.costcenter','settings.contact','settings.gateway','settings.protocol','settings.datasource','settings.meter','settings.sensor','settings.equipment','settings.combinedequipment','settings.space','settings.tenant','settings.store','settings.shopfloor','settings.energyflowdiagram','settings.svg','settings.distributionsystem','settings.menu','settings.knowledgefile','settings.workingcalendar','users.user','users.privilege','users.menutemplate','users.apikey','users.log','settings.command','settings.controlmode','settings.iotsimcard','settings.microgrid','settings.virtualpowerplant','settings.energystoragecontainer','settings.energystoragepowerstation','settings.photovoltaicpowerstation','settings.windfarm','settings.emailserver','settings.advancedreport','settings.energyplanfile','fdd.rule','fdd.textmessage','fdd.emailmessage','fdd.webmessage','fdd.wechatmessage'))),
+(2, '企业管理员菜单', JSON_OBJECT('admin_routes', JSON_ARRAY('settings.category','settings.tariff','settings.costcenter','settings.contact','settings.gateway','settings.protocol','settings.datasource','settings.meter','settings.sensor','settings.equipment','settings.combinedequipment','settings.space','settings.tenant','settings.store','settings.shopfloor','settings.energyflowdiagram','settings.svg','settings.distributionsystem','settings.workingcalendar','users.user','users.privilege','settings.command','settings.microgrid','settings.virtualpowerplant','settings.energystoragecontainer','settings.energystoragepowerstation','settings.photovoltaicpowerstation','settings.windfarm','fdd.rule','fdd.textmessage','fdd.emailmessage','fdd.webmessage','fdd.wechatmessage'))),
+(3, '企业操作员菜单', JSON_OBJECT('admin_routes', JSON_ARRAY('settings.costcenter','settings.meter','settings.sensor','settings.equipment','settings.combinedequipment','settings.space','settings.tenant','settings.store','settings.shopfloor','settings.command','fdd.rule','fdd.textmessage','fdd.emailmessage','fdd.webmessage','fdd.wechatmessage')));
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Table `myems_user_db`.`tbl_sessions`
