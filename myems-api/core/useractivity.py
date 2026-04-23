@@ -199,6 +199,102 @@ def _get_authorized_space_ids(is_admin, enterprise_space_id, privilege=None):
     return sorted(enterprise_space_ids.intersection(privilege_authorized_space_ids))
 
 
+def _query_legacy_visible_cost_center_ids(cursor, authorized_space_ids):
+    if authorized_space_ids is None:
+        return None
+    if len(authorized_space_ids) == 0:
+        return set()
+
+    placeholders = ', '.join(['%s'] * len(authorized_space_ids))
+    cursor.execute((" SELECT DISTINCT cost_center_id "
+                    " FROM tbl_spaces "
+                    f" WHERE id IN ({placeholders}) AND cost_center_id IS NOT NULL "),
+                   tuple(authorized_space_ids))
+    rows = cursor.fetchall()
+    if rows is None:
+        return set()
+    return {row[0] for row in rows}
+
+
+def _query_visible_cost_center_ids(cursor, authorized_space_ids, enterprise_space_id):
+    legacy_visible_cost_center_ids = _query_legacy_visible_cost_center_ids(cursor, authorized_space_ids)
+
+    if enterprise_space_id is None:
+        return legacy_visible_cost_center_ids
+
+    cursor.execute(" SELECT id "
+                   " FROM tbl_cost_centers "
+                   " WHERE enterprise_space_id = %s ", (enterprise_space_id,))
+    rows = cursor.fetchall()
+    visible_cost_center_ids = {row[0] for row in rows} if rows is not None else set()
+
+    if legacy_visible_cost_center_ids:
+        placeholders = ', '.join(['%s'] * len(legacy_visible_cost_center_ids))
+        cursor.execute((" SELECT id "
+                        " FROM tbl_cost_centers "
+                        " WHERE enterprise_space_id IS NULL "
+                        f"   AND id IN ({placeholders}) "),
+                       tuple(sorted(legacy_visible_cost_center_ids)))
+        rows = cursor.fetchall()
+        if rows is not None:
+            visible_cost_center_ids.update(row[0] for row in rows)
+
+    return visible_cost_center_ids
+
+
+def _enforce_report_resource_scope(req):
+    if not str(getattr(req, 'path', '') or '').lower().startswith('/reports/'):
+        return
+
+    if bool(get_request_context_value(req, 'is_admin')):
+        return
+
+    authorized_space_ids = get_request_context_value(req, 'authorized_space_ids')
+    enterprise_space_id = get_request_context_value(req, 'enterprise_space_id')
+
+    requested_space_id = req.params.get('spaceid')
+    if requested_space_id is not None:
+        requested_space_id = str.strip(requested_space_id)
+        if requested_space_id.isdigit() and int(requested_space_id) > 0:
+            if authorized_space_ids is not None and int(requested_space_id) not in authorized_space_ids:
+                raise falcon.HTTPError(status=falcon.HTTP_404,
+                                       title='API.NOT_FOUND',
+                                       description='API.SPACE_NOT_FOUND')
+
+    requested_offline_meter_id = req.params.get('offlinemeterid')
+    if requested_offline_meter_id is None:
+        return
+
+    requested_offline_meter_id = str.strip(requested_offline_meter_id)
+    if not requested_offline_meter_id.isdigit() or int(requested_offline_meter_id) <= 0:
+        return
+
+    cnx = None
+    cursor = None
+    try:
+        cnx = mysql.connector.connect(**config.myems_system_db)
+        cursor = cnx.cursor()
+        cursor.execute(" SELECT cost_center_id "
+                       " FROM tbl_offline_meters "
+                       " WHERE id = %s ", (requested_offline_meter_id,))
+        row = cursor.fetchone()
+        if row is None:
+            raise falcon.HTTPError(status=falcon.HTTP_404,
+                                   title='API.NOT_FOUND',
+                                   description='API.OFFLINE_METER_NOT_FOUND')
+
+        visible_cost_center_ids = _query_visible_cost_center_ids(cursor, authorized_space_ids, enterprise_space_id)
+        if visible_cost_center_ids is not None and row[0] not in visible_cost_center_ids:
+            raise falcon.HTTPError(status=falcon.HTTP_404,
+                                   title='API.NOT_FOUND',
+                                   description='API.OFFLINE_METER_NOT_FOUND')
+    finally:
+        if cursor:
+            cursor.close()
+        if cnx:
+            cnx.close()
+
+
 def get_user_permission_context(user_uuid, cursor=None):
     cnx = None
     own_cursor = cursor is None
@@ -425,6 +521,7 @@ def access_control(req):
             
             permission_context = get_user_permission_context(user_uuid, cursor)
             set_request_permission_context(req, permission_context)
+            _enforce_report_resource_scope(req)
         finally:
             if cursor:
                 cursor.close()

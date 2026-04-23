@@ -40,7 +40,25 @@ import redis
 import simplejson as json
 import config
 from core import utilities
-from core.useractivity import access_control, api_key_control
+from core.useractivity import access_control, api_key_control, get_request_context_value, get_user_permission_context
+
+
+def ensure_request_space_visible(req, space_id):
+    permission_context = get_request_context_value(req, 'permission_context')
+    if permission_context is None and 'USER-UUID' in req.headers:
+        permission_context = get_user_permission_context(str.strip(req.headers['USER-UUID']))
+
+    if permission_context is None:
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description='API.USER_NOT_FOUND')
+
+    if permission_context.get('is_admin') and permission_context.get('enterprise_space_id') is None:
+        return
+
+    authorized_space_ids = permission_context.get('authorized_space_ids')
+    if authorized_space_ids is not None and space_id not in authorized_space_ids:
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description='API.SPACE_NOT_FOUND')
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +110,7 @@ class Reporting:
                 raise falcon.HTTPError(status=falcon.HTTP_400,
                                        title='API.BAD_REQUEST',
                                        description='API.INVALID_SPACE_ID')
+            ensure_request_space_visible(req, int(space_id))
 
         if product_id is None:
             raise falcon.HTTPError(status=falcon.HTTP_400,
