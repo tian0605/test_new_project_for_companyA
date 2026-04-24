@@ -6,7 +6,6 @@ import Slider from 'react-slick';
 import { isIterableArray } from '../../helpers/utils';
 
 import 'slick-carousel/slick/slick.css';
-import 'slick-carousel/slick/slick-theme.css';
 
 import testimonials from '../../data/testimonial/testimonialList';
 

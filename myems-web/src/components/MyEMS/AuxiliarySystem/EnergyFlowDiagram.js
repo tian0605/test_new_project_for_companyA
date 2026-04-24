@@ -106,6 +106,29 @@ const EnergyFlowDiagram = ({ setRedirect, setRedirectUrl, t }) => {
   const [energyFlowDiagramData, setEnergyFlowDiagramData] = useState({ nodes: [], links: [] });
   const [excelBytesBase64, setExcelBytesBase64] = useState(undefined);
 
+  const buildReportUrl = includeQuickMode => {
+    let url =
+      APIBaseURL +
+      '/reports/energyflowdiagram?' +
+      'energyflowdiagramid=' +
+      selectedEnergyFlowDiagram +
+      '&reportingperiodstartdatetime=' +
+      moment(reportingPeriodDateRange[0]).format('YYYY-MM-DDTHH:mm:ss') +
+      '&reportingperiodenddatetime=' +
+      moment(reportingPeriodDateRange[1]).format('YYYY-MM-DDTHH:mm:ss');
+
+    if (includeQuickMode) {
+      url += '&quickmode=true';
+    }
+
+    return url;
+  };
+
+  const finishLoading = () => {
+    setSubmitButtonDisabled(false);
+    setSpinnerHidden(true);
+  };
+
   useEffect(() => {
     let isResponseOK = false;
     fetch(APIBaseURL + '/spaces/tree', {
@@ -255,25 +278,43 @@ const EnergyFlowDiagram = ({ setRedirect, setRedirectUrl, t }) => {
       labelTextBorderColor = 'rgba(0, 0, 0, 1)';
     }
 
+    const nodes = energyFlowDiagramData.nodes.map(node => ({ ...node }));
+    const hasPositiveLinkValue = energyFlowDiagramData.links.some(link => Number(link.value) > 0);
+    const links = energyFlowDiagramData.links.map(link => {
+      const actualValue = Number(link.value);
+      const hasActualValue = Number.isFinite(actualValue);
+      let displayValue = hasActualValue && actualValue > 0 ? actualValue : 0;
+
+      // ECharts sankey does not render when all weights are null/zero.
+      // Fall back to a topology view so users can still inspect node relations.
+      if (!hasPositiveLinkValue && displayValue <= 0) {
+        displayValue = 1;
+      }
+
+      return {
+        ...link,
+        actualValue: hasActualValue ? actualValue : null,
+        value: displayValue,
+        isFallbackValue: !hasPositiveLinkValue && displayValue === 1
+      };
+    });
+
     let colorIndex = 0;
-    for (let i = 0; i < energyFlowDiagramData.nodes.length; i++) {
-      let item = energyFlowDiagramData.nodes[i];
+    for (let i = 0; i < nodes.length; i++) {
+      let item = nodes[i];
       item.itemStyle = { color: colorArr[colorIndex % 9] };
       colorIndex++;
     }
 
-    energyFlowDiagramData.links.forEach(function(item) {
-      if (item.value === null) {
-        item.value = 0;
-      }
+    links.forEach(function(item) {
       let sourceColor = null;
       let targetColor = null;
-      for (let i = 0; i < energyFlowDiagramData.nodes.length; i++) {
-        if (item.source === energyFlowDiagramData.nodes[i].name) {
-          sourceColor = energyFlowDiagramData.nodes[i].itemStyle.color;
+      for (let i = 0; i < nodes.length; i++) {
+        if (item.source === nodes[i].name) {
+          sourceColor = nodes[i].itemStyle.color;
         }
-        if (item.target === energyFlowDiagramData.nodes[i].name) {
-          targetColor = energyFlowDiagramData.nodes[i].itemStyle.color;
+        if (item.target === nodes[i].name) {
+          targetColor = nodes[i].itemStyle.color;
         }
         if (sourceColor != null && targetColor != null) {
           break;
@@ -306,14 +347,23 @@ const EnergyFlowDiagram = ({ setRedirect, setRedirectUrl, t }) => {
       backgroundColor: backgroundColor,
       tooltip: {
         trigger: 'item',
-        triggerOn: 'mousemove'
+        triggerOn: 'mousemove',
+        formatter: params => {
+          if (params.dataType === 'edge') {
+            const actualValue = params.data.actualValue;
+            const valueText = actualValue === null ? t('No Data') : actualValue;
+            const suffix = params.data.isFallbackValue ? ` (${t('Topology View')})` : '';
+            return `${params.data.source} -> ${params.data.target}<br/>${t('Value')}: ${valueText}${suffix}`;
+          }
+          return params.name;
+        }
       },
       series: [
         {
           name: 'sankey',
           type: 'sankey',
-          data: energyFlowDiagramData.nodes,
-          links: energyFlowDiagramData.links,
+          data: nodes,
+          links: links,
           focusNodeAdjacency: 'allEdges',
           itemStyle: {
             borderWidth: 1,
@@ -368,27 +418,18 @@ const EnergyFlowDiagram = ({ setRedirect, setRedirectUrl, t }) => {
     setExportButtonHidden(true);
     // hide result data
     setResultDataHidden(true);
+    setExcelBytesBase64(undefined);
 
     let isResponseOK = false;
-    fetch(
-      APIBaseURL +
-        '/reports/energyflowdiagram?' +
-        'energyflowdiagramid=' +
-        selectedEnergyFlowDiagram +
-        '&reportingperiodstartdatetime=' +
-        moment(reportingPeriodDateRange[0]).format('YYYY-MM-DDTHH:mm:ss') +
-        '&reportingperiodenddatetime=' +
-        moment(reportingPeriodDateRange[1]).format('YYYY-MM-DDTHH:mm:ss'),
-      {
-        method: 'GET',
-        headers: {
-          'Content-type': 'application/json',
-          'User-UUID': getCookieValue('user_uuid'),
-          Token: getCookieValue('token')
-        },
-        body: null
-      }
-    )
+    fetch(buildReportUrl(true), {
+      method: 'GET',
+      headers: {
+        'Content-type': 'application/json',
+        'User-UUID': getCookieValue('user_uuid'),
+        Token: getCookieValue('token')
+      },
+      body: null
+    })
       .then(response => {
         if (response.ok) {
           isResponseOK = true;
@@ -427,39 +468,80 @@ const EnergyFlowDiagram = ({ setRedirect, setRedirectUrl, t }) => {
             }
           }
 
-          setExcelBytesBase64(json['excel_bytes_base64']);
-
-          // enable submit button
-          setSubmitButtonDisabled(false);
-          // hide spinner
-          setSpinnerHidden(true);
+          finishLoading();
           // show export button
           setExportButtonHidden(false);
           // show result data
           setResultDataHidden(false);
         } else {
+          finishLoading();
           handleAPIError(json, setRedirect, setRedirectUrl, t, toast)
         }
       })
       .catch(err => {
         console.log(err);
+        finishLoading();
+        toast.error(t('Oops something went wrong!'));
       });
   };
 
   const handleExport = e => {
     e.preventDefault();
+    setSubmitButtonDisabled(true);
+    setSpinnerHidden(false);
+
+    let isResponseOK = false;
     const mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
     const fileName = 'energyflowdiagram.xlsx';
-    var fileUrl = 'data:' + mimeType + ';base64,' + excelBytesBase64;
-    fetch(fileUrl)
-      .then(response => response.blob())
-      .then(blob => {
-        var link = window.document.createElement('a');
-        link.href = window.URL.createObjectURL(blob, { type: mimeType });
-        link.download = fileName;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+    fetch(buildReportUrl(false), {
+      method: 'GET',
+      headers: {
+        'Content-type': 'application/json',
+        'User-UUID': getCookieValue('user_uuid'),
+        Token: getCookieValue('token')
+      },
+      body: null
+    })
+      .then(response => {
+        if (response.ok) {
+          isResponseOK = true;
+        }
+        return response.json();
+      })
+      .then(json => {
+        if (isResponseOK) {
+          const excelBase64 = json['excel_bytes_base64'];
+          setExcelBytesBase64(excelBase64);
+
+          if (checkEmpty(excelBase64)) {
+            finishLoading();
+            toast.error(t('Export Failed'));
+            return;
+          }
+
+          var fileUrl = 'data:' + mimeType + ';base64,' + excelBase64;
+          fetch(fileUrl)
+            .then(response => response.blob())
+            .then(blob => {
+              var link = window.document.createElement('a');
+              link.href = window.URL.createObjectURL(blob, { type: mimeType });
+              link.download = fileName;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+            })
+            .finally(() => {
+              finishLoading();
+            });
+        } else {
+          finishLoading();
+          handleAPIError(json, setRedirect, setRedirectUrl, t, toast)
+        }
+      })
+      .catch(err => {
+        console.log(err);
+        finishLoading();
+        toast.error(t('Oops something went wrong!'));
       });
   };
 

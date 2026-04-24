@@ -781,6 +781,8 @@ mysql -u root -p < myems_production_db.sql
 
 Database upgrade scripts are located in the `database/upgrade/` directory and are named by version (e.g., `upgrade5.10.0.sql`).
 
+For the example energy flow diagram, `upgrade6.3.5.sql` repairs historical stale `meter_uuid` bindings in `tbl_energy_flow_diagrams_links`. If a development environment still shows partial `NULL` or `0` link values after applying that upgrade, verify the corresponding hourly tables in `myems_energy_db` before treating it as a functional regression.
+
 Before upgrading:
 1. **Back up databases**: You must back up all databases before upgrading
 2. **Review upgrade notes**: Read the comments in the upgrade script

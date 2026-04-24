@@ -52,6 +52,30 @@
 
 这样可以避免 Cookie 和 Local Storage 相互污染。
 
+### 2.4 能流图专项说明
+
+本轮和能流图相关的生产修复目标，仅限于修正历史脏链路配置，即：
+
+- 旧库中 `tbl_energy_flow_diagrams_links.meter_uuid` 指向不存在 source 的历史坏数据
+- 该问题应通过数据库升级脚本 `database/upgrade/upgrade6.3.5.sql` 修复
+
+验收时需要区分两类问题：
+
+- 生产缺陷：链路 UUID 失效，导致接口无法解析 source，报表返回异常 `NULL`
+- 开发环境数据问题：链路绑定已正确，但 `myems_energy_db` 中对应 `tbl_meter_hourly`、`tbl_virtual_meter_hourly`、`tbl_offline_meter_hourly` 数据不完整，导致部分链路在当前报表期内仍然为 `NULL` 或 `0`
+
+如果开发环境出现以下现象，不应直接判定为本轮功能回归：
+
+- 用户端能流图接口可正常返回 `nodes` 和 `links`
+- 链路的 `meter_uuid` 已能解析到真实 meter / virtual meter / offline meter
+- 仅部分链路缺少数值，且数据库中对应小时表在该时间窗内确实无数据或求和值为 `0`
+
+建议验收顺序：
+
+1. 先执行 `database/upgrade/upgrade6.3.5.sql`，确认历史坏 UUID 已修复
+2. 再检查具体链路是否能绑定到真实 source
+3. 最后再判断缺失值是否来自开发环境小时数据不足，而不是接口逻辑故障
+
 ## 3. 页面入口
 
 ### 3.1 Admin 端页面
@@ -72,6 +96,7 @@
 - Tenant：`/tenant/energycategory`、`/tenant/energyitem`、`/tenant/cost`、`/tenant/bill`、`/tenant/comparison`
 - Store：`/store/energycategory`、`/store/energyitem`、`/store/cost`、`/store/comparison`
 - Shopfloor：`/shopfloor/energycategory`、`/shopfloor/energyitem`、`/shopfloor/cost`、`/shopfloor/comparison`
+- Auxiliary System Energy Flow Diagram：`/auxiliarysystem/energyflowdiagram`
 
 ## 4. 验收原则
 
