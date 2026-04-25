@@ -151,6 +151,16 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
   const [childSpacesTableData, setChildSpacesTableData] = useState([]);
   const [excelBytesBase64, setExcelBytesBase64] = useState(undefined);
 
+  const getPerUnitFootunit = indicatorUnit => {
+    const productUnit = reportingCardSummaryItem['unit'];
+
+    if (productUnit) {
+      return `(${indicatorUnit}/${productUnit})`;
+    }
+
+    return `(${indicatorUnit})`;
+  };
+
   useEffect(() => {
     let isResponseOK = false;
     fetch(APIBaseURL + '/spaces/tree', {
@@ -405,14 +415,14 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
           totalInTCE['value'] = json['reporting_period']['total_in_kgce'] / 1000; // convert from kg to t
           totalInTCE['increment_rate'] =
             parseFloat(json['reporting_period']['increment_rate_in_kgce'] * 100).toFixed(2) + '%';
-          totalInTCE['value_per_prodution'] = json['reporting_period']['total_in_kgce_per_prodution'] / 1000; // convert from kg to t
+          totalInTCE['value_per_production'] = json['reporting_period']['total_in_kgce_per_prodution'] / 1000; // convert from kg to t
           setTotalInTCE(totalInTCE);
 
           let totalInTCO2E = {};
           totalInTCO2E['value'] = json['reporting_period']['total_in_kgco2e'] / 1000; // convert from kg to t
           totalInTCO2E['increment_rate'] =
             parseFloat(json['reporting_period']['increment_rate_in_kgco2e'] * 100).toFixed(2) + '%';
-          totalInTCO2E['value_per_prodution'] = json['reporting_period']['total_in_kgco2e_per_prodution'] / 1000; // convert from kg to t
+          totalInTCO2E['value_per_production'] = json['reporting_period']['total_in_kgco2e_per_prodution'] / 1000; // convert from kg to t
           setTotalInTCO2E(totalInTCO2E);
 
           let TCEDataArray = [];
@@ -993,9 +1003,10 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
                 UNIT: '(TCE)'
               })}
               color="warning"
-              footnote={t('Per Unit Production')}
-              footvalue={totalInTCE['value_per_prodution']}
-              footunit="(TCE)"
+              showFootnotes={true}
+              footnote={t('Per Unit Product Energy Consumption')}
+              footvalue={totalInTCE['value_per_production']}
+              footunit={getPerUnitFootunit('TCE')}
             >
               {totalInTCE['value'] && (
                 <CountUp end={totalInTCE['value']} duration={2} prefix="" separator="," decimal="." decimals={2} />
@@ -1011,9 +1022,10 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
               UNIT: '(TCO2E)'
             })}
             color="warning"
-            footnote={t('Per Unit Production')}
-            footvalue={totalInTCO2E['value_per_prodution']}
-            footunit="(TCO2E)"
+            showFootnotes={true}
+            footnote={t('Per Unit Product Carbon Dioxide Emissions')}
+            footvalue={totalInTCO2E['value_per_production']}
+            footunit={getPerUnitFootunit('TCO2E')}
           >
             {totalInTCO2E['value'] && (
               <CountUp end={totalInTCO2E['value']} duration={2} prefix="" separator="," decimal="." decimals={2} />
