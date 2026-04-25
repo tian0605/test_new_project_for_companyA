@@ -876,9 +876,9 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
         ))}
       </div>
       <Row noGutters>
-        <Col className="mb-3 pr-lg-2 mb-3">
+        {/* <Col className="mb-3 pr-lg-2 mb-3">
           <SharePie data={timeOfUseShareData} title={t('Electricity Consumption by Time-Of-Use')} />
-        </Col>
+        </Col> */}
         <Col className="mb-3 pr-lg-2 mb-3">
           <SharePie data={costShareData} title={t('Costs by Energy Category')} />
         </Col>
