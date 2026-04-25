@@ -18,6 +18,7 @@ import BarChart from '../common/BarChart';
 import ChartSpacesStackBar from '../common/ChartSpacesStackBar';
 import RealtimeSensor from '../common/RealtimeSensor';
 import CustomizeMapBox from '../common/CustomizeMapBox';
+import { HIDE_CHILD_SPACE_PANELS } from '../common/panelVisibility';
 
 ChartJS.register(annotationPlugin);
 
@@ -895,13 +896,15 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
           <SharePie data={TCO2EShareData} title={t('Ton of Carbon Dioxide Emissions by Energy Category')} />
         </Col>
       </Row>
-      <ChartSpacesStackBar
-        title={t('Child Spaces Data')}
-        labels={monthLabels}
-        inputData={childSpacesInputData}
-        costData={childSpacesCostData}
-        childSpaces={spaceInputLineChartOptions}
-      />
+      {!HIDE_CHILD_SPACE_PANELS ? (
+        <ChartSpacesStackBar
+          title={t('Child Spaces Data')}
+          labels={monthLabels}
+          inputData={childSpacesInputData}
+          costData={childSpacesCostData}
+          childSpaces={spaceInputLineChartOptions}
+        />
+      ) : null}
     </Fragment>
   );
 };

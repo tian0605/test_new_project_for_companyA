@@ -1,0 +1,1 @@
+export const HIDE_CHILD_SPACE_PANELS = true;
