@@ -265,6 +265,8 @@ export default {
             'Per Unit Area': '單位⾯積值',
             'Per Capita': '人均值',
             'Per Unit Production': '單位產品值',
+            'Per Unit Product Energy Consumption': '產品單位能耗',
+            'Per Unit Product Carbon Dioxide Emissions': '單位產品二氧化碳排放',
             Baseline: '基線值',
             Actual: '實際值',
             'Baseline Value - Actual Value': '基線值-實際值',

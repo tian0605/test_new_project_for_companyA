@@ -72,11 +72,37 @@ const getContentClassNames = color => {
   return `${contentClassNames} text-${color}`;
 };
 
+const renderFootValue = footvalue => {
+  if (typeof footvalue === 'number' && Number.isFinite(footvalue)) {
+    return <CountUp end={footvalue} duration={2} prefix="" separator="," decimal="." decimals={2} />;
+  }
+
+  return footvalue;
+};
+
+const renderFootLine = (footnote, footvalue, footunit, key) => {
+  const hasFootvalue = footvalue !== null && footvalue !== undefined && footvalue !== '';
+  const hasFootunit = typeof footunit === 'string' && footunit.length > 0;
+
+  if (!footnote && !hasFootvalue && !hasFootunit) {
+    return null;
+  }
+
+  return (
+    <div className="fs--1 text-600" key={key}>
+      {footnote ? `${footnote}: ` : ''}
+      {hasFootvalue ? renderFootValue(footvalue) : null}
+      {hasFootunit ? <span className="ml-1">{footunit}</span> : null}
+    </div>
+  );
+};
+
 const CardSummary = ({
   title,
   rate,
   color,
   children,
+  showFootnotes,
   footnote,
   footvalue,
   footunit,
@@ -96,6 +122,8 @@ const CardSummary = ({
           </span>
         </h6>
         <div className={getContentClassNames(color)}>{children}</div>
+        {showFootnotes ? renderFootLine(footnote, footvalue, footunit, 'footnote') : null}
+        {showFootnotes ? renderFootLine(secondfootnote, secondfootvalue, secondfootunit, 'secondfootnote') : null}
       </CardBody>
     </Card>
   );
@@ -106,6 +134,7 @@ CardSummary.propTypes = {
   rate: PropTypes.string.isRequired,
   color: PropTypes.string,
   children: PropTypes.node,
+  showFootnotes: PropTypes.bool,
   footnote: PropTypes.string,
   footvalue: PropTypes.number,
   footunit: PropTypes.string,
@@ -115,7 +144,8 @@ CardSummary.propTypes = {
 };
 
 CardSummary.defaultProps = {
-  color: 'primary'
+  color: 'primary',
+  showFootnotes: false
 };
 
 export default CardSummary;

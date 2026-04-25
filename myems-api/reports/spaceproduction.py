@@ -686,6 +686,10 @@ class Reporting:
         result['reporting_period']['subtotals_per_capita'] = list()
         result['reporting_period']['total_in_kgce'] = Decimal(0.0)
         result['reporting_period']['total_in_kgco2e'] = Decimal(0.0)
+        result['reporting_period']['values_in_kgce'] = list()
+        result['reporting_period']['values_in_kgce_per_production'] = list()
+        result['reporting_period']['values_in_kgco2e'] = list()
+        result['reporting_period']['values_in_kgco2e_per_production'] = list()
         result['reporting_period']['total_unit'] = config.currency_unit
         result['reporting_period']['rates'] = list()
         result['reporting_period']['increment_rates'] = list()
@@ -732,6 +736,23 @@ class Reporting:
         result['reporting_period']['total_in_kgco2e_per_prodution'] = \
             result['reporting_period']['total_in_kgco2e'] / reporting_period_total_production \
             if reporting_period_total_production > 0.0 else None
+
+        if energy_category_set is not None and len(energy_category_set) > 0:
+            for index, production_value in enumerate(reporting_daily_values):
+                current_total_in_kgce = Decimal(0.0)
+                current_total_in_kgco2e = Decimal(0.0)
+                for energy_category_id in energy_category_set:
+                    if index < len(reporting[energy_category_id]['values']):
+                        current_value = reporting[energy_category_id]['values'][index]
+                        current_total_in_kgce += current_value * energy_category_dict[energy_category_id]['kgce']
+                        current_total_in_kgco2e += current_value * energy_category_dict[energy_category_id]['kgco2e']
+
+                result['reporting_period']['values_in_kgce'].append(current_total_in_kgce)
+                result['reporting_period']['values_in_kgce_per_production'].append(
+                    current_total_in_kgce / production_value if production_value and production_value > 0 else None)
+                result['reporting_period']['values_in_kgco2e'].append(current_total_in_kgco2e)
+                result['reporting_period']['values_in_kgco2e_per_production'].append(
+                    current_total_in_kgco2e / production_value if production_value and production_value > 0 else None)
 
         result['reporting_period']['increment_rate_in_kgco2e'] = \
             (result['reporting_period']['total_in_kgco2e'] - result['base_period']['total_in_kgco2e']) / \

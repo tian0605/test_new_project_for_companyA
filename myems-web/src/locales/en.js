@@ -267,6 +267,8 @@ export default {
             'Per Unit Area': 'Per Unit Area',
             'Per Capita': 'Per Capita',
             'Per Unit Production': 'Per Unit Production',
+            'Per Unit Product Energy Consumption': 'Per Unit Product Energy Consumption',
+            'Per Unit Product Carbon Dioxide Emissions': 'Per Unit Product Carbon Dioxide Emissions',
             Baseline: 'Baseline',
             Actual: 'Actual',
             'Baseline Value - Actual Value': 'Baseline - Actual',

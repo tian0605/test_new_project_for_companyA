@@ -980,13 +980,13 @@ const SpaceLoad = ({ setRedirect, setRedirectUrl, t }) => {
           options={spaceReportingOptions}
         />
 
-        <MultipleLineChart
+          {/* <MultipleLineChart
           reportingTitle={t('Operating Characteristic Curve')}
           baseTitle=""
           labels={parameterLineChartLabels}
           data={parameterLineChartData}
           options={parameterLineChartOptions}
-        />
+          /> */}
         <DetailedDataTable
           data={detailedDataTableData}
           title={t('Detailed Data')}

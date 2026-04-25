@@ -961,13 +961,13 @@ const OfflineMeterSaving = ({ setRedirect, setRedirectUrl, t }) => {
           options={offlineMeterReportingOptions}
         />
 
-        <MultipleLineChart
+        {/* <MultipleLineChart
           reportingTitle={t('Operating Characteristic Curve')}
           baseTitle=""
           labels={parameterLineChartLabels}
           data={parameterLineChartData}
           options={parameterLineChartOptions}
-        />
+        /> */}
         <br />
         <DetailedDataTable
           data={detailedDataTableData}

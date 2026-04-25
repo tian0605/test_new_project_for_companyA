@@ -1109,9 +1109,9 @@ const SpaceCost = ({ setRedirect, setRedirectUrl, t }) => {
           ))}
         </div>
         <Row noGutters>
-          <Col className="mb-3 pr-lg-2 mb-3">
-            <SharePie data={timeOfUseShareData} title={t('Electricity Cost by Time-Of-Use')} />
-          </Col>
+            {/* <Col className="mb-3 pr-lg-2 mb-3">
+              <SharePie data={timeOfUseShareData} title={t('Electricity Cost by Time-Of-Use')} />
+            </Col> */}
           <Col className="mb-3 pr-lg-2 mb-3">
             <SharePie data={costShareData} title={t('Costs by Energy Category')} />
           </Col>
@@ -1168,13 +1168,13 @@ const SpaceCost = ({ setRedirect, setRedirectUrl, t }) => {
           options={spaceReportingOptions}
         />
 
-        <MultipleLineChart
+        {/* <MultipleLineChart
           reportingTitle={t('Operating Characteristic Curve')}
           baseTitle=""
           labels={parameterLineChartLabels}
           data={parameterLineChartData}
           options={parameterLineChartOptions}
-        />
+        /> */}
         <DetailedDataTable
           data={detailedDataTableData}
           title={t('Detailed Data')}
