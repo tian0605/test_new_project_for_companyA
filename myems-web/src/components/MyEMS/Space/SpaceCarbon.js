@@ -1108,9 +1108,9 @@ const SpaceCarbon = ({ setRedirect, setRedirectUrl, t }) => {
           ))}
         </div>
         <Row noGutters>
-          <Col className="mb-3 pr-lg-2 mb-3">
-            <SharePie data={timeOfUseShareData} title={t('Electricity Carbon Dioxide Emissions by Time-Of-Use')} />
-          </Col>
+            {/* <Col className="mb-3 pr-lg-2 mb-3">
+              <SharePie data={timeOfUseShareData} title={t('Electricity Carbon Dioxide Emissions by Time-Of-Use')} />
+            </Col> */}
           <Col className="mb-3 pr-lg-2 mb-3">
             <SharePie data={carbonShareData} title={t('Carbon Dioxide Emissions by Energy Category')} />
           </Col>
@@ -1167,13 +1167,13 @@ const SpaceCarbon = ({ setRedirect, setRedirectUrl, t }) => {
           options={spaceReportingOptions}
         />
 
-        <MultipleLineChart
+        {/* <MultipleLineChart
           reportingTitle={t('Operating Characteristic Curve')}
           baseTitle=""
           labels={parameterLineChartLabels}
           data={parameterLineChartData}
           options={parameterLineChartOptions}
-        />
+        /> */}
         <DetailedDataTable
           data={detailedDataTableData}
           title={t('Detailed Data')}

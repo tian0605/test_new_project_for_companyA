@@ -1072,9 +1072,9 @@ const SpacePrediction = ({ setRedirect, setRedirectUrl, t }) => {
           </CardSummary>
         </div>
         <Row noGutters>
-          <Col className="mb-3 pr-lg-2 mb-3">
-            <SharePie data={timeOfUseShareData} title={t('Electricity Consumption by Time-Of-Use')} />
-          </Col>
+            {/* <Col className="mb-3 pr-lg-2 mb-3">
+              <SharePie data={timeOfUseShareData} title={t('Electricity Consumption by Time-Of-Use')} />
+            </Col> */}
           {settings.showTCEData ? (
             <Col className="mb-3 pr-lg-2 mb-3">
               <SharePie data={TCEShareData} title={t('Ton of Standard Coal by Energy Category')} />
@@ -1135,13 +1135,13 @@ const SpacePrediction = ({ setRedirect, setRedirectUrl, t }) => {
           options={spaceReportingOptions}
         />
 
-        <MultipleLineChart
+        {/* <MultipleLineChart
           reportingTitle={t('Operating Characteristic Curve')}
           baseTitle=""
           labels={parameterLineChartLabels}
           data={parameterLineChartData}
           options={parameterLineChartOptions}
-        />
+        /> */}
 
         <DetailedDataTable
           data={detailedDataTableData}

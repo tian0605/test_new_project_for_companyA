@@ -983,13 +983,13 @@ const MeterCarbon = ({ setRedirect, setRedirectUrl, t }) => {
           options={meterReportingOptions}
         />
 
-        <MultipleLineChart
+        {/* <MultipleLineChart
           reportingTitle={t('Operating Characteristic Curve')}
           baseTitle=""
           labels={parameterLineChartLabels}
           data={parameterLineChartData}
           options={parameterLineChartOptions}
-        />
+        /> */}
         <br />
         <DetailedDataTable
           data={detailedDataTableData}
