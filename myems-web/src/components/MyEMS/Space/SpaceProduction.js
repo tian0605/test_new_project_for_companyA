@@ -161,6 +161,101 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
     return `(${indicatorUnit})`;
   };
 
+  const convertKgToTon = value => {
+    return typeof value === 'number' ? Number((value / 1000).toFixed(2)) : null;
+  };
+
+  const toNumberOrNull = value => {
+    if (typeof value === 'number') {
+      return value;
+    }
+
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+
+    const convertedValue = Number(value);
+    return Number.isFinite(convertedValue) ? convertedValue : null;
+  };
+
+  const finalizeLoadState = hasResultData => {
+    setSubmitButtonDisabled(false);
+    setSpinnerHidden(true);
+    setExportButtonHidden(true);
+    setResultDataHidden(!hasResultData);
+  };
+
+  const getDerivedReportingSeries = json => {
+    const reportingPeriod = json['reporting_period'] || {};
+    const reportingProduction = json['reporting_production'] || {};
+    const productionValues = Array.isArray(reportingProduction['values']) ? reportingProduction['values'] : [];
+
+    const directKgceSeries = Array.isArray(reportingPeriod['values_in_kgce']) ? reportingPeriod['values_in_kgce'] : null;
+    const directKgcePerProductionSeries = Array.isArray(reportingPeriod['values_in_kgce_per_production'])
+      ? reportingPeriod['values_in_kgce_per_production']
+      : null;
+    const directKgco2eSeries = Array.isArray(reportingPeriod['values_in_kgco2e'])
+      ? reportingPeriod['values_in_kgco2e']
+      : null;
+    const directKgco2ePerProductionSeries = Array.isArray(reportingPeriod['values_in_kgco2e_per_production'])
+      ? reportingPeriod['values_in_kgco2e_per_production']
+      : null;
+
+    if (directKgceSeries && directKgcePerProductionSeries && directKgco2eSeries && directKgco2ePerProductionSeries) {
+      return {
+        kgce: directKgceSeries,
+        kgcePerProduction: directKgcePerProductionSeries,
+        kgco2e: directKgco2eSeries,
+        kgco2ePerProduction: directKgco2ePerProductionSeries
+      };
+    }
+
+    const reportingValues = Array.isArray(reportingPeriod['values']) ? reportingPeriod['values'] : [];
+    const subtotals = Array.isArray(reportingPeriod['subtotals']) ? reportingPeriod['subtotals'] : [];
+    const subtotalsInKgce = Array.isArray(reportingPeriod['subtotals_in_kgce']) ? reportingPeriod['subtotals_in_kgce'] : [];
+    const subtotalsInKgco2e = Array.isArray(reportingPeriod['subtotals_in_kgco2e']) ? reportingPeriod['subtotals_in_kgco2e'] : [];
+    const seriesLength = reportingValues.reduce((maxLength, currentSeries) => {
+      return Array.isArray(currentSeries) && currentSeries.length > maxLength ? currentSeries.length : maxLength;
+    }, productionValues.length);
+
+    const kgce = [];
+    const kgcePerProduction = [];
+    const kgco2e = [];
+    const kgco2ePerProduction = [];
+
+    for (let rowIndex = 0; rowIndex < seriesLength; rowIndex++) {
+      let currentKgce = 0;
+      let currentKgco2e = 0;
+
+      reportingValues.forEach((currentSeries, categoryIndex) => {
+        const currentValue = Array.isArray(currentSeries) ? toNumberOrNull(currentSeries[rowIndex]) : null;
+        const currentSubtotal = toNumberOrNull(subtotals[categoryIndex]);
+        const currentKgceSubtotal = toNumberOrNull(subtotalsInKgce[categoryIndex]);
+        const currentKgco2eSubtotal = toNumberOrNull(subtotalsInKgco2e[categoryIndex]);
+
+        if (currentValue === null || currentSubtotal === null || currentSubtotal === 0) {
+          return;
+        }
+
+        currentKgce += currentValue * ((currentKgceSubtotal || 0) / currentSubtotal);
+        currentKgco2e += currentValue * ((currentKgco2eSubtotal || 0) / currentSubtotal);
+      });
+
+      const currentProduction = toNumberOrNull(productionValues[rowIndex]);
+      kgce.push(currentKgce);
+      kgcePerProduction.push(currentProduction && currentProduction > 0 ? currentKgce / currentProduction : null);
+      kgco2e.push(currentKgco2e);
+      kgco2ePerProduction.push(currentProduction && currentProduction > 0 ? currentKgco2e / currentProduction : null);
+    }
+
+    return {
+      kgce,
+      kgcePerProduction,
+      kgco2e,
+      kgco2ePerProduction
+    };
+  };
+
   useEffect(() => {
     let isResponseOK = false;
     fetch(APIBaseURL + '/spaces/tree', {
@@ -400,6 +495,7 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
       })
       .then(json => {
         if (isResponseOK) {
+          const reportingSeries = getDerivedReportingSeries(json);
           let cardSummaryItem = {};
           cardSummaryItem['name'] = json['product']['name'];
           cardSummaryItem['unit'] = json['product']['unit'];
@@ -593,51 +689,9 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
                 }
               }
             });
-            json['base_period']['names'].forEach((currentValue, index) => {
-              let unit = json['base_period']['units'][index];
-              detailed_column_list.push({
-                dataField: 'a' + (index * 2 + 1),
-                text: t('Base Period') + ' - ' + currentValue + ' (' + unit + ')',
-                sort: true,
-                formatter: function(decimalValue) {
-                  if (typeof decimalValue === 'number') {
-                    return decimalValue.toFixed(2);
-                  } else {
-                    return null;
-                  }
-                }
-              });
-              detailed_column_list.push({
-                dataField: 'a' + (index * 2 + 2),
-                text:
-                  t('Base Period') +
-                  '-' +
-                  t('Per Unit Production') +
-                  currentValue +
-                  ' (' +
-                  unit +
-                  '/' +
-                  json['product']['unit'] +
-                  ')',
-                sort: true,
-                formatter: function(decimalValue) {
-                  if (typeof decimalValue === 'number') {
-                    return decimalValue.toFixed(2);
-                  } else {
-                    return null;
-                  }
-                }
-              });
-            });
-
             detailed_column_list.push({
-              dataField: 'reportingPeriodDatetime',
-              text: t('Reporting Period') + ' - ' + t('Datetime'),
-              sort: true
-            });
-            detailed_column_list.push({
-              dataField: 'b0',
-              text: t('Base Period') + ' - ' + t('Production') + ' (' + json['product']['unit'] + ')',
+              dataField: 'r1',
+              text: t('Reporting Period') + ' - ' + t('Ton of Standard Coal') + ' (TCE)',
               sort: true,
               formatter: function(decimalValue) {
                 if (typeof decimalValue === 'number') {
@@ -647,121 +701,123 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
                 }
               }
             });
-            json['reporting_period']['names'].forEach((currentValue, index) => {
-              let unit = json['reporting_period']['units'][index];
-              detailed_column_list.push({
-                dataField: 'b' + (index * 2 + 1),
-                text: t('Reporting Period') + ' - ' + currentValue + ' (' + unit + ')',
-                sort: true,
-                formatter: function(decimalValue) {
-                  if (typeof decimalValue === 'number') {
-                    return decimalValue.toFixed(2);
-                  } else {
-                    return null;
-                  }
+            detailed_column_list.push({
+              dataField: 'r2',
+              text:
+                t('Reporting Period') +
+                ' - ' +
+                t('Per Unit Product Energy Consumption') +
+                ' (TCE/' +
+                json['product']['unit'] +
+                ')',
+              sort: true,
+              formatter: function(decimalValue) {
+                if (typeof decimalValue === 'number') {
+                  return decimalValue.toFixed(2);
+                } else {
+                  return null;
                 }
-              });
-              detailed_column_list.push({
-                dataField: 'b' + (index * 2 + 2),
-                text:
-                  t('Reporting Period') +
-                  ' ' +
-                  t('Per Unit Production') +
-                  currentValue +
-                  ' (' +
-                  unit +
-                  '/' +
-                  json['product']['unit'] +
-                  ')',
-                sort: true,
-                formatter: function(decimalValue) {
-                  if (typeof decimalValue === 'number') {
-                    return decimalValue.toFixed(2);
-                  } else {
-                    return null;
-                  }
+              }
+            });
+            detailed_column_list.push({
+              dataField: 'r3',
+              text: t('Reporting Period') + ' - ' + t('Ton of Carbon Dioxide Emissions') + ' (TCO2E)',
+              sort: true,
+              formatter: function(decimalValue) {
+                if (typeof decimalValue === 'number') {
+                  return decimalValue.toFixed(2);
+                } else {
+                  return null;
                 }
-              });
+              }
+            });
+            detailed_column_list.push({
+              dataField: 'r4',
+              text:
+                t('Reporting Period') +
+                ' - ' +
+                t('Per Unit Product Carbon Dioxide Emissions') +
+                ' (TCO2E/' +
+                json['product']['unit'] +
+                ')',
+              sort: true,
+              formatter: function(decimalValue) {
+                if (typeof decimalValue === 'number') {
+                  return decimalValue.toFixed(2);
+                } else {
+                  return null;
+                }
+              }
+            });
+
+            detailed_column_list.push({
+              dataField: 'reportingPeriodDatetime',
+              text: t('Reporting Period') + ' - ' + t('Datetime'),
+              sort: true
+            });
+            detailed_column_list.push({
+              dataField: 'b0',
+              text: t('Reporting Period') + ' - ' + t('Production') + ' (' + json['product']['unit'] + ')',
+              sort: true,
+              formatter: function(decimalValue) {
+                if (typeof decimalValue === 'number') {
+                  return decimalValue.toFixed(2);
+                } else {
+                  return null;
+                }
+              }
             });
             setDetailedDataTableColumns(detailed_column_list);
 
             let detailed_value_list = [];
             if (json['base_period']['timestamps'].length > 0 || json['reporting_period']['timestamps'].length > 0) {
+              const baseTimestamps =
+                json['base_period']['timestamps'].length > 0 ? json['base_period']['timestamps'][0] : [];
+              const reportingTimestamps =
+                json['reporting_period']['timestamps'].length > 0 ? json['reporting_period']['timestamps'][0] : [];
               const max_timestamps_length =
-                json['base_period']['timestamps'][0].length >= json['reporting_period']['timestamps'][0].length
-                  ? json['base_period']['timestamps'][0].length
-                  : json['reporting_period']['timestamps'][0].length;
+                baseTimestamps.length >= reportingTimestamps.length ? baseTimestamps.length : reportingTimestamps.length;
               for (let index = 0; index < max_timestamps_length; index++) {
                 let detailed_value = {};
                 detailed_value['id'] = index;
                 detailed_value['basePeriodDatetime'] =
-                  index < json['base_period']['timestamps'][0].length
-                    ? json['base_period']['timestamps'][0][index]
-                    : null;
+                  index < baseTimestamps.length ? baseTimestamps[index] : null;
                 detailed_value['a0'] =
-                  index < json['base_period']['timestamps'][0].length ? json['base_production']['values'][index] : null;
-                json['base_period']['values'].forEach((currentValue, energyCategoryIndex) => {
-                  detailed_value['a' + (energyCategoryIndex * 2 + 1)] =
-                    index < json['base_period']['values'][energyCategoryIndex].length
-                      ? json['base_period']['values'][energyCategoryIndex][index]
-                      : null;
-                  detailed_value['a' + (energyCategoryIndex * 2 + 2)] =
-                    index < json['base_production']['values'].length &&
-                    !Object.is(
-                      json['base_period']['values'][energyCategoryIndex][index] /
-                        json['base_production']['values'][index],
-                      NaN
-                    )
-                      ? Number(
-                          (
-                            json['base_period']['values'][energyCategoryIndex][index] /
-                            json['base_production']['values'][index]
-                          ).toFixed(2)
-                        )
-                      : 0;
-                });
-                detailed_value['reportingPeriodDatetime'] =
-                  index < json['reporting_period']['timestamps'][0].length
-                    ? json['reporting_period']['timestamps'][0][index]
+                  index < json['base_production']['values'].length ? json['base_production']['values'][index] : null;
+                detailed_value['r1'] =
+                  index < reportingSeries['kgce'].length
+                    ? convertKgToTon(reportingSeries['kgce'][index])
                     : null;
+                detailed_value['r2'] =
+                  index < reportingSeries['kgcePerProduction'].length
+                    ? convertKgToTon(reportingSeries['kgcePerProduction'][index])
+                    : null;
+                detailed_value['r3'] =
+                  index < reportingSeries['kgco2e'].length
+                    ? convertKgToTon(reportingSeries['kgco2e'][index])
+                    : null;
+                detailed_value['r4'] =
+                  index < reportingSeries['kgco2ePerProduction'].length
+                    ? convertKgToTon(reportingSeries['kgco2ePerProduction'][index])
+                    : null;
+                detailed_value['reportingPeriodDatetime'] =
+                  index < reportingTimestamps.length ? reportingTimestamps[index] : null;
                 detailed_value['b0'] =
-                  index < json['base_period']['timestamps'][0].length
+                  index < json['reporting_production']['values'].length
                     ? json['reporting_production']['values'][index]
                     : null;
-                json['reporting_period']['values'].forEach((currentValue, energyCategoryIndex) => {
-                  detailed_value['b' + (energyCategoryIndex * 2 + 1)] =
-                    index < json['reporting_period']['values'][energyCategoryIndex].length
-                      ? json['reporting_period']['values'][energyCategoryIndex][index]
-                      : null;
-                  detailed_value['b' + (energyCategoryIndex * 2 + 2)] =
-                    index < json['reporting_production']['values'].length &&
-                    !Object.is(
-                      json['reporting_period']['values'][energyCategoryIndex][index] /
-                        json['reporting_production']['values'][index],
-                      NaN
-                    )
-                      ? Number(
-                          (
-                            json['reporting_period']['values'][energyCategoryIndex][index] /
-                            json['reporting_production']['values'][index]
-                          ).toFixed(2)
-                        )
-                      : 0;
-                });
                 detailed_value_list.push(detailed_value);
               }
 
               let detailed_value = {};
               detailed_value['id'] = detailed_value_list.length;
               detailed_value['basePeriodDatetime'] = t('Subtotal');
-              json['base_period']['subtotals'].forEach((currentValue, index) => {
-                detailed_value['a' + (index * 2 + 1)] = currentValue;
-              });
               detailed_value['a0'] = json['base_total_production'];
+              detailed_value['r1'] = convertKgToTon(json['reporting_period']['total_in_kgce']);
+              detailed_value['r2'] = convertKgToTon(json['reporting_period']['total_in_kgce_per_prodution']);
+              detailed_value['r3'] = convertKgToTon(json['reporting_period']['total_in_kgco2e']);
+              detailed_value['r4'] = convertKgToTon(json['reporting_period']['total_in_kgco2e_per_prodution']);
               detailed_value['reportingPeriodDatetime'] = t('Subtotal');
-              json['reporting_period']['subtotals'].forEach((currentValue, index) => {
-                detailed_value['b' + (index * 2 + 1)] = currentValue;
-              });
               detailed_value['b0'] = json['reporting_total_production'];
               detailed_value_list.push(detailed_value);
               setTimeout(() => {
@@ -772,19 +828,16 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
           // setExcelBytesBase64(json['excel_bytes_base64']);
 
           // enable submit button
-          setSubmitButtonDisabled(false);
-          // hide spinner
-          setSpinnerHidden(true);
-          // show export button
-          setExportButtonHidden(true);
-          // show result data
-          setResultDataHidden(false);
+          finalizeLoadState(true);
         } else {
           handleAPIError(json, setRedirect, setRedirectUrl, t, toast)
+          finalizeLoadState(false);
         }
       })
       .catch(err => {
         console.log(err);
+        toast.error(err.message);
+        finalizeLoadState(false);
       });
   };
 
