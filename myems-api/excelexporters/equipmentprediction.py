@@ -1,3 +1,4 @@
+# -*- coding: gbk -*-
 """
 Equipment Prediction Excel Exporter
 
@@ -369,9 +370,9 @@ def generate_excel(report,
         pie.width = 9
         s1 = pie.series[0]
         s1.dLbls = DataLabelList()
-        s1.dLbls.showCatName = False  # 标签显示
-        s1.dLbls.showVal = False  # 数量显示
-        s1.dLbls.showPercent = True  # 百分比显示
+        s1.dLbls.showCatName = False  # 锟斤拷签锟斤拷示
+        s1.dLbls.showVal = False  # 锟斤拷锟斤拷锟斤拷示
+        s1.dLbls.showPercent = True  # 锟劫分憋拷锟斤拷示
 
         ws.add_chart(pie, "D13")
 

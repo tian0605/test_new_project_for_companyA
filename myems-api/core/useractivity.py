@@ -5,8 +5,29 @@ from functools import wraps
 import falcon
 import mysql.connector
 import simplejson as json
-from gunicorn.http.body import Body
 import config
+
+try:
+    from gunicorn.http.body import Body
+except ImportError:
+    class Body:
+        def __init__(self, file_obj):
+            self.stream = file_obj
+
+        def read(self, *args, **kwargs):
+            return self.stream.read(*args, **kwargs)
+
+        def readline(self, *args, **kwargs):
+            return self.stream.readline(*args, **kwargs)
+
+        def readlines(self, *args, **kwargs):
+            return self.stream.readlines(*args, **kwargs)
+
+        def __iter__(self):
+            return iter(self.stream)
+
+        def __getattr__(self, item):
+            return getattr(self.stream, item)
 
 
 VALID_MENU_TEMPLATE_TYPES = {'admin', 'web', 'hybrid'}

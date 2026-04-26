@@ -27,6 +27,34 @@ import config
 import tariff
 
 
+def _get_utc_offset_minutes():
+    offset_hours = int(config.utc_offset[1:3])
+    offset_minutes = int(config.utc_offset[4:6])
+    total_offset_minutes = offset_hours * 60 + offset_minutes
+    if config.utc_offset[0] == '-':
+        total_offset_minutes = -total_offset_minutes
+    return total_offset_minutes
+
+
+def _get_current_month_start_datetime_utc(reference_datetime_utc):
+    offset_minutes = _get_utc_offset_minutes()
+    reference_datetime_local = reference_datetime_utc + timedelta(minutes=offset_minutes)
+    current_month_start_local = reference_datetime_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return current_month_start_local - timedelta(minutes=offset_minutes)
+
+
+def _has_energy_history_in_window(cursor, space_id, window_start_datetime_utc, window_end_datetime_utc):
+    cursor.execute(
+        " SELECT 1 FROM tbl_space_input_category_hourly "
+        " WHERE space_id = %s "
+        "   AND start_datetime_utc >= %s "
+        "   AND start_datetime_utc < %s "
+        " LIMIT 1 ",
+        (space_id, window_start_datetime_utc, window_end_datetime_utc)
+    )
+    return cursor.fetchone() is not None
+
+
 ########################################################################################################################
 # PROCEDURES
 # Step 1: get all spaces
@@ -191,6 +219,16 @@ def main(logger):
                     # Start from the next time slot
                     start_datetime_utc += timedelta(minutes=config.minutes_to_count)
 
+                refresh_current_month = False
+                current_month_start_datetime_utc = _get_current_month_start_datetime_utc(datetime.utcnow().replace(second=0, microsecond=0, tzinfo=None))
+                if start_datetime_utc > current_month_start_datetime_utc and _has_energy_history_in_window(
+                        cursor_energy_db,
+                        space['id'],
+                        current_month_start_datetime_utc,
+                        start_datetime_utc):
+                    start_datetime_utc = current_month_start_datetime_utc
+                    refresh_current_month = True
+
                 print("start_datetime_utc: " + start_datetime_utc.isoformat()[0:19])
             except Exception as e:
                 logger.error("Error in step 2 of space_billing_input_category " + str(e))
@@ -280,6 +318,17 @@ def main(logger):
 
             if len(billing_dict) > 0:
                 try:
+                    if refresh_current_month:
+                        delete_end_datetime_utc = end_datetime_utc + timedelta(minutes=config.minutes_to_count)
+                        cursor_billing_db.execute(
+                            " DELETE FROM tbl_space_input_category_hourly "
+                            " WHERE space_id = %s "
+                            "   AND start_datetime_utc >= %s "
+                            "   AND start_datetime_utc < %s ",
+                            (space['id'], start_datetime_utc, delete_end_datetime_utc)
+                        )
+                        cnx_billing_db.commit()
+
                     # Prepare SQL statement for bulk insert
                     add_values = (" INSERT INTO tbl_space_input_category_hourly "
                                   "             (space_id, "

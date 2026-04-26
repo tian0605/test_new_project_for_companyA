@@ -41,6 +41,35 @@ def _get_source_latest_datetime(cursor, table_name, id_column, source_id):
     return row[0].replace(second=0, microsecond=0, tzinfo=None)
 
 
+def _has_source_history_in_window(cursor, table_name, id_column, source_id, window_start_datetime_utc, window_end_datetime_utc):
+    query = (
+        f" SELECT 1 FROM {table_name} "
+        f" WHERE {id_column} = %s "
+        f"   AND start_datetime_utc >= %s "
+        f"   AND start_datetime_utc < %s "
+        f" LIMIT 1 "
+    )
+    cursor.execute(query, (source_id, window_start_datetime_utc, window_end_datetime_utc))
+    row = cursor.fetchone()
+    return row is not None
+
+
+def _get_utc_offset_minutes():
+    offset_hours = int(config.utc_offset[1:3])
+    offset_minutes = int(config.utc_offset[4:6])
+    total_offset_minutes = offset_hours * 60 + offset_minutes
+    if config.utc_offset[0] == '-':
+        total_offset_minutes = -total_offset_minutes
+    return total_offset_minutes
+
+
+def _get_current_month_start_datetime_utc(reference_datetime_utc):
+    offset_minutes = _get_utc_offset_minutes()
+    reference_datetime_local = reference_datetime_utc + timedelta(minutes=offset_minutes)
+    current_month_start_local = reference_datetime_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return current_month_start_local - timedelta(minutes=offset_minutes)
+
+
 ########################################################################################################################
 # Space Energy Input Category Aggregation Procedures:
 # Step 1: Get all spaces from system database
@@ -542,6 +571,9 @@ def worker(space):
         # Set end datetime to current time
         end_datetime_utc = datetime.utcnow().replace(second=0, microsecond=0, tzinfo=None)
 
+        current_month_start_datetime_utc = _get_current_month_start_datetime_utc(end_datetime_utc)
+        refresh_current_month = False
+
         print("start_datetime_utc: " + start_datetime_utc.isoformat()[0:19]
               + "end_datetime_utc: " + end_datetime_utc.isoformat()[0:19])
 
@@ -565,6 +597,61 @@ def worker(space):
     active_store_list = list()
     active_tenant_list = list()
     active_child_space_list = list()
+
+    if has_existing_aggregation and start_datetime_utc > current_month_start_datetime_utc:
+        source_window_checks = list()
+        source_window_checks.extend([
+            ('tbl_meter_hourly', 'meter_id', str(meter['id']), 'meter:' + meter['name'])
+            for meter in meter_list
+        ])
+        source_window_checks.extend([
+            ('tbl_virtual_meter_hourly', 'virtual_meter_id', str(virtual_meter['id']), 'virtual_meter:' + virtual_meter['name'])
+            for virtual_meter in virtual_meter_list
+        ])
+        source_window_checks.extend([
+            ('tbl_offline_meter_hourly', 'offline_meter_id', str(offline_meter['id']), 'offline_meter:' + offline_meter['name'])
+            for offline_meter in offline_meter_list
+        ])
+        source_window_checks.extend([
+            ('tbl_combined_equipment_input_category_hourly', 'combined_equipment_id', str(combined_equipment['id']), 'combined_equipment:' + combined_equipment['name'])
+            for combined_equipment in combined_equipment_list
+        ])
+        source_window_checks.extend([
+            ('tbl_equipment_input_category_hourly', 'equipment_id', str(equipment['id']), 'equipment:' + equipment['name'])
+            for equipment in equipment_list
+        ])
+        source_window_checks.extend([
+            ('tbl_shopfloor_input_category_hourly', 'shopfloor_id', str(shopfloor['id']), 'shopfloor:' + shopfloor['name'])
+            for shopfloor in shopfloor_list
+        ])
+        source_window_checks.extend([
+            ('tbl_store_input_category_hourly', 'store_id', str(store['id']), 'store:' + store['name'])
+            for store in store_list
+        ])
+        source_window_checks.extend([
+            ('tbl_tenant_input_category_hourly', 'tenant_id', str(tenant['id']), 'tenant:' + tenant['name'])
+            for tenant in tenant_list
+        ])
+        source_window_checks.extend([
+            ('tbl_space_input_category_hourly', 'space_id', str(child_space['id']), 'child_space:' + child_space['name'])
+            for child_space in child_space_list
+        ])
+
+        for table_name, id_column, source_id, source_label in source_window_checks:
+            if _has_source_history_in_window(
+                cursor_energy_db,
+                table_name,
+                id_column,
+                source_id,
+                current_month_start_datetime_utc,
+                start_datetime_utc,
+            ):
+                refresh_current_month = True
+                start_datetime_utc = current_month_start_datetime_utc
+                print("Refreshing current month for space " + str(space['name'])
+                      + " because source " + source_label
+                      + " has newly discovered historical rows in the current month window")
+                break
 
     ####################################################################################################################
     # Step 11: For each meter in list, get energy input data from energy database
@@ -1390,6 +1477,26 @@ def worker(space):
     # Step 22: Save energy data to energy database
     ####################################################################################################################
     print("Step 22: save energy data to energy database")
+
+    if refresh_current_month and common_start_datetime_utc is not None and common_end_datetime_utc is not None:
+        try:
+            delete_end_datetime_utc = common_end_datetime_utc + timedelta(minutes=config.minutes_to_count)
+            cursor_energy_db.execute(
+                " DELETE FROM tbl_space_input_category_hourly "
+                " WHERE space_id = %s "
+                "   AND start_datetime_utc >= %s "
+                "   AND start_datetime_utc < %s ",
+                (space['id'], start_datetime_utc, delete_end_datetime_utc)
+            )
+            cnx_energy_db.commit()
+        except Exception as e:
+            error_string = "Error in step 22 of space_energy_input_category.worker while clearing current month " + str(e)
+            print(error_string)
+            if cursor_energy_db:
+                cursor_energy_db.close()
+            if cnx_energy_db:
+                cnx_energy_db.close()
+            return error_string
 
     # Process aggregated values in batches of 100 to avoid overwhelming the database
     while len(aggregated_values) > 0:

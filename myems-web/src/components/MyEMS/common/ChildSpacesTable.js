@@ -3,6 +3,7 @@ import BootstrapTable from 'react-bootstrap-table-next';
 import FalconCardHeader from '../../common/FalconCardHeader';
 import { Card, CardBody, Row, Col } from 'reactstrap';
 import { withTranslation } from 'react-i18next';
+import { HIDE_CHILD_SPACE_PANELS } from './panelVisibility';
 
 const defaultSorted = [
   {
@@ -12,6 +13,10 @@ const defaultSorted = [
 ];
 
 const ChildSpacesTable = ({ title, data, columns, t }) => {
+  if (HIDE_CHILD_SPACE_PANELS) {
+    return null;
+  }
+
   return (
     <Fragment>
       <Card>

@@ -37,6 +37,7 @@ import { endOfDay } from 'date-fns';
 import AppContext from '../../../context/Context';
 import { useLocation, Link } from 'react-router-dom';
 import blankPage from '../../../assets/img/generic/blank-page.png';
+import { HIDE_CHILD_SPACE_PANELS } from '../common/panelVisibility';
 
 const DetailedDataTable = loadable(() => import('../common/DetailedDataTable'));
 
@@ -1085,17 +1086,19 @@ const SpacePrediction = ({ setRedirect, setRedirectUrl, t }) => {
           <Col className="mb-3 pr-lg-2 mb-3">
             <SharePie data={TCO2EShareData} title={t('Ton of Carbon Dioxide Emissions by Energy Category')} />
           </Col>
-          {childSpaceProportionList.map(childSpaceProportionItem => (
-            <Col className="mb-3 pr-lg-2 mb-3" key={uuid()}>
-              <SharePie
-                data={childSpaceProportionItem['data']}
-                title={t('Child Space Proportion CATEGORY UNIT', {
-                  CATEGORY: childSpaceProportionItem['name'],
-                  UNIT: '(' + childSpaceProportionItem['unit'] + ')'
-                })}
-              />
-            </Col>
-          ))}
+          {!HIDE_CHILD_SPACE_PANELS
+            ? childSpaceProportionList.map(childSpaceProportionItem => (
+                <Col className="mb-3 pr-lg-2 mb-3" key={uuid()}>
+                  <SharePie
+                    data={childSpaceProportionItem['data']}
+                    title={t('Child Space Proportion CATEGORY UNIT', {
+                      CATEGORY: childSpaceProportionItem['name'],
+                      UNIT: '(' + childSpaceProportionItem['unit'] + ')'
+                    })}
+                  />
+                </Col>
+              ))
+            : null}
         </Row>
 
         <MultiTrendChart
