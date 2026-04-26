@@ -1,0 +1,20 @@
+emqx_bridge_redshift_action_schema {
+  redshift {
+    label: """Upload to AWS Redshift"""
+    desc:
+    """Action that takes incoming events and appends them to AWS Redshift."""
+  }
+
+  action_parameters {
+    label: "Action Parameters"
+    desc:
+    """Set of parameters for the action."""
+  }
+
+
+parameters.desc:
+"""Action-specific parameters."""
+parameters.label:
+"""Parameters"""
+
+}

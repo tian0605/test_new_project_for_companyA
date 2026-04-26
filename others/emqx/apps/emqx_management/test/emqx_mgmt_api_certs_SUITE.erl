@@ -1,0 +1,1009 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2025-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+-module(emqx_mgmt_api_certs_SUITE).
+
+-compile(export_all).
+-compile(nowarn_export_all).
+
+-include_lib("eunit/include/eunit.hrl").
+-include_lib("common_test/include/ct.hrl").
+-include_lib("snabbkaffe/include/snabbkaffe.hrl").
+-include_lib("emqx/include/emqx_config.hrl").
+-include_lib("emqx/include/emqx_managed_certs.hrl").
+-include_lib("emqx_dashboard/include/emqx_dashboard_rbac.hrl").
+-include_lib("emqx/include/emqx_hooks.hrl").
+-include_lib("../../emqx_prometheus/include/emqx_prometheus.hrl").
+
+%%------------------------------------------------------------------------------
+%% Defs
+%%------------------------------------------------------------------------------
+
+-import(emqx_common_test_helpers, [on_exit/1]).
+
+-define(local, local).
+-define(cluster, cluster).
+
+-define(AUTH_HEADER_PD_KEY, {?MODULE, auth_header}).
+
+-define(ON(NODE, BODY), erpc:call(NODE, fun() -> BODY end)).
+-define(ON_ALL(NODES, BODY), erpc:multicall(NODES, fun() -> BODY end)).
+
+-define(FILE_KIND_CA_BIN, atom_to_binary(?FILE_KIND_CA)).
+-define(FILE_KIND_CHAIN_BIN, atom_to_binary(?FILE_KIND_CHAIN)).
+-define(FILE_KIND_KEY_BIN, atom_to_binary(?FILE_KIND_KEY)).
+
+%%------------------------------------------------------------------------------
+%% CT boilerplate
+%%------------------------------------------------------------------------------
+
+all() ->
+    emqx_common_test_helpers:all_with_matrix(?MODULE).
+
+groups() ->
+    emqx_common_test_helpers:groups_with_matrix(?MODULE).
+
+init_per_suite(TCConfig) ->
+    TCConfig.
+
+end_per_suite(_TCConfig) ->
+    ok.
+
+init_per_group(?local, TCConfig) ->
+    Apps = emqx_cth_suite:start(
+        [
+            emqx_conf,
+            {emqx_management, #{
+                after_start => fun() ->
+                    ok = emqx_hooks:add(
+                        'namespace.resource_pre_create',
+                        {?MODULE, on_namespace_resource_pre_create, []},
+                        ?HP_HIGHEST
+                    )
+                end
+            }},
+            emqx_prometheus,
+            emqx_mgmt_api_test_util:emqx_dashboard()
+        ],
+        #{work_dir => emqx_cth_suite:work_dir(?local, TCConfig)}
+    ),
+    [
+        {apps, Apps},
+        {nodes, [node()]}
+        | TCConfig
+    ];
+init_per_group(?cluster, TCConfig) ->
+    AppSpecs = [
+        emqx_conf,
+        {emqx_management, #{
+            after_start => fun() ->
+                ok = emqx_hooks:add(
+                    'namespace.resource_pre_create',
+                    {?MODULE, on_namespace_resource_pre_create, []},
+                    ?HP_HIGHEST
+                )
+            end
+        }}
+    ],
+    Nodes = emqx_cth_cluster:start(
+        [
+            {mgmt_api_tls1, #{apps => AppSpecs ++ [emqx_mgmt_api_test_util:emqx_dashboard()]}},
+            {mgmt_api_tls2, #{apps => AppSpecs}}
+        ],
+        #{work_dir => emqx_cth_suite:work_dir(?cluster, TCConfig)}
+    ),
+    [
+        {cluster, Nodes},
+        {nodes, Nodes}
+        | TCConfig
+    ];
+init_per_group(_Group, TCConfig) ->
+    TCConfig.
+
+end_per_group(?local, TCConfig) ->
+    Apps = get_config(apps, TCConfig),
+    ok = emqx_cth_suite:stop(Apps),
+    ok;
+end_per_group(?cluster, TCConfig) ->
+    Nodes = get_config(cluster, TCConfig),
+    ok = emqx_cth_cluster:stop(Nodes),
+    ok;
+end_per_group(_Group, _TCConfig) ->
+    ok.
+
+init_per_testcase(_TestCase, TCConfig) ->
+    maybe
+        [N1 | _] ?= get_config(cluster, TCConfig, undefined),
+        AuthHeader = ?ON(N1, emqx_mgmt_api_test_util:auth_header_()),
+        put_auth_header(AuthHeader)
+    end,
+    TCConfig.
+
+end_per_testcase(_TestCase, TCConfig) ->
+    Nodes = get_config(nodes, TCConfig),
+    ?ON_ALL(Nodes, ok = emqx_managed_certs:clean_certs_dir()),
+    ok.
+
+%%------------------------------------------------------------------------------
+%% Helper fns
+%%------------------------------------------------------------------------------
+
+on_namespace_resource_pre_create(#{namespace := _Namespace}, ResCtx) ->
+    {stop, ResCtx#{exists := true}}.
+
+get_config(Key, TCConfig) ->
+    case proplists:get_value(Key, TCConfig, undefined) of
+        undefined ->
+            error({missing_required_config, Key, TCConfig});
+        Value ->
+            Value
+    end.
+
+get_config(Key, TCConfig, Default) ->
+    proplists:get_value(Key, TCConfig, Default).
+
+simple_request(Params) ->
+    AuthHeader = get_auth_header(),
+    emqx_mgmt_api_test_util:simple_request(Params#{auth_header => AuthHeader}).
+
+get_auth_header() ->
+    case get(?AUTH_HEADER_PD_KEY) of
+        undefined -> emqx_mgmt_api_test_util:auth_header_();
+        Header -> Header
+    end.
+
+put_auth_header(Header) ->
+    put(?AUTH_HEADER_PD_KEY, Header).
+
+create_managed_ns(Ns) ->
+    URL = emqx_mgmt_api_test_util:api_path(["mt", "ns", Ns]),
+    simple_request(#{
+        method => post,
+        url => URL
+    }).
+
+bearer_auth_header(Token) ->
+    {"Authorization", iolist_to_binary(["Bearer ", Token])}.
+
+create_superuser() ->
+    emqx_common_test_http:create_default_app(),
+    Username = <<"superuser">>,
+    Password = <<"secretP@ss1">>,
+    {ok, _} = emqx_dashboard_admin:add_user(Username, Password, ?ROLE_SUPERUSER, <<"desc">>),
+    {200, #{<<"token">> := Token}} = login(#{<<"username">> => Username, <<"password">> => Password}),
+    {"Authorization", iolist_to_binary(["Bearer ", Token])}.
+
+login(Params) ->
+    URL = emqx_mgmt_api_test_util:api_path(["login"]),
+    emqx_mgmt_api_test_util:simple_request(#{
+        auth_header => [{"no", "auth"}],
+        method => post,
+        url => URL,
+        body => Params
+    }).
+
+create_user_api(Params, AuthHeader) ->
+    URL = emqx_mgmt_api_test_util:api_path(["users"]),
+    emqx_mgmt_api_test_util:simple_request(#{
+        auth_header => AuthHeader,
+        method => post,
+        url => URL,
+        body => Params
+    }).
+
+list_bundles_global() ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "global", "list"]),
+    simple_request(#{
+        method => get,
+        url => URL
+    }).
+
+list_bundles_ns(Ns) ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "ns", Ns, "list"]),
+    simple_request(#{
+        method => get,
+        url => URL
+    }).
+
+list_files_global(BundleName) ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "global", "name", BundleName]),
+    simple_request(#{
+        method => get,
+        url => URL
+    }).
+
+list_files_ns(Ns, BundleName) ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "ns", Ns, "name", BundleName]),
+    simple_request(#{
+        method => get,
+        url => URL
+    }).
+
+delete_bundle_global(BundleName) ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "global", "name", BundleName]),
+    simple_request(#{
+        method => delete,
+        url => URL
+    }).
+
+delete_file_global(BundleName, Kind) ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "global", "name", BundleName]),
+    simple_request(#{
+        method => delete,
+        url => URL,
+        query_params => #{<<"kind">> => Kind}
+    }).
+
+delete_bundle_ns(Ns, BundleName) ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "ns", Ns, "name", BundleName]),
+    simple_request(#{
+        method => delete,
+        url => URL
+    }).
+
+delete_file_ns(Ns, BundleName, Kind) ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "ns", Ns, "name", BundleName]),
+    simple_request(#{
+        method => delete,
+        url => URL,
+        query_params => #{<<"kind">> => Kind}
+    }).
+
+upload_file_global(BundleName, Kind, Contents) ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "global", "name", BundleName]),
+    Body = #{Kind => Contents},
+    simple_request(#{
+        method => post,
+        url => URL,
+        body => Body
+    }).
+
+upload_file_ns(Ns, BundleName, Kind, Contents) ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "ns", Ns, "name", BundleName]),
+    Body = #{Kind => Contents},
+    simple_request(#{
+        method => post,
+        url => URL,
+        body => Body
+    }).
+
+upload_files_multipart_global(BundleName, Files) ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "global", "name", BundleName]),
+    Res = emqx_mgmt_api_test_util:upload_request(#{
+        url => URL,
+        files => Files,
+        mime_type => <<"application/octet-stream">>,
+        other_params => [],
+        auth_token => get_auth_header(),
+        method => post
+    }),
+    emqx_mgmt_api_test_util:simplify_decode_result(Res).
+
+upload_files_multipart_ns(Ns, BundleName, Files) ->
+    URL = emqx_mgmt_api_test_util:api_path(["certs", "ns", Ns, "name", BundleName]),
+    Res = emqx_mgmt_api_test_util:upload_request(#{
+        url => URL,
+        files => Files,
+        mime_type => <<"application/octet-stream">>,
+        other_params => [],
+        auth_token => get_auth_header(),
+        method => post
+    }),
+    emqx_mgmt_api_test_util:simplify_decode_result(Res).
+
+gen_cert(Opts) ->
+    #{
+        cert := Cert,
+        key := Key,
+        cert_pem := CertPEM,
+        key_pem := KeyPEM
+    } = emqx_cth_tls:gen_cert_pem(Opts),
+    #{
+        cert_key => {Cert, Key},
+        cert_pem => CertPEM,
+        key_pem => KeyPEM
+    }.
+
+pem_encode(X, undefined = _Password) ->
+    public_key:pem_encode([X]);
+pem_encode(X, Password) when is_binary(Password) ->
+    Y = public_key:pem_entry_decode(X),
+    Type = element(1, X),
+    Salt = crypto:strong_rand_bytes(8),
+    Entry = public_key:pem_entry_encode(Type, Y, {{"DES-EDE3-CBC", Salt}, str(Password)}),
+    public_key:pem_encode([Entry]).
+
+str(X) -> emqx_utils_conv:str(X).
+
+assert_same_bundles(Namespace, TCConfig) ->
+    Nodes = get_config(nodes, TCConfig),
+    Bundles0 = [FirstBundle0 | _] = ?ON_ALL(Nodes, emqx_managed_certs:list_bundles(Namespace)),
+    ?assertEqual([FirstBundle0], lists:usort(Bundles0)),
+    {ok, Bundles1} = FirstBundle0,
+    Bundles2 =
+        [FirstBundle2 | _] = ?ON_ALL(Nodes, begin
+            lists:foldl(
+                fun(BundleName, Acc) ->
+                    Hashes = get_file_hashes(Namespace, BundleName),
+                    Acc#{BundleName => Hashes}
+                end,
+                #{},
+                Bundles1
+            )
+        end),
+    ?assertEqual([FirstBundle2], lists:usort(Bundles2)),
+    ok.
+
+get_file_hashes(Namespace, BundleName) ->
+    maybe
+        {ok, Files0} ?= emqx_managed_certs:list_managed_files(Namespace, BundleName),
+        Files =
+            maps:fold(
+                fun(Kind, #{path := Path}, Acc) ->
+                    {ok, Contents} = file:read_file(Path),
+                    MD5 = md5(Contents),
+                    Acc#{Kind => MD5}
+                end,
+                #{},
+                Files0
+            ),
+        {ok, Files}
+    end.
+
+read_md5(Path) ->
+    {ok, Contents} = file:read_file(Path),
+    md5(Contents).
+
+md5(Data) ->
+    erlang:md5(Data).
+
+get_prometheus_stats(Mode, Format) ->
+    Headers =
+        case Format of
+            json -> [{"accept", "application/json"}];
+            prometheus -> []
+        end,
+    QueryString = uri_string:compose_query([{"mode", atom_to_binary(Mode)}]),
+    URL = emqx_mgmt_api_test_util:api_path(["prometheus", "stats"]),
+    {Status, Response} = emqx_mgmt_api_test_util:simple_request(#{
+        method => get,
+        url => URL,
+        extra_headers => Headers,
+        query_params => QueryString,
+        auth_header => {"no", "auth"}
+    }),
+    case Format of
+        json ->
+            {Status, Response};
+        prometheus when Status == 200 ->
+            {Status, parse_prometheus(Response)};
+        prometheus ->
+            {Status, Response}
+    end.
+
+parse_prometheus(RawData) ->
+    lists:foldl(
+        fun
+            (<<"#", _/binary>>, Acc) ->
+                Acc;
+            (Line, Acc) ->
+                {Name, Labels, Value} = parse_prometheus_line(Line),
+                maps:update_with(
+                    Name,
+                    fun(Old) -> Old#{Labels => Value} end,
+                    #{Labels => Value},
+                    Acc
+                )
+        end,
+        #{},
+        binary:split(iolist_to_binary(RawData), <<"\n">>, [global, trim_all])
+    ).
+
+parse_prometheus_line(Line) ->
+    RE = <<"(?<name>[a-z0-9A-Z_]+)(\\{(?<labels>[^)]*)\\})? *(?<value>[0-9]+(\\.[0-9]+)?)">>,
+    {match, [Name, Labels0, Value0]} = re:run(
+        Line, RE, [{capture, [<<"name">>, <<"labels">>, <<"value">>], binary}]
+    ),
+    Labels = parse_prometheus_labels(Labels0),
+    Value =
+        try
+            binary_to_float(Value0)
+        catch
+            error:badarg ->
+                binary_to_integer(Value0)
+        end,
+    {Name, Labels, Value}.
+
+parse_prometheus_labels(<<"">>) ->
+    #{};
+parse_prometheus_labels(Labels) ->
+    lists:foldl(
+        fun(Label, Acc) ->
+            [K, V0] = binary:split(Label, <<"=">>),
+            V = binary:replace(V0, <<"\"">>, <<"">>, [global]),
+            Acc#{K => V}
+        end,
+        #{},
+        binary:split(Labels, <<",">>, [global])
+    ).
+
+get_listener_api(Type, Name) ->
+    Id0 = emqx_listeners:listener_id(Type, Name),
+    Id = atom_to_binary(Id0),
+    URL = emqx_mgmt_api_test_util:api_path(["listeners", Id]),
+    simple_request(#{
+        method => get,
+        url => URL
+    }).
+
+update_listener_api(Type, Name, Conf) ->
+    Id0 = emqx_listeners:listener_id(Type, Name),
+    Id = atom_to_binary(Id0),
+    URL = emqx_mgmt_api_test_util:api_path(["listeners", Id]),
+    simple_request(#{
+        method => put,
+        url => URL,
+        body => Conf
+    }).
+
+%%------------------------------------------------------------------------------
+%% Test cases
+%%------------------------------------------------------------------------------
+
+%% Some tests for CRUD operations related to global and namespaced certificate files.
+t_crud() ->
+    [{matrix, true}].
+t_crud(matrix) ->
+    [[?local], [?cluster]];
+t_crud(TCConfig) when is_list(TCConfig) ->
+    Ns1 = <<"some_namespace1">>,
+    Ns2 = <<"some_namespace2">>,
+
+    ?assertMatch({200, []}, list_bundles_global()),
+    %% List as empty even if namespace is not explictly created.
+    ?assertMatch({200, []}, list_bundles_ns(Ns1)),
+    assert_same_bundles(?global_ns, TCConfig),
+    assert_same_bundles(Ns1, TCConfig),
+
+    Bundle1 = <<"bundle1">>,
+
+    %% Should we instead return an empty list?
+    ?assertMatch({404, _}, list_files_global(Bundle1)),
+    ?assertMatch({404, _}, list_files_ns(Ns1, Bundle1)),
+
+    ?assertMatch({204, _}, delete_bundle_global(Bundle1)),
+    ?assertMatch({204, _}, delete_bundle_ns(Ns1, Bundle1)),
+
+    %% Still list as empty after namespace is explictly created.
+    %% {204, _} = create_managed_ns(Ns),
+    %% ?assertMatch({200, []}, list_bundles_ns(Ns)),
+    %% ?assertMatch({404, _}, list_files_ns(Ns, Bundle1)),
+    %% ?assertMatch({204, _}, delete_bundle_ns(Ns, Bundle1)),
+
+    %% Upload some files
+    #{
+        cert_key := CertKeyRoot,
+        cert_pem := CA1
+    } = gen_cert(#{key => ec, issuer => root}),
+    #{
+        cert_pem := Cert1,
+        key_pem := Key1
+    } = gen_cert(#{key => ec, issuer => CertKeyRoot}),
+
+    ?assertMatch({204, _}, upload_file_global(Bundle1, ?FILE_KIND_CA, CA1)),
+
+    ?assertMatch({200, [#{<<"name">> := Bundle1}]}, list_bundles_global()),
+    ?assertMatch({200, []}, list_bundles_ns(Ns1)),
+    ?assertMatch(
+        {200, #{<<"ca">> := #{<<"path">> := _}}},
+        list_files_global(Bundle1)
+    ),
+    ?assertMatch({404, _}, list_files_ns(Ns1, Bundle1)),
+    ?assertMatch({404, _}, list_files_ns(Ns2, Bundle1)),
+
+    %% Expected contents found on all nodes.
+    {200, #{<<"ca">> := #{<<"path">> := PathCAGlobal1}}} = list_files_global(Bundle1),
+    ?assertEqual(md5(CA1), read_md5(PathCAGlobal1)),
+    assert_same_bundles(?global_ns, TCConfig),
+    assert_same_bundles(Ns1, TCConfig),
+
+    %% Upload new contents; should replace at the same path
+    #{cert_pem := CA2} = gen_cert(#{key => ec, issuer => root}),
+    ?assertMatch({204, _}, upload_file_global(Bundle1, ?FILE_KIND_CA, CA2)),
+    ?assertMatch(
+        {200, #{<<"ca">> := #{<<"path">> := PathCAGlobal1}}},
+        list_files_global(Bundle1)
+    ),
+    ?assertEqual(md5(CA2), read_md5(PathCAGlobal1)),
+    assert_same_bundles(?global_ns, TCConfig),
+    assert_same_bundles(Ns1, TCConfig),
+
+    %% Upload other files (and original CA, for consistency)
+    ?assertMatch({204, _}, upload_file_global(Bundle1, ?FILE_KIND_CA, CA1)),
+    ?assertMatch({204, _}, upload_file_global(Bundle1, ?FILE_KIND_CHAIN, Cert1)),
+    ?assertMatch({204, _}, upload_file_global(Bundle1, ?FILE_KIND_KEY, Key1)),
+
+    ?assertMatch(
+        {200, #{
+            <<"ca">> := #{<<"path">> := _},
+            <<"chain">> := #{<<"path">> := _},
+            <<"key">> := #{<<"path">> := _}
+        }},
+        list_files_global(Bundle1)
+    ),
+    {200, #{
+        <<"chain">> := #{<<"path">> := PathCertGlobal1},
+        <<"key">> := #{<<"path">> := PathKeyGlobal1}
+    }} = list_files_global(Bundle1),
+    ?assertEqual(md5(Cert1), read_md5(PathCertGlobal1)),
+    ?assertEqual(md5(Key1), read_md5(PathKeyGlobal1)),
+    assert_same_bundles(?global_ns, TCConfig),
+
+    %% Upload stuff to namespaced bundle
+    #{
+        cert_key := CertKeyRoot3,
+        cert_pem := CA3
+    } = gen_cert(#{key => ec, issuer => root}),
+    #{
+        cert_pem := Cert2,
+        key_pem := Key2
+    } = gen_cert(#{key => ec, issuer => CertKeyRoot3}),
+
+    ?assertMatch({204, _}, upload_file_ns(Ns1, Bundle1, ?FILE_KIND_CA, CA3)),
+    ?assertMatch({204, _}, upload_file_ns(Ns1, Bundle1, ?FILE_KIND_CHAIN, Cert2)),
+    ?assertMatch({204, _}, upload_file_ns(Ns1, Bundle1, ?FILE_KIND_KEY, Key2)),
+    ?assertMatch(
+        {200, #{
+            <<"ca">> := #{<<"path">> := _},
+            <<"chain">> := #{<<"path">> := _},
+            <<"key">> := #{<<"path">> := _}
+        }},
+        list_files_ns(Ns1, Bundle1)
+    ),
+    {200, #{
+        <<"ca">> := #{<<"path">> := PathCANs1},
+        <<"chain">> := #{<<"path">> := PathCertNs1},
+        <<"key">> := #{<<"path">> := PathKeyNs1}
+    }} = list_files_ns(Ns1, Bundle1),
+    ?assertEqual(md5(CA3), read_md5(PathCANs1)),
+    ?assertEqual(md5(Cert2), read_md5(PathCertNs1)),
+    ?assertEqual(md5(Key2), read_md5(PathKeyNs1)),
+
+    %% Other existing files are untouched
+    ?assertEqual(md5(CA1), read_md5(PathCAGlobal1)),
+    ?assertEqual(md5(Cert1), read_md5(PathCertGlobal1)),
+    ?assertEqual(md5(Key1), read_md5(PathKeyGlobal1)),
+
+    ?assertMatch({404, _}, list_files_ns(Ns2, Bundle1)),
+
+    %% Different namespaces and bundles are independent
+    #{
+        cert_key := CertKeyRoot4,
+        cert_pem := CA4
+    } = gen_cert(#{key => ec, issuer => root}),
+    #{
+        cert_pem := Cert3,
+        key_pem := Key3
+    } = gen_cert(#{key => ec, issuer => CertKeyRoot4}),
+
+    Bundle2 = <<"bundle2">>,
+
+    ?assertMatch({204, _}, upload_file_ns(Ns2, Bundle1, ?FILE_KIND_CA, CA4)),
+
+    ?assertMatch({204, _}, upload_file_ns(Ns2, Bundle2, ?FILE_KIND_CHAIN, Cert3)),
+    ?assertMatch({204, _}, upload_file_ns(Ns2, Bundle2, ?FILE_KIND_KEY, Key3)),
+
+    ?assertNotMatch(
+        {200, #{
+            <<"chain">> := #{<<"path">> := _},
+            <<"key">> := #{<<"path">> := _}
+        }},
+        list_files_ns(Ns2, Bundle1)
+    ),
+    ?assertNotMatch(
+        {200, #{<<"ca">> := #{<<"path">> := _}}},
+        list_files_ns(Ns2, Bundle2)
+    ),
+
+    ?assertMatch({200, [#{<<"name">> := Bundle1}]}, list_bundles_global()),
+    ?assertMatch({200, [#{<<"name">> := Bundle1}]}, list_bundles_ns(Ns1)),
+    ?assertMatch({200, [#{<<"name">> := Bundle1}, #{<<"name">> := Bundle2}]}, list_bundles_ns(Ns2)),
+
+    %% Delete
+    ?assertMatch({204, _}, delete_bundle_ns(Ns2, Bundle1)),
+    ?assertMatch({404, _}, list_files_ns(Ns2, Bundle1)),
+    ?assertMatch({200, _}, list_files_ns(Ns2, Bundle2)),
+    ?assertMatch({200, _}, list_files_ns(Ns1, Bundle1)),
+    ?assertMatch({200, _}, list_files_global(Bundle1)),
+
+    %% Deleting specific files
+    ?assertMatch({204, _}, delete_file_ns(Ns2, Bundle2, ?FILE_KIND_KEY_BIN)),
+    KindCABin = ?FILE_KIND_CA_BIN,
+    KindKeyBin = ?FILE_KIND_KEY_BIN,
+    KindChainBin = ?FILE_KIND_CHAIN_BIN,
+    ?assertMatch(
+        {200, Files} when
+            not is_map_key(KindKeyBin, Files) andalso
+                is_map_key(KindChainBin, Files),
+        list_files_ns(Ns2, Bundle2)
+    ),
+    %% Idempotency
+    ?assertMatch({204, _}, delete_file_ns(Ns2, Bundle2, ?FILE_KIND_KEY_BIN)),
+    ?assertMatch(
+        {200, Files} when
+            not is_map_key(KindKeyBin, Files) andalso
+                is_map_key(KindChainBin, Files),
+        list_files_ns(Ns2, Bundle2)
+    ),
+
+    ?assertMatch({204, _}, delete_bundle_ns(Ns2, Bundle2)),
+    ?assertMatch({404, _}, list_files_ns(Ns2, Bundle1)),
+    ?assertMatch({404, _}, list_files_ns(Ns2, Bundle2)),
+    ?assertMatch({200, _}, list_files_ns(Ns1, Bundle1)),
+    ?assertMatch({200, _}, list_files_global(Bundle1)),
+
+    ?assertMatch({200, [#{<<"name">> := Bundle1}]}, list_bundles_global()),
+    ?assertMatch({200, [#{<<"name">> := Bundle1}]}, list_bundles_ns(Ns1)),
+    ?assertMatch({200, []}, list_bundles_ns(Ns2)),
+
+    %% Other existing files are untouched
+    ?assertEqual(md5(CA3), read_md5(PathCANs1)),
+    ?assertEqual(md5(Cert2), read_md5(PathCertNs1)),
+    ?assertEqual(md5(Key2), read_md5(PathKeyNs1)),
+    assert_same_bundles(?global_ns, TCConfig),
+    assert_same_bundles(Ns1, TCConfig),
+    assert_same_bundles(Ns2, TCConfig),
+
+    %% Cleanup other bundles
+    ?assertMatch({204, _}, delete_bundle_ns(Ns1, Bundle1)),
+
+    %% Deleting specific files (global)
+    ?assertMatch({204, _}, delete_file_global(Bundle1, ?FILE_KIND_KEY_BIN)),
+    ?assertMatch(
+        {200, Files} when
+            not is_map_key(KindKeyBin, Files) andalso
+                is_map_key(KindChainBin, Files),
+        list_files_global(Bundle1)
+    ),
+    %% Idempotency
+    ?assertMatch({204, _}, delete_file_global(Bundle1, ?FILE_KIND_CA_BIN)),
+    ?assertMatch(
+        {200, Files} when
+            not is_map_key(KindCABin, Files) andalso
+                is_map_key(KindChainBin, Files),
+        list_files_global(Bundle1)
+    ),
+
+    ?assertMatch({204, _}, delete_bundle_global(Bundle1)),
+    %% Idempotent responses
+    ?assertMatch({204, _}, delete_bundle_ns(Ns1, Bundle1)),
+    ?assertMatch({204, _}, delete_bundle_global(Bundle1)),
+
+    ?assertMatch({200, []}, list_bundles_global()),
+    ?assertMatch({200, []}, list_bundles_ns(Ns1)),
+    ?assertMatch({200, []}, list_bundles_ns(Ns2)),
+
+    assert_same_bundles(?global_ns, TCConfig),
+    assert_same_bundles(Ns1, TCConfig),
+    assert_same_bundles(Ns2, TCConfig),
+
+    %% Upload password protected key
+    #{cert_key := CertKeyRoot5} = gen_cert(#{key => ec, issuer => root}),
+    Password4 = <<"secretP@s$">>,
+    #{key_pem := Key4} = gen_cert(#{
+        key => ec,
+        issuer => CertKeyRoot5,
+        password => Password4
+    }),
+    ?assertMatch({204, _}, upload_file_global(Bundle1, ?FILE_KIND_KEY, Key4)),
+    ?assertMatch({204, _}, upload_file_global(Bundle1, ?FILE_KIND_KEY_PASSWORD, Password4)),
+    ?assertMatch(
+        {200, #{
+            <<"key">> := #{<<"path">> := _},
+            <<"key_password">> := #{<<"path">> := _}
+        }},
+        list_files_global(Bundle1)
+    ),
+    assert_same_bundles(?global_ns, TCConfig),
+
+    ?assertMatch({204, _}, delete_bundle_global(Bundle1)),
+
+    %% Upload account key before others.  The other files should be rejected, since they
+    %% will be controlled by the ACME client.  We still allow updating CA and the account
+    %% key itself, though.
+    ?assertMatch({204, _}, upload_file_global(Bundle1, ?FILE_KIND_ACC_KEY, Key3)),
+    ?assertMatch({400, _}, upload_file_global(Bundle1, ?FILE_KIND_KEY, Key4)),
+    ?assertMatch({400, _}, upload_file_global(Bundle1, ?FILE_KIND_CHAIN, Cert3)),
+    %% Update allowed
+    ?assertMatch({204, _}, upload_file_global(Bundle1, ?FILE_KIND_ACC_KEY, Key3)),
+    ?assertMatch({204, _}, upload_file_global(Bundle1, ?FILE_KIND_CA, CA4)),
+
+    %% Uploading an unknown kind
+    ?assertMatch({400, _}, upload_file_global(Bundle1, some_unknown_type, Key3)),
+    ?assertMatch({400, _}, upload_file_ns(Ns1, Bundle1, some_unknown_type, Key3)),
+
+    ok.
+
+-doc """
+Checks that we restrict the bundle name to a valid format.
+""".
+t_bundle_name_validation() ->
+    [{matrix, true}].
+t_bundle_name_validation(matrix) ->
+    [[?local]];
+t_bundle_name_validation(TCConfig) when is_list(TCConfig) ->
+    Ns = <<"some_ns">>,
+    BadBundleNames = [
+        binary:copy(<<"a">>, 255),
+        <<"-">>,
+        <<":">>,
+        <<"*">>,
+        <<"ç"/utf8>>
+    ],
+    #{cert_pem := CA} = gen_cert(#{key => ec, issuer => root}),
+    lists:foreach(
+        fun(BadBundleName0) ->
+            ct:pal("bad bundle name: ~ts", [BadBundleName0]),
+            BadBundleName = uri_string:quote(BadBundleName0),
+            ?assertMatch(
+                {400, #{
+                    <<"message">> := #{
+                        <<"kind">> := <<"validation_error">>,
+                        <<"path">> := <<"name">>,
+                        <<"value">> := BadBundleName0
+                    }
+                }},
+                upload_file_global(BadBundleName, ?FILE_KIND_CA, CA),
+                #{bundle_name => BadBundleName}
+            ),
+            ?assertMatch(
+                {400, #{
+                    <<"message">> := #{
+                        <<"kind">> := <<"validation_error">>,
+                        <<"path">> := <<"name">>,
+                        <<"value">> := BadBundleName0
+                    }
+                }},
+                upload_file_ns(Ns, BadBundleName, ?FILE_KIND_CA, CA),
+                #{bundle_name => BadBundleName}
+            ),
+            ok
+        end,
+        BadBundleNames
+    ),
+
+    ok.
+
+-doc """
+Checks that we can list the contents of namespaced bundle dirs when escaping/quoting is
+necessary.
+
+Namespaces currently have no restriction on them, so they need to be escaped.
+""".
+t_escape_namespace_in_dirs() ->
+    [{matrix, true}].
+t_escape_namespace_in_dirs(matrix) ->
+    [[?local]];
+t_escape_namespace_in_dirs(TCConfig) when is_list(TCConfig) ->
+    NsThatNeedsQuoting = <<":bad*nś-!">>,
+    %% We need to quote it here, otherwise it's not a valid HTTP request path.
+    NsQuoted = uri_string:quote(NsThatNeedsQuoting),
+    BundleName = <<"a">>,
+    #{cert_pem := CA} = gen_cert(#{key => ec, issuer => root}),
+    ?assertMatch({204, _}, upload_file_ns(NsQuoted, BundleName, ?FILE_KIND_CA, CA)),
+    ?assertMatch({200, [#{<<"name">> := BundleName}]}, list_bundles_ns(NsQuoted)),
+    ?assertMatch(
+        {200, #{<<"ca">> := #{<<"path">> := _}}},
+        list_files_ns(NsQuoted, BundleName)
+    ),
+    {200, #{<<"ca">> := #{<<"path">> := Path}}} = list_files_ns(NsQuoted, BundleName),
+    %% Path segments are quoted to avoid bad characters.
+    ?assertEqual(match, re:run(Path, NsQuoted, [{capture, none}]), #{path => Path}),
+    ok.
+
+-doc """
+Smoke tests for multipart, multi-file uploads.
+""".
+t_smoke_multipart() ->
+    [{matrix, true}].
+t_smoke_multipart(matrix) ->
+    [[?local], [?cluster]];
+t_smoke_multipart(TCConfig) when is_list(TCConfig) ->
+    #{
+        cert_key := CertKeyRoot1,
+        cert_pem := CA1
+    } = gen_cert(#{key => ec, issuer => root}),
+    #{
+        cert_pem := Cert1,
+        key_pem := Key1
+    } = gen_cert(#{key => ec, issuer => CertKeyRoot1}),
+
+    Bundle1 = <<"bundle1">>,
+    Files1 = [
+        {?FILE_KIND_CA_BIN, <<"unused_ca_filename.pem">>, CA1},
+        {?FILE_KIND_CHAIN_BIN, <<"unused_chain_filename.pem">>, Cert1},
+        {?FILE_KIND_KEY_BIN, <<"unused_key_filename.pem">>, Key1}
+    ],
+    ?assertMatch({204, _}, upload_files_multipart_global(Bundle1, Files1)),
+    assert_same_bundles(?global_ns, TCConfig),
+
+    {200, #{
+        <<"ca">> := #{<<"path">> := PathCAGlobal1},
+        <<"chain">> := #{<<"path">> := PathCertGlobal1},
+        <<"key">> := #{<<"path">> := PathKeyGlobal1}
+    }} = list_files_global(Bundle1),
+    ?assertEqual(md5(CA1), read_md5(PathCAGlobal1)),
+    ?assertEqual(md5(Cert1), read_md5(PathCertGlobal1)),
+    ?assertEqual(md5(Key1), read_md5(PathKeyGlobal1)),
+
+    Ns2 = <<"ns2">>,
+    Bundle2 = <<"bundle2">>,
+    #{
+        cert_key := CertKeyRoot2,
+        cert_pem := CA2
+    } = gen_cert(#{key => ec, issuer => root}),
+    #{
+        cert_pem := Cert2,
+        key_pem := Key2
+    } = gen_cert(#{key => ec, issuer => CertKeyRoot2}),
+    Files2 = [
+        {?FILE_KIND_CA_BIN, <<"unused_ca_filename.pem">>, CA2},
+        {?FILE_KIND_CHAIN_BIN, <<"unused_chain_filename.pem">>, Cert2},
+        {?FILE_KIND_KEY_BIN, <<"unused_key_filename.pem">>, Key2}
+    ],
+    ?assertMatch({204, _}, upload_files_multipart_ns(Ns2, Bundle2, Files2)),
+    assert_same_bundles(Ns2, TCConfig),
+
+    {200, #{
+        <<"ca">> := #{<<"path">> := PathCANs2},
+        <<"chain">> := #{<<"path">> := PathCertNs2},
+        <<"key">> := #{<<"path">> := PathKeyNs2}
+    }} = list_files_ns(Ns2, Bundle2),
+    ?assertEqual(md5(CA2), read_md5(PathCANs2)),
+    ?assertEqual(md5(Cert2), read_md5(PathCertNs2)),
+    ?assertEqual(md5(Key2), read_md5(PathKeyNs2)),
+
+    %% Uploading nothing
+    ?assertMatch({400, _}, upload_files_multipart_global(Bundle2, [])),
+    ?assertMatch({400, _}, upload_files_multipart_ns(Ns2, Bundle2, [])),
+
+    ok.
+
+-doc """
+Smoke tests that verify that a namespaced admin can operate on managed bundles in its own
+namespace, but not others.
+""".
+t_namespaced_admin_crud() ->
+    [{matrix, true}].
+t_namespaced_admin_crud(matrix) ->
+    [[?local]];
+t_namespaced_admin_crud(TCConfig) when is_list(TCConfig) ->
+    GlobalAdminHeader = create_superuser(),
+    Username1 = <<"iminans">>,
+    Password1 = <<"superSecureP@ss">>,
+    Ns1 = <<"ns1">>,
+    AdminRole1 = <<"ns:", Ns1/binary, "::", ?ROLE_SUPERUSER/binary>>,
+    ?assertMatch(
+        {200, _},
+        create_user_api(
+            #{
+                <<"username">> => Username1,
+                <<"password">> => Password1,
+                <<"role">> => AdminRole1,
+                <<"description">> => <<"namespaced person">>
+            },
+            GlobalAdminHeader
+        )
+    ),
+    {200, #{<<"token">> := Token1, <<"namespace">> := Ns1}} =
+        login(#{<<"username">> => Username1, <<"password">> => Password1}),
+    put_auth_header(bearer_auth_header(Token1)),
+
+    #{cert_pem := CA1} = gen_cert(#{key => ec, issuer => root}),
+
+    Bundle1 = <<"bundle1">>,
+
+    ?assertMatch({200, _}, list_bundles_ns(Ns1)),
+    ?assertMatch({204, _}, upload_file_ns(Ns1, Bundle1, ?FILE_KIND_CA, CA1)),
+    ?assertMatch({200, _}, list_files_ns(Ns1, Bundle1)),
+    ?assertMatch({204, _}, delete_bundle_ns(Ns1, Bundle1)),
+
+    Ns2 = <<"ns2">>,
+    %% This one is fine to work because it's read-only.
+    ?assertMatch({200, _}, list_bundles_ns(Ns2)),
+    ?assertMatch({403, _}, upload_file_ns(Ns2, Bundle1, ?FILE_KIND_CA, CA1)),
+    %% This one is fine to work because it's read-only.
+    ?assertMatch({404, _}, list_files_ns(Ns2, Bundle1)),
+    ?assertMatch({403, _}, delete_bundle_ns(Ns2, Bundle1)),
+
+    %% This one is fine to work because it's read-only.
+    ?assertMatch({200, _}, list_bundles_global()),
+    %% This one is fine to work because it's read-only.
+    ?assertMatch({404, _}, list_files_global(Bundle1)),
+    ?assertMatch({403, _}, delete_bundle_global(Bundle1)),
+    ?assertMatch({403, _}, upload_file_global(Bundle1, ?FILE_KIND_CA, CA1)),
+
+    ok.
+
+-doc """
+Verifies that we take into account managed certs when constructing the
+`emqx_cert_expiry_at` prometheus gauge.
+""".
+t_managed_certs_prometheus_expiry_date() ->
+    [{matrix, true}].
+t_managed_certs_prometheus_expiry_date(matrix) ->
+    [[?local]];
+t_managed_certs_prometheus_expiry_date(_TCConfig) ->
+    on_exit(fun meck:unload/0),
+    meck:new(emqx_license_checker, [non_strict, passthrough, no_link]),
+    meck:expect(emqx_license_checker, expiry_epoch, fun() -> 1859673600 end),
+
+    %% At first, TLS and WSS listeners are using the same certificates
+    {200, Metrics0} = get_prometheus_stats(
+        ?PROM_DATA_MODE__ALL_NODES_UNAGGREGATED, prometheus
+    ),
+    Expiry0 = maps:get(<<"emqx_cert_expiry_at">>, Metrics0),
+    TLSExpiry0 = maps:get(
+        #{
+            <<"listener_name">> => <<"default">>,
+            <<"listener_type">> => <<"ssl">>
+        },
+        Expiry0
+    ),
+    WSSExpiry0 = maps:get(
+        #{
+            <<"listener_name">> => <<"default">>,
+            <<"listener_type">> => <<"wss">>
+        },
+        Expiry0
+    ),
+    ?assertEqual(WSSExpiry0, TLSExpiry0),
+
+    #{
+        cert_key := CertKeyRoot1,
+        cert_pem := CA1
+    } = gen_cert(#{key => ec, issuer => root}),
+    #{
+        cert_pem := Cert1,
+        key_pem := Key1
+    } = gen_cert(#{key => ec, issuer => CertKeyRoot1}),
+
+    Bundle1 = <<"my_bundle">>,
+    Files1 = [
+        {?FILE_KIND_CA_BIN, <<"unused_ca_filename.pem">>, CA1},
+        {?FILE_KIND_CHAIN_BIN, <<"unused_chain_filename.pem">>, Cert1},
+        {?FILE_KIND_KEY_BIN, <<"unused_key_filename.pem">>, Key1}
+    ],
+    ?assertMatch({204, _}, upload_files_multipart_global(Bundle1, Files1)),
+
+    {200, TLSListener0} = get_listener_api(<<"ssl">>, <<"default">>),
+    TLSListener1 = emqx_utils_maps:deep_put(
+        [<<"ssl_options">>, <<"managed_certs">>],
+        TLSListener0,
+        [#{<<"bundle_name">> => Bundle1}]
+    ),
+    on_exit(fun() -> {200, _} = update_listener_api(<<"ssl">>, <<"default">>, TLSListener0) end),
+    {200, _} = update_listener_api(<<"ssl">>, <<"default">>, TLSListener1),
+
+    %% Now, they are no longer the same: TLS listener is using the fresh managed cert bundle.
+    {200, Metrics1} = get_prometheus_stats(
+        ?PROM_DATA_MODE__ALL_NODES_UNAGGREGATED, prometheus
+    ),
+    Expiry1 = maps:get(<<"emqx_cert_expiry_at">>, Metrics1),
+    TLSExpiry1 = maps:get(
+        #{
+            <<"listener_name">> => <<"default">>,
+            <<"listener_type">> => <<"ssl">>
+        },
+        Expiry1
+    ),
+    WSSExpiry1 = maps:get(
+        #{
+            <<"listener_name">> => <<"default">>,
+            <<"listener_type">> => <<"wss">>
+        },
+        Expiry1
+    ),
+    ?assertNotEqual(WSSExpiry1, TLSExpiry1),
+
+    ok.

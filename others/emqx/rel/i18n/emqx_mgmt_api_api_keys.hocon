@@ -1,0 +1,83 @@
+emqx_mgmt_api_api_keys {
+
+api_key_list.desc:
+"""Return api_key list. This API can only be requested using a bearer token."""
+api_key_list.label:
+"""Return api_key list"""
+
+create_new_api_key.desc:
+"""Create new api_key. This API can only be requested using a bearer token."""
+create_new_api_key.label:
+"""Create new api_key"""
+
+get_api_key.desc:
+"""Return the specific api_key. This API can only be requested using a bearer token."""
+get_api_key.label:
+"""Return the specific api_key"""
+
+update_api_key.desc:
+"""Update the specific api_key. This API can only be requested using a bearer token."""
+update_api_key.label:
+"""Update the specific api_key"""
+
+delete_api_key.desc:
+"""Delete the specific api_key. This API can only be requested using a bearer token."""
+delete_api_key.label:
+"""Delete the specific api_key"""
+
+role.desc:
+"""Role for this API"""
+role.label:
+"""Role"""
+
+delete_success.desc:
+"""Delete successfully."""
+delete_success.label:
+"""Delete Successfully"""
+
+name_format.desc:
+"""Unique name which must match regex pattern `[a-zA-Z0-9-_]`."""
+name_format.label:
+"""Name"""
+
+api_key_desc.desc:
+"""API Key."""
+api_key_desc.label:
+"""API Key"""
+
+api_secret_desc.desc:
+"""An API secret is a simple encrypted string that identifies an application without any principal. They are useful for accessing public data anonymously, and are used to associate API requests."""
+api_secret_desc.label:
+"""API Secret"""
+
+expired_at_desc.desc:
+"""Date time when the APP was expired."""
+expired_at_desc.label:
+"""Expired At"""
+
+created_at_desc.desc:
+"""API Key create datetime."""
+created_at_desc.label:
+"""Created At"""
+
+enable_desc.desc:
+"""Enable/Disable."""
+enable_desc.label:
+"""Enable/Disable"""
+
+expired_desc.desc:
+"""Expired."""
+expired_desc.label:
+"""Expired"""
+
+name_pattern.desc:
+"""^[A-Za-z]+[A-Za-z0-9-_]*$"""
+name_pattern.label:
+"""Name Pattern"""
+
+name_not_found.desc:
+"""Name NOT FOUND."""
+name_not_found.label:
+"""Name Not Found"""
+
+}

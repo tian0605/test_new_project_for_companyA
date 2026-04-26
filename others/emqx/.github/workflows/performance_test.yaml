@@ -1,0 +1,269 @@
+name: Performance Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        required: false
+      download_url:
+        required: false
+  schedule:
+    - cron: '0 1 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  perftest:
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        scenario:
+          - tests/ci/pubsub-2x2c4g-10k-20k-tps
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+    - name: Checkout tf-emqx-performance-test
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        repository: emqx/tf-emqx-performance-test
+        ref: v0.4.2
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@5e8dbf3c6d9deaf4193ca7a8fb23f2ac83bb6c85 # v4.0.0
+      with:
+        terraform_version: 1.11.2
+        terraform_wrapper: false
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.11'
+
+    - run: pip install -r requirements.txt
+
+    - name: Download emqx package (custom URL)
+      if: github.event.inputs.version == '' && github.event.inputs.download_url != ''
+      run: |
+        wget "${{ github.event.inputs.download_url }}"
+
+    - uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+    - name: Download emqx package (specific version)
+      env:
+        AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+      if: github.event.inputs.version != '' && github.event.inputs.download_url == ''
+      run: |
+        version=${{ github.event.inputs.version }}
+        # v5 packages are stored under 'e' prefixed directories, v6+ are not
+        if [[ "$version" == 5* ]]; then
+          s3dir="e${version}"
+        else
+          s3dir="${version}"
+        fi
+        aws s3 cp s3://$AWS_S3_BUCKET/emqx-ee/${s3dir}/emqx-enterprise-${version}-ubuntu22.04-amd64.deb .
+
+    - name: Generate GitHub App token
+      id: app-token
+      uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf # v2.2.1
+      with:
+        app-id: ${{ vars.AUTH_APP_ID }}
+        private-key: ${{ secrets.AUTH_APP_PRIVATE_KEY }}
+
+    - name: Download emqx package from the latest 'build_packages_cron.yaml' workflow run
+      if: github.event.inputs.version == '' && github.event.inputs.download_url == '' && github.event_name == 'schedule'
+      env:
+        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      run: |
+        set -xeuo pipefail
+
+        run_id=$(gh run list --repo "${{ github.repository }}" --workflow="build_packages_cron.yaml" --branch="master" --status="success" --limit=1 --json databaseId --jq '.[0].databaseId')
+        if [ -z "$run_id" ] || [ "$run_id" == "null" ]; then
+          echo "Could not find a successful run for build_packages_cron.yaml on master branch."
+          exit 1
+        fi
+        echo "Found run ID: $run_id"
+        gh run download --repo "${{ github.repository }}" "$run_id" --name "emqx-enterprise-release-60-ubuntu22.04"
+        if ! ls *.deb 1> /dev/null 2>&1; then
+           echo "No .deb file found in the downloaded artifact."
+           ls -al
+           exit 1
+        fi
+
+    - name: Download emqx package (latest version)
+      if: github.event.inputs.version == '' && github.event.inputs.download_url == '' && github.event_name != 'schedule'
+      env:
+        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+      run: |
+        set -xeuo pipefail
+        # get latest emqx release tag (e.g. 'e5.8.0' for v5, '6.1.2' for v6)
+        tag=$(gh release list --repo emqx/emqx --limit 1 --json tagName --jq '.[] | .tagName')
+        # strip 'e' prefix if present (v5 tags have it, v6 tags do not)
+        version=${tag#e}
+        aws s3 cp s3://$AWS_S3_BUCKET/emqx-ee/${tag}/emqx-enterprise-${version}-ubuntu22.04-amd64.deb .
+
+    - name: Configure AWS Credentials for performance test infra
+      uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_PERF_TEST }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_PERF_TEST }}
+        aws-region: ${{ secrets.AWS_DEFAULT_REGION_PERF_TEST }}
+
+    - name: Create infrastructure
+      id: infra
+      timeout-minutes: 30
+      run: |
+        mv emqx-enterprise-*.deb emqx-enterprise-ubuntu22.04-amd64.deb
+        ls -lh *.deb
+
+        echo "${{ secrets.EMQX_ENTERPRISE_LICENSE }}" > emqx5.lic
+        cat ${{ matrix.scenario }}.env >> "$GITHUB_ENV"
+
+        terraform init
+        set +e
+        terraform apply -var spec_file=${{ matrix.scenario }}.yaml -auto-approve -lock=false
+        # retry once
+        if [ $? != 0 ]; then
+          echo "Retrying once"
+          set -e
+          terraform apply -var spec_file=${{ matrix.scenario }}.yaml -auto-approve -lock=false
+        fi
+        set -e
+        echo "ssh_key_path=$(terraform output -raw ssh_key_path)" >> $GITHUB_OUTPUT
+
+    - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      if: success()
+      with:
+        name: ssh_private_key
+        path: |
+          ${{ steps.infra.outputs.ssh_key_path }}
+
+    - name: Run benchmark
+      if: success()
+      id: benchmark
+      timeout-minutes: 60
+      run: |
+        success=0
+
+        export TMPDIR=$(mktemp -d)
+        echo "TMPDIR=$TMPDIR" >> $GITHUB_ENV
+
+        PERIOD=1m scripts/summary.sh
+
+        MEM_CORE_1=$(jq -r '.[] | select(.host == "emqx-core-1") | .mem' $TMPDIR/mem.json)
+        MEM_CORE_2=$(jq -r '.[] | select(.host == "emqx-core-2") | .mem' $TMPDIR/mem.json)
+
+        if [ $(echo "$MEM_CORE_1 > $INITIAL_RAM_BASELINE * (1 + $ALLOWED_DEVIATION_CPU_RAM)" | bc -l) -eq 1 ] \
+        || [ $(echo "$MEM_CORE_2 > $INITIAL_RAM_BASELINE * (1 + $ALLOWED_DEVIATION_CPU_RAM)" | bc -l) -eq 1 ]; then
+          success=1
+        fi
+
+        EMQX_API_URL=$(terraform output -raw emqx_dashboard_url)
+
+        ansible loadgen -m command -a 'systemctl start loadgen' --become --limit 'loadgen-emqtt_bench-1.*'
+        echo "Waiting for subscribers to connect"
+        subs=0
+        attempts=30
+        while [ $attempts -gt 0 ]; do
+          curl -s -u perftest:perftest "$EMQX_API_URL/api/v5/monitor_current" > "$TMPDIR/monitor_current.json"
+          subs=$(jq -r '.subscriptions' "$TMPDIR/monitor_current.json")
+          if [ $subs -ge 10000 ]; then
+            echo "Subscribers connected: $subs"
+            break
+          fi
+          sleep 1
+          attempts=$((attempts - 1))
+        done
+        if [ $subs -lt 10000 ]; then
+          echo "Failed to connect enough subscribers, exiting"
+          exit 1
+        fi
+
+        ansible loadgen -m command -a 'systemctl start loadgen' --become --limit 'loadgen-emqtt_bench-2.*'
+        echo "Waiting for publishers to connect"
+        conns=0
+        attempts=30
+        while [ $attempts -gt 0 ]; do
+          curl -s -u perftest:perftest "$EMQX_API_URL/api/v5/monitor_current" > "$TMPDIR/monitor_current.json"
+          conns=$(jq -r '.live_connections' "$TMPDIR/monitor_current.json")
+          if [ $conns -ge 20000 ]; then
+            echo "Publishers connected. Total live connections: $conns"
+            break
+          fi
+          sleep 1
+          attempts=$((attempts - 1))
+        done
+        if [ $conns -lt 20000 ]; then
+          echo "Failed to connect enough publishers, exiting"
+          exit 1
+        fi
+        echo "All clients connected, sleep for $DURATION seconds"
+
+        sleep $DURATION
+        PERIOD="${DURATION}s" scripts/summary.sh
+        cat summary.md >> $GITHUB_STEP_SUMMARY
+
+        echo "success=$success" >> $GITHUB_OUTPUT
+
+    - name: Cleanup infrastructure
+      if: always()
+      run: |
+        terraform destroy -var spec_file=${{ matrix.scenario }}.yaml -auto-approve
+
+    - name: Analyze results
+      if: success()
+      run: |
+        success=${{ steps.benchmark.outputs.success }}
+
+        echo "## Test results analysis" >> $GITHUB_STEP_SUMMARY
+        echo '' >> $GITHUB_STEP_SUMMARY
+
+        CPU_CORE_1=$(jq -r '.[] | select(.host == "emqx-core-1") | .cpu' $TMPDIR/cpu.json)
+        CPU_CORE_2=$(jq -r '.[] | select(.host == "emqx-core-2") | .cpu' $TMPDIR/cpu.json)
+
+        if [ $(echo "$CPU_CORE_1 > $CPU_BASELINE * (1 + $ALLOWED_DEVIATION_CPU_RAM)" | bc -l) -eq 1 ] \
+        || [ $(echo "$CPU_CORE_2 > $CPU_BASELINE * (1 + $ALLOWED_DEVIATION_CPU_RAM)" | bc -l) -eq 1 ]; then
+          success=1
+          echo "* CPU utilization was too high: Core 1: $CPU_CORE_1%, Core 2: $CPU_CORE_2%" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        MEM_CORE_1=$(jq -r '.[] | select(.host == "emqx-core-1") | .mem' $TMPDIR/mem.json)
+        MEM_CORE_2=$(jq -r '.[] | select(.host == "emqx-core-2") | .mem' $TMPDIR/mem.json)
+
+        if [ $(echo "$MEM_CORE_1 > $RAM_BASELINE * (1 + $ALLOWED_DEVIATION_CPU_RAM)" | bc -l) -eq 1 ] \
+        || [ $(echo "$MEM_CORE_2 > $RAM_BASELINE * (1 + $ALLOWED_DEVIATION_CPU_RAM)" | bc -l) -eq 1 ]; then
+          success=1
+          echo "* RAM usage was too high: Core 1: $MEM_CORE_1%, Core 2: $MEM_CORE_2%" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        RECEIVED_MSG_RATE=$(jq -r '.received_msg_rate' $TMPDIR/emqx_metrics.json)
+        SENT_MSG_RATE=$(jq -r '.sent_msg_rate' $TMPDIR/emqx_metrics.json)
+
+        if [ $(echo "$RECEIVED_MSG_RATE < $RECEIVED_MSG_RATE_BASELINE * (1 - $ALLOWED_DEVIATION_MSG_RATE)" | bc -l) -eq 1 ] \
+        || [ $(echo "$SENT_MSG_RATE < $SENT_MSG_RATE_BASELINE * (1 - $ALLOWED_DEVIATION_MSG_RATE)" | bc -l) -eq 1 ]; then
+          success=1
+          echo "* Message rate was too low: Received message rate: $RECEIVED_MSG_RATE, Sent message rate: $SENT_MSG_RATE" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        MESSAGES_DROPPED=$(jq -r '.messages_dropped' $TMPDIR/emqx_metrics.json)
+        if [ $(echo "$MESSAGES_DROPPED > 100" | bc) -eq 1 ]; then
+          success=1
+          echo "* Too many dropped messages: $MESSAGES_DROPPED" >> $GITHUB_STEP_SUMMARY
+        fi
+
+        exit $success
+
+    - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      if: failure()
+      with:
+        name: terraform
+        path: |
+          .terraform
+          *.tfstate

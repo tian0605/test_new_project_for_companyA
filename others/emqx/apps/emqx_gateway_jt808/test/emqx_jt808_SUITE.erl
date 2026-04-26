@@ -1,0 +1,4537 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2023-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+
+-module(emqx_jt808_SUITE).
+
+-compile(export_all).
+-compile(nowarn_export_all).
+
+-include("emqx_jt808.hrl").
+-include_lib("emqx/include/emqx.hrl").
+-include_lib("eunit/include/eunit.hrl").
+-include_lib("common_test/include/ct.hrl").
+
+-include_lib("snabbkaffe/include/snabbkaffe.hrl").
+
+-define(RESERVE, 0).
+-define(NO_FRAGMENT, 0).
+-define(NO_ENCRYPT, 0).
+-define(MSG_SIZE(X), X:10 / big - integer).
+
+-define(WORD, 16 / big - integer).
+-define(DWORD, 32 / big - integer).
+
+-define(PORT, 6207).
+-define(PORT_STR, "6207").
+-define(LOGT(Format, Args), ct:pal("TEST_SUITE: " ++ Format, Args)).
+
+-define(PROTO_REG_SERVER_HOST, "http://127.0.0.1:8991").
+-define(PROTO_REG_AUTH_PATH, "/jt808/auth").
+-define(PROTO_REG_REGISTRY_PATH, "/jt808/registry").
+
+-define(JT808_PHONE, "000123456789").
+%% <<"jt808/000123456789/">>
+-define(JT808_MOUNTPOINT, "jt808/" ?JT808_PHONE "/").
+%% <<"jt808/000123456789/000123456789/up">>
+-define(JT808_UP_TOPIC, <<?JT808_MOUNTPOINT, ?JT808_PHONE, "/up">>).
+%% <<"jt808/000123456789/000123456789/dn">>
+-define(JT808_DN_TOPIC, <<?JT808_MOUNTPOINT, ?JT808_PHONE, "/dn">>).
+
+%% erlfmt-ignore
+-define(CONF_DEFAULT, <<"
+gateway.jt808 {
+  listeners.tcp.default {
+    bind = ", ?PORT_STR, "
+  }
+  proto {
+    auth {
+      allow_anonymous = false
+      registry = \"", ?PROTO_REG_SERVER_HOST, ?PROTO_REG_REGISTRY_PATH, "\"
+      authentication = \"", ?PROTO_REG_SERVER_HOST, ?PROTO_REG_AUTH_PATH, "\"
+    }
+  }
+}
+">>).
+
+%% erlfmt-ignore
+-define(CONF_ANONYMOUS, <<"
+gateway.jt808 {
+  listeners.tcp.default {
+    bind = ", ?PORT_STR, "
+  }
+  proto {
+    auth {
+      allow_anonymous = true
+    }
+  }
+}
+">>).
+
+%% erlfmt-ignore
+-define(CONF_INVALID_AUTH_SERVER, <<"
+gateway.jt808 {
+  listeners.tcp.default {
+    bind = ", ?PORT_STR, "
+  }
+  proto {
+    auth {
+      allow_anonymous = false
+      registry = \"abc://abc\"
+      authentication = \"abc://abc\"
+    }
+  }
+}
+">>).
+
+%% erlfmt-ignore
+-define(CONF_GBK_ENCODING, <<"
+gateway.jt808 {
+  listeners.tcp.default {
+    bind = ", ?PORT_STR, "
+  }
+  frame {
+    string_encoding = gbk
+  }
+  proto {
+    auth {
+      allow_anonymous = true
+    }
+  }
+}
+">>).
+
+%% erlfmt-ignore
+-define(CONF_UTF8_ENCODING, <<"
+gateway.jt808 {
+  listeners.tcp.default {
+    bind = ", ?PORT_STR, "
+  }
+  frame {
+    string_encoding = utf8
+  }
+  proto {
+    auth {
+      allow_anonymous = true
+    }
+  }
+}
+">>).
+
+all() ->
+    emqx_common_test_helpers:all(?MODULE).
+
+init_per_suite(Config) ->
+    application:ensure_all_started(egbk),
+    Config.
+
+end_per_suite(_Config) ->
+    ok.
+
+init_per_testcase(Case = t_case_invalid_auth_reg_server, Config) ->
+    Apps = boot_apps(Case, ?CONF_INVALID_AUTH_SERVER, Config),
+    [{suite_apps, Apps} | Config];
+init_per_testcase(Case = t_case02_anonymous_register_and_auth, Config) ->
+    Apps = boot_apps(Case, ?CONF_ANONYMOUS, Config),
+    [{suite_apps, Apps} | Config];
+init_per_testcase(Case, Config) when
+    Case =:= t_create_ALLOW_invalid_auth_config;
+    Case =:= t_create_DISALLOW_invalid_auth_config
+->
+    Apps = boot_apps(Case, <<>>, Config),
+    [{suite_apps, Apps} | Config];
+init_per_testcase(Case = t_case_downlink_text_encoding_gbk, Config) ->
+    snabbkaffe:start_trace(),
+    Apps = boot_apps(Case, ?CONF_GBK_ENCODING, Config),
+    [{suite_apps, Apps} | Config];
+init_per_testcase(Case = t_case_downlink_text_encoding_utf8, Config) ->
+    snabbkaffe:start_trace(),
+    Apps = boot_apps(Case, ?CONF_UTF8_ENCODING, Config),
+    [{suite_apps, Apps} | Config];
+init_per_testcase(Case = t_case_uplink_text_encoding_gbk, Config) ->
+    snabbkaffe:start_trace(),
+    Apps = boot_apps(Case, ?CONF_GBK_ENCODING, Config),
+    [{suite_apps, Apps} | Config];
+init_per_testcase(Case = t_case_uplink_text_encoding_utf8, Config) ->
+    snabbkaffe:start_trace(),
+    Apps = boot_apps(Case, ?CONF_UTF8_ENCODING, Config),
+    [{suite_apps, Apps} | Config];
+init_per_testcase(Case, Config) ->
+    snabbkaffe:start_trace(),
+    Apps = boot_apps(Case, ?CONF_DEFAULT, Config),
+    [{suite_apps, Apps} | Config].
+
+end_per_testcase(_Case, Config) ->
+    try
+        ok = emqx_jt808_auth_http_test_server:stop()
+    catch
+        exit:noproc ->
+            ok
+    end,
+    snabbkaffe:stop(),
+    ok = emqx_cth_suite:stop(?config(suite_apps, Config)),
+    ok.
+
+boot_apps(Case, JT808Conf, Config) ->
+    Apps = emqx_cth_suite:start(
+        [
+            emqx,
+            {emqx_conf, JT808Conf},
+            emqx_gateway
+        ],
+        #{work_dir => emqx_cth_suite:work_dir(Case, Config)}
+    ),
+    {ok, _Pid} = emqx_jt808_auth_http_test_server:start_link(),
+    timer:sleep(1000),
+    Apps.
+
+update_jt808_with_idle_timeout(IdleTimeout) ->
+    Conf = emqx:get_raw_config([gateway, jt808]),
+    emqx_gateway_conf:update_gateway(
+        jt808,
+        Conf#{<<"idle_timeout">> => IdleTimeout}
+    ).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% helper functions %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+gen_packet(Header, Body) ->
+    S1 = <<Header/binary, Body/binary>>,
+    Crc = make_crc(S1, undefined),
+    S2 = do_escape(<<S1/binary, Crc:8>>),
+    Stream = <<16#7e:8, S2/binary, 16#7e:8>>,
+    ?LOGT("encode a packet=~p", [binary_to_hex_string(Stream)]),
+    Stream.
+
+make_crc(<<>>, Xor) ->
+    ?LOGT("crc is ~p", [Xor]),
+    Xor;
+make_crc(<<C:8, Rest/binary>>, undefined) ->
+    make_crc(Rest, C);
+make_crc(<<C:8, Rest/binary>>, Xor) ->
+    make_crc(Rest, C bxor Xor).
+
+do_escape(Binary) ->
+    do_escape(Binary, <<>>).
+
+do_escape(<<>>, Acc) ->
+    Acc;
+do_escape(<<16#7e, Rest/binary>>, Acc) ->
+    do_escape(Rest, <<Acc/binary, 16#7d, 16#02>>);
+do_escape(<<16#7d, Rest/binary>>, Acc) ->
+    do_escape(Rest, <<Acc/binary, 16#7d, 16#01>>);
+do_escape(<<C, Rest/binary>>, Acc) ->
+    do_escape(Rest, <<Acc/binary, C:8>>).
+
+client_regi_procedure(Socket) ->
+    client_regi_procedure(Socket, <<"123456">>).
+
+client_regi_procedure(Socket, ExpectedAuthCode) ->
+    %
+    % send REGISTER
+    %
+    Manuf = <<"examp">>,
+    Model = <<"33333333333333333", 0, 0, 0>>,
+    DevId = <<"123456", 0>>,
+
+    Color = 3,
+    Plate = <<"ujvl239">>,
+    RegisterPacket =
+        <<58:?WORD, 59:?WORD, Manuf/binary, Model/binary, DevId/binary, Color, Plate/binary>>,
+    MsgId = ?MC_REGISTER,
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgSn = 78,
+    Size = size(RegisterPacket),
+    Header =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size), PhoneBCD/binary,
+            MsgSn:?WORD>>,
+    S1 = gen_packet(Header, RegisterPacket),
+
+    ok = gen_tcp:send(Socket, S1),
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 1_000),
+
+    AckPacket = <<MsgSn:?WORD, 0, ExpectedAuthCode/binary>>,
+    Size2 = size(AckPacket),
+    MsgId2 = ?MS_REGISTER_ACK,
+    MsgSn2 = 0,
+    Header2 =
+        <<MsgId2:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size2),
+            PhoneBCD/binary, MsgSn2:?WORD>>,
+    S2 = gen_packet(Header2, AckPacket),
+    ?LOGT("S2=~p", [binary_to_hex_string(S2)]),
+    ?LOGT("Packet=~p", [binary_to_hex_string(Packet)]),
+    ?assertEqual(S2, Packet),
+    {ok, ExpectedAuthCode}.
+
+client_auth_procedure(Socket, AuthCode) ->
+    ?LOGT("start auth procedure", []),
+    %
+    % send AUTH
+    %
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgId = ?MC_AUTH,
+    MsgSn = 78,
+    Size = size(AuthCode),
+    Header =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size), PhoneBCD/binary,
+            MsgSn:?WORD>>,
+    S1 = gen_packet(Header, AuthCode),
+    ?LOGT("auth S1=~p", [S1]),
+
+    ok = gen_tcp:send(Socket, S1),
+    %% timer:sleep(200),
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 500),
+
+    % receive general response
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size2 = size(GenAckPacket),
+    MsgId2 = ?MS_GENERAL_RESPONSE,
+    MsgSn2 = 1,
+    Header2 =
+        <<MsgId2:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size2),
+            PhoneBCD/binary, MsgSn2:?WORD>>,
+    S2 = gen_packet(Header2, GenAckPacket),
+    ?assertEqual(S2, Packet),
+    ?assert(lists:member(?JT808_DN_TOPIC, emqx:topics())),
+
+    ?LOGT("============= auth procedure success ===============", []).
+
+client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD) ->
+    GenAckPacket4 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size4 = size(GenAckPacket4),
+    MsgId4 = ?MC_GENERAL_RESPONSE,
+    MsgSn4 = 1,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, GenAckPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+    ok.
+
+location_report() ->
+    Alarm = 2,
+    Status = 3,
+    Latitude = 1000,
+    Longitude = 1001,
+    Altitude = 2000,
+    Speed = 135,
+    Direction = 32,
+    TimeBCD = <<16#17, 16#10, 16#22, 16#11, 16#15, 16#53>>,
+    Time = <<"171022111553">>,
+    MileAge = 12379,
+    FuelMeter = 972,
+    Speed2 = 29,
+    AlarmID = 18,
+    OA_Type = 2,
+    OA_Id = 29,
+    IOA_Type = 8,
+    IOA_Id = 23,
+    IOA_Direction = 89,
+    PTA_ID = 45,
+    PTA_Time = 21,
+    PTA_Result = 1,
+    Binary =
+        <<Alarm:?DWORD, Status:?DWORD, Latitude:?DWORD, Longitude:?DWORD, Altitude:?WORD,
+            Speed:?WORD, Direction:?WORD, TimeBCD:6/binary, 16#01:8, 4:8, MileAge:?DWORD, 16#02:8,
+            2:8, FuelMeter:?WORD, 16#03:8, 2:8, Speed2:?WORD, 16#04:8, 2:8, AlarmID:?WORD, 16#11:8,
+            5:8, OA_Type:8, OA_Id:?DWORD, 16#12:8, 6:8, IOA_Type:8, IOA_Id:?DWORD, IOA_Direction:8,
+            16#13:8, 7:8, PTA_ID:?DWORD, PTA_Time:?WORD, PTA_Result:8>>,
+    Json = #{
+        <<"alarm">> => Alarm,
+        <<"status">> => Status,
+        <<"latitude">> => Latitude,
+        <<"longitude">> => Longitude,
+        <<"altitude">> => Altitude,
+        <<"speed">> => Speed,
+        <<"direction">> => Direction,
+        <<"time">> => Time,
+        <<"extra">> => #{
+            <<"mileage">> => MileAge,
+            <<"fuel_meter">> => FuelMeter,
+            <<"speed">> => Speed2,
+            <<"alarm_id">> => AlarmID,
+            <<"overspeed_alarm">> =>
+                #{
+                    <<"type">> => OA_Type,
+                    <<"id">> => OA_Id
+                },
+            <<"in_out_alarm">> =>
+                #{
+                    <<"type">> => IOA_Type,
+                    <<"id">> => IOA_Id,
+                    <<"direction">> => IOA_Direction
+                },
+            <<"path_time_alarm">> =>
+                #{
+                    <<"id">> => PTA_ID,
+                    <<"time">> => PTA_Time,
+                    <<"result">> => PTA_Result
+                }
+        }
+    },
+    {Binary, Json}.
+
+location_report_28bytes() ->
+    Alarm = 2,
+    Status = 3,
+    Latitude = 1000,
+    Longitude = 1001,
+    Altitude = 2000,
+    Speed = 135,
+    Direction = 32,
+    TimeBCD = <<16#17, 16#10, 16#22, 16#11, 16#15, 16#53>>,
+    Time = <<"171022111553">>,
+    Binary =
+        <<Alarm:?DWORD, Status:?DWORD, Latitude:?DWORD, Longitude:?DWORD, Altitude:?WORD,
+            Speed:?WORD, Direction:?WORD, TimeBCD:6/binary>>,
+    Json = #{
+        <<"alarm">> => Alarm,
+        <<"status">> => Status,
+        <<"latitude">> => Latitude,
+        <<"longitude">> => Longitude,
+        <<"altitude">> => Altitude,
+        <<"speed">> => Speed,
+        <<"direction">> => Direction,
+        <<"time">> => Time
+    },
+    {Binary, Json}.
+
+binary_to_hex_string(Data) ->
+    lists:flatten([io_lib:format("~2.16.0B ", [X]) || <<X:8>> <= Data]).
+
+%% Unescape JT808 packet (reverse of escape encoding)
+%% 7D 02 -> 7E, 7D 01 -> 7D
+unescape_packet(Packet) ->
+    unescape_packet(Packet, <<>>).
+
+unescape_packet(<<>>, Acc) ->
+    Acc;
+unescape_packet(<<16#7D, 16#02, Rest/binary>>, Acc) ->
+    unescape_packet(Rest, <<Acc/binary, 16#7E>>);
+unescape_packet(<<16#7D, 16#01, Rest/binary>>, Acc) ->
+    unescape_packet(Rest, <<Acc/binary, 16#7D>>);
+unescape_packet(<<Byte:8, Rest/binary>>, Acc) ->
+    unescape_packet(Rest, <<Acc/binary, Byte>>).
+
+receive_msg() ->
+    receive
+        {deliver, Topic, #message{payload = Payload}} ->
+            {Topic, Payload}
+    after 100 ->
+        {error, timeout}
+    end.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%% test cases %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+t_case00_register(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ?assertEqual(AuthCode, <<"123456">>),
+
+    ok = gen_tcp:close(Socket).
+
+t_case01_auth(_) ->
+    emqx_gateway_test_utils:meck_emqx_hook_calls(),
+
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}, {nodelay, true}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    ?assertMatch(
+        ['client.connect' | _],
+        emqx_gateway_test_utils:collect_emqx_hooks_calls()
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+t_case01_update_not_restart_listener(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    update_jt808_with_idle_timeout(<<"20s">>),
+
+    % send heartbeat
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgId = ?MC_HEARTBEAT,
+    MsgSn = 78,
+    Size = 0,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size), PhoneBCD/binary,
+            MsgSn:?WORD>>,
+    S1 = gen_packet(Header, <<>>),
+
+    ok = gen_tcp:send(Socket, S1),
+    %% assert: heartbeat can be received after gateway update
+    {ok, _} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case02_anonymous_register_and_auth(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+
+    DefaultAuthCode = <<"anonymous">>,
+    {ok, AuthCode} = client_regi_procedure(Socket, DefaultAuthCode),
+    ?assertEqual(AuthCode, DefaultAuthCode),
+
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    ok = gen_tcp:close(Socket).
+
+t_case03_heartbeat(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    %
+    % send heartbeat
+    %
+    MsgId = ?MC_HEARTBEAT,
+    MsgSn = 78,
+    Size = 0,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size), PhoneBCD/binary,
+            MsgSn:?WORD>>,
+    S1 = gen_packet(Header, <<>>),
+
+    ok = gen_tcp:send(Socket, S1),
+    %% timer:sleep(200),
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 500),
+
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size2 = size(GenAckPacket),
+    MsgId2 = ?MS_GENERAL_RESPONSE,
+    MsgSn2 = 2,
+    Header2 =
+        <<MsgId2:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size2),
+            PhoneBCD/binary, MsgSn2:?WORD>>,
+    S2 = gen_packet(Header2, GenAckPacket),
+    ?assertEqual(S2, Packet),
+
+    ok = gen_tcp:close(Socket).
+
+t_case04(_) ->
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    %% send event report
+    EventReportId = 98,
+    MsgBody3 = <<EventReportId>>,
+    MsgId3 = ?MC_EVENT_REPORT,
+    MsgSn3 = 79,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    ok = gen_tcp:send(Socket, S3),
+    {ok, Packet4} = gen_tcp:recv(Socket, 0, 500),
+
+    % receive general response
+    GenAckPacket4 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size4 = size(GenAckPacket4),
+    MsgId4 = ?MS_GENERAL_RESPONSE,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, GenAckPacket4),
+    ?assertEqual(S4, Packet4),
+    timer:sleep(100),
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"msg_id">> => MsgId3,
+                <<"encrypt">> => ?NO_ENCRYPT,
+                <<"phone">> => <<"000123456789">>,
+                <<"len">> => Size3,
+                <<"msg_sn">> => MsgSn3
+            },
+            <<"body">> => #{<<"id">> => EventReportId}
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+t_case05(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    Flag = 15,
+    Text = <<"who are you">>,
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SEND_TEXT},
+        <<"body">> => #{<<"flag">> => Flag, <<"text">> => Text}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+    %
+    % client get downlink "send text"
+    %
+
+    MsgBody3 = <<Flag:8, Text/binary>>,
+    MsgId3 = ?MS_SEND_TEXT,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+    ?LOGT("S3=~p", [S3]),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?assertEqual(S3, Packet3),
+
+    % client send "client general response"
+    GenAckPacket4 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size4 = size(GenAckPacket4),
+    MsgId4 = ?MC_GENERAL_RESPONSE,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, GenAckPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+    %% timer:sleep(300),
+
+    ok = gen_tcp:close(Socket).
+
+t_case06_downlink_retx(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    Flag = 15,
+    Text = <<"who are you">>,
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SEND_TEXT},
+        <<"body">> => #{<<"flag">> => Flag, <<"text">> => Text}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+    %
+    % client get downlink "send text"
+    %
+
+    MsgBody3 = <<Flag:8, Text/binary>>,
+    MsgId3 = ?MS_SEND_TEXT,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+    ?LOGT("S3=~p", [S3]),
+
+    %% wait emqx-jt808 to retx "send text"
+    timer:sleep(100),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?assertEqual(S3, Packet3),
+
+    % client send "client general response"
+    GenAckPacket4 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size4 = size(GenAckPacket4),
+    MsgId4 = ?MC_GENERAL_RESPONSE,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, GenAckPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+    %% timer:sleep(300),
+
+    % wait again, there should be no retx packet
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case07_dl_0x8302_send_question(_) ->
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    Flag = 16#10,
+    Question = <<"who are you">>,
+    Length = size(Question),
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SEND_QUESTION},
+        <<"body">> => #{
+            <<"flag">> => Flag,
+            <<"length">> => Length,
+            <<"question">> => Question,
+            <<"answers">> => [
+                #{<<"id">> => 1, <<"len">> => 3, <<"answer">> => <<"Tom">>},
+                #{<<"id">> => 2, <<"len">> => 4, <<"answer">> => <<"Mike">>}
+            ]
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% client get downlink "send text"
+    MsgBody3 =
+        <<Flag:8, Length:8, Question/binary, 1:8, 3:?WORD, <<"Tom">>/binary, 2:8, 4:?WORD,
+            <<"Mike">>/binary>>,
+    MsgId3 = ?MS_SEND_QUESTION,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?assertEqual(S3, Packet3),
+
+    % client send "client answer"
+    Answer = <<MsgSn3:?WORD, 2:8>>,
+    Size4 = size(Answer),
+    MsgId4 = ?MC_QUESTION_ACK,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, Answer),
+
+    ok = gen_tcp:send(Socket, S4),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"msg_id">> => MsgId4,
+                <<"encrypt">> => ?NO_ENCRYPT,
+                <<"phone">> => <<"000123456789">>,
+                <<"len">> => Size4,
+                <<"msg_sn">> => MsgSn4
+            },
+            <<"body">> => #{<<"seq">> => MsgSn3, <<"id">> => 2}
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+t_case08_dl_0x8500_vehicle_ctrl(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    Flag = 16#0,
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_VEHICLE_CONTROL},
+        <<"body">> => #{<<"flag">> => Flag}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink "vehicle ctrl"
+    %
+    MsgBody3 = <<Flag:8>>,
+    MsgId3 = ?MS_VEHICLE_CONTROL,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?assertEqual(S3, Packet3),
+
+    % client send "client answer"
+    CtrlAck =
+        <<126, 5, 0, 0, 30, 1, 136, 118, 99, 137, 114, 1, 244, 0, 7, 0, 0, 0, 0, 0, 4, 0, 0, 1, 49,
+            122, 103, 6, 147, 104, 81, 0, 24, 0, 0, 0, 121, 23, 16, 32, 18, 3, 25, 69, 126>>,
+    ?LOGT("S4 = ~p", [CtrlAck]),
+
+    ok = gen_tcp:send(Socket, CtrlAck),
+    timer:sleep(300),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> =>
+                #{
+                    <<"encrypt">> => 0,
+                    <<"len">> => 30,
+                    <<"msg_id">> => 1280,
+                    <<"msg_sn">> => 500,
+                    <<"phone">> => <<"018876638972">>
+                },
+            <<"body">> =>
+                #{
+                    <<"seq">> => 7,
+                    <<"location">> => #{
+                        <<"alarm">> => 0,
+                        <<"altitude">> => 24,
+                        <<"direction">> => 121,
+                        <<"latitude">> => 20019815,
+                        <<"longitude">> => 110323793,
+                        <<"speed">> => 0,
+                        <<"status">> => 262144,
+                        <<"time">> => <<"171020120319">>
+                    }
+                }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+t_case09_dl_0x8103_set_client_param(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    Length = 2,
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SET_CLIENT_PARAM},
+        <<"body">> => #{
+            <<"length">> => Length,
+            <<"params">> => [
+                #{<<"id">> => 16#0013, <<"value">> => <<"www.example.com">>},
+                #{<<"id">> => 16#0059, <<"value">> => 1200}
+            ]
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink "vehicle ctrl"
+    %
+    MsgBody3 =
+        <<Length:8, 16#0013:?DWORD, 15:8, <<"www.example.com">>/binary, 16#0059:?DWORD, 4:8,
+            1200:?DWORD>>,
+    MsgId3 = ?MS_SET_CLIENT_PARAM,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    % client send "general response"
+    GenAckPacket4 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size4 = size(GenAckPacket4),
+    MsgId4 = ?MC_GENERAL_RESPONSE,
+    MsgSn4 = 1,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, GenAckPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+
+    % no retrasmition of 0x8103
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case09_dl_0x8103_set_client_param_byte8(_Config) ->
+    %% Test 0x8103 with BYTE8 type params (0x0110~0x01FF range)
+    %% This tests the MQTT -> JT808 frame serialization for CAN bus ID params
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    %% BYTE[8] data for CAN bus ID param (0x0110)
+    Byte8Data = <<16#AA, 16#BB, 16#CC, 16#DD, 16#EE, 16#FF, 16#00, 16#11>>,
+    Byte8Base64 = base64:encode(Byte8Data),
+
+    Length = 3,
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SET_CLIENT_PARAM},
+        <<"body">> => #{
+            <<"length">> => Length,
+            <<"params">> => [
+                %% DWORD type (0x0001 heartbeat)
+                #{<<"id">> => 16#0001, <<"value">> => 60},
+                %% STRING type (0x0010 APN)
+                #{<<"id">> => 16#0010, <<"value">> => <<"cmnet">>},
+                %% BYTE8 type (0x0110 CAN bus ID) - base64 encoded
+                #{<<"id">> => 16#0110, <<"value">> => Byte8Base64}
+            ]
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% client get downlink "set client param"
+    %% Body format: length(1) + [id(4) + len(1) + value(...)]
+    MsgBody3 =
+        <<Length:8, 16#0001:?DWORD, 4:8, 60:?DWORD, 16#0010:?DWORD, 5:8, <<"cmnet">>/binary,
+            16#0110:?DWORD, 8:8, Byte8Data/binary>>,
+    MsgId3 = ?MS_SET_CLIENT_PARAM,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    % client send "general response"
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of 0x8103
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case11_ul_0x0104_query_param_ack_byte8(_Config) ->
+    %% Test 0x0104 with BYTE8 type params (0x0110~0x01FF range)
+    %% This tests the JT808 frame -> MQTT parsing for CAN bus ID params
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    %% First send a query command to get a valid seq number
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_QUERY_CLIENT_PARAM},
+        <<"body">> => #{<<"length">> => 1, <<"ids">> => [16#0110]}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% Receive the query command
+    {ok, _Packet3} = gen_tcp:recv(Socket, 0, 500),
+    MsgSn3 = 2,
+
+    %% Client sends 0x0104 response with BYTE8 param
+    Byte8Data = <<16#11, 16#22, 16#33, 16#44, 16#55, 16#66, 16#77, 16#88>>,
+    UlPacket4 = <<MsgSn3:?WORD, 1:8, 16#0110:?DWORD, 8:8, Byte8Data/binary>>,
+    Size4 = size(UlPacket4),
+    MsgId4 = ?MC_QUERY_PARAM_ACK,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, UlPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    DecodedPayload = emqx_utils_json:decode(Payload),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"encrypt">> => 0,
+                <<"len">> => Size4,
+                <<"msg_id">> => ?MC_QUERY_PARAM_ACK,
+                <<"msg_sn">> => 2,
+                <<"phone">> => <<"000123456789">>
+            },
+            <<"body">> => #{
+                <<"seq">> => MsgSn3,
+                <<"length">> => 1,
+                <<"params">> => [
+                    #{<<"id">> => 16#0110, <<"value">> => base64:encode(Byte8Data)}
+                ]
+            }
+        },
+        DecodedPayload
+    ),
+
+    % no retrasmition of downlink message
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case10_dl_0x8105_client_control(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_CLIENT_CONTROL},
+        <<"body">> => #{<<"command">> => 200, <<"param">> => <<"ABCD">>}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<200:8, <<"ABCD">>/binary>>,
+    MsgId3 = ?MS_CLIENT_CONTROL,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    % client send ack
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    %% timer:sleep(200),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case11_dl_0x8106_query_client_param(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_QUERY_CLIENT_PARAM},
+        <<"body">> => #{<<"length">> => 2, <<"ids">> => [16#0092, 16#0031]}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<2:8, 16#0092:?DWORD, 16#0031:?DWORD>>,
+    MsgId3 = ?MS_QUERY_CLIENT_PARAM,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    UlPacket4 = <<MsgSn3:?WORD, 2:8, 16#0031:?DWORD, 2:8, 379:?WORD, 16#0092:?DWORD, 1:8, 2:8>>,
+    Size4 = size(UlPacket4),
+    MsgId4 = ?MC_QUERY_PARAM_ACK,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, UlPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"encrypt">> => 0,
+                <<"len">> => Size4,
+                <<"msg_id">> => ?MC_QUERY_PARAM_ACK,
+                <<"msg_sn">> => 2,
+                <<"phone">> => <<"000123456789">>
+            },
+            <<"body">> => #{
+                <<"seq">> => MsgSn3,
+                <<"length">> => 2,
+                <<"params">> => [
+                    #{<<"id">> => 16#0031, <<"value">> => 379},
+                    #{<<"id">> => 16#0092, <<"value">> => 2}
+                ]
+            }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    %% timer:sleep(200),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case11_dl_0x8107_query_client_attrib(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    DlCommand = #{<<"header">> => #{<<"msg_id">> => ?MS_QUERY_CLIENT_ATTRIB}},
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<>>,
+    MsgId3 = ?MS_QUERY_CLIENT_ATTRIB,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    timer:sleep(100),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    UlPacket4 =
+        <<12:?WORD, <<"manu3">>/binary, <<"A1B2C3D4E5F6G7H8I", 0, 0, 0>>:20/binary,
+            <<"dev123", 0>>:7/binary,
+            <<16#33, 16#33, 16#33, 16#33, 16#33, 16#44, 16#44, 16#44, 16#44, 16#44>>:10/binary, 6:8,
+            <<"v2.3.7">>:6/binary, 5:8, <<"v1.26">>:5/binary, 101:8, 102:8>>,
+    Size4 = size(UlPacket4),
+    MsgId4 = ?MC_QUERY_ATTRIB_ACK,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, UlPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"encrypt">> => 0,
+                <<"len">> => Size4,
+                <<"msg_id">> => ?MC_QUERY_ATTRIB_ACK,
+                <<"msg_sn">> => 2,
+                <<"phone">> => <<"000123456789">>
+            },
+            <<"body">> => #{
+                <<"type">> => 12,
+                <<"manufacturer">> => <<"manu3">>,
+                <<"model">> => <<"A1B2C3D4E5F6G7H8I">>,
+                <<"id">> => <<"dev123">>,
+                <<"iccid">> => <<"33333333334444444444">>,
+                <<"hardware_version">> => <<"v2.3.7">>,
+                <<"firmware_version">> => <<"v1.26">>,
+                <<"gnss_prop">> => 101,
+                <<"comm_prop">> => 102
+            }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case15_dl_0x8201_query_location(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    DlCommand = #{<<"header">> => #{<<"msg_id">> => ?MS_QUERY_LOCATION}},
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<>>,
+    MsgId3 = ?MS_QUERY_LOCATION,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    {LocationReportBinary, LocationReportJson} = location_report(),
+    UlPacket4 = <<MsgSn3:?WORD, LocationReportBinary/binary>>,
+    Size4 = size(UlPacket4),
+    MsgId4 = ?MC_QUERY_LOCATION_ACK,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, UlPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"encrypt">> => 0,
+                <<"len">> => Size4,
+                <<"msg_id">> => ?MC_QUERY_LOCATION_ACK,
+                <<"msg_sn">> => 2,
+                <<"phone">> => <<"000123456789">>
+            },
+            <<"body">> => #{
+                <<"seq">> => MsgSn3,
+                <<"params">> => LocationReportJson
+            }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    %% timer:sleep(200),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_location_report(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    {LocationReportBinary, LocationReportJson} = location_report(),
+    UlPacket = <<LocationReportBinary/binary>>,
+    Size = size(UlPacket),
+    MsgId = ?MC_LOCATION_REPORT,
+    MsgSn = 1,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size), PhoneBCD/binary,
+            MsgSn:?WORD>>,
+    S = gen_packet(Header, UlPacket),
+    ?LOGT("S = ~p", [S]),
+
+    ok = gen_tcp:send(Socket, S),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"encrypt">> => 0,
+                <<"len">> => Size,
+                <<"msg_id">> => ?MC_LOCATION_REPORT,
+                <<"msg_sn">> => MsgSn,
+                <<"phone">> => <<"000123456789">>
+            },
+            <<"body">> => LocationReportJson
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    % receive general response
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 500),
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size2 = size(GenAckPacket),
+    MsgId2 = ?MS_GENERAL_RESPONSE,
+    MsgSn2 = 2,
+    Header2 =
+        <<MsgId2:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size2),
+            PhoneBCD/binary, MsgSn2:?WORD>>,
+    S2 = gen_packet(Header2, GenAckPacket),
+    ?assertEqual(S2, Packet),
+
+    % no retrasmition of downlink message
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case15_dl_0x8202_trace_location(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_TRACE_LOCATION},
+        <<"body">> => #{<<"period">> => 23, <<"expiry">> => 183}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<23:?WORD, 183:?DWORD>>,
+    MsgId3 = ?MS_TRACE_LOCATION,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case50_ul_0x0303_info_request_cancel(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    %
+    % send event report
+    %
+    MsgBody3 = <<1:8, 6:8>>,
+    MsgId3 = ?MC_INFO_REQ_CANCEL,
+    MsgSn3 = 79,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    ok = gen_tcp:send(Socket, S3),
+    %%timer:sleep(600),
+    {ok, Packet4} = gen_tcp:recv(Socket, 0, 500),
+
+    % receive general response
+    GenAckPacket4 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size4 = size(GenAckPacket4),
+    MsgId4 = ?MS_GENERAL_RESPONSE,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, GenAckPacket4),
+    ?assertEqual(S4, Packet4),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"msg_id">> => MsgId3,
+                <<"encrypt">> => ?NO_ENCRYPT,
+                <<"phone">> => <<"000123456789">>,
+                <<"len">> => Size3,
+                <<"msg_sn">> => MsgSn3
+            },
+            <<"body">> => #{<<"id">> => 1, <<"flag">> => 6}
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+t_case51_ul_0x0701_waybill_report(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    %
+    % send event report
+    %
+    MsgBody3 = <<7:?DWORD, <<"ABCDEFG">>/binary>>,
+    MsgId3 = ?MC_WAYBILL_REPORT,
+    MsgSn3 = 79,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    ok = gen_tcp:send(Socket, S3),
+    %% timer:sleep(600),
+    {ok, Packet4} = gen_tcp:recv(Socket, 0, 500),
+
+    % receive general response
+    GenAckPacket4 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size4 = size(GenAckPacket4),
+    MsgId4 = ?MS_GENERAL_RESPONSE,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, GenAckPacket4),
+    ?assertEqual(S4, Packet4),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"msg_id">> => MsgId3,
+                <<"encrypt">> => ?NO_ENCRYPT,
+                <<"phone">> => <<"000123456789">>,
+                <<"len">> => Size3,
+                <<"msg_sn">> => MsgSn3
+            },
+            <<"body">> => #{<<"length">> => 7, <<"data">> => base64:encode(<<"ABCDEFG">>)}
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+t_case52_ul_0x0705_can_bus_report(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    %
+    % send event report
+    %
+    MsgBody3 =
+        <<2:?WORD, <<16#09, 16#23, 16#46, 16#07, 16#25>>/binary, 0:1, 1:1, 0:1, 35:29,
+            <<"11111111">>/binary, 1:1, 0:1, 1:1, 36:29, <<"22222222">>/binary>>,
+    MsgId3 = ?MC_CAN_BUS_REPORT,
+    MsgSn3 = 79,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    ok = gen_tcp:send(Socket, S3),
+    %% timer:sleep(600),
+    {ok, Packet4} = gen_tcp:recv(Socket, 0, 500),
+
+    % receive general response
+    GenAckPacket4 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size4 = size(GenAckPacket4),
+    MsgId4 = ?MS_GENERAL_RESPONSE,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, GenAckPacket4),
+    ?assertEqual(S4, Packet4),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"msg_id">> => MsgId3,
+                <<"encrypt">> => ?NO_ENCRYPT,
+                <<"phone">> => <<"000123456789">>,
+                <<"len">> => Size3,
+                <<"msg_sn">> => MsgSn3
+            },
+            <<"body">> => #{
+                <<"length">> => 2,
+                <<"time">> => <<"0923460725">>,
+                <<"can_data">> => [
+                    #{
+                        <<"channel">> => 0,
+                        <<"frame_type">> => 1,
+                        <<"data_method">> => 0,
+                        <<"id">> => 35,
+                        <<"data">> => base64:encode(<<"11111111">>)
+                    },
+                    #{
+                        <<"channel">> => 1,
+                        <<"frame_type">> => 0,
+                        <<"data_method">> => 1,
+                        <<"id">> => 36,
+                        <<"data">> => base64:encode(<<"22222222">>)
+                    }
+                ]
+            }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+t_case53_ul_0x0800_multimedia_event_report(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    %
+    % send event report
+    %
+    MsgBody3 = <<65:?DWORD, 2:8, 1:8, 4:8, 103:8>>,
+    MsgId3 = ?MC_MULTIMEDIA_EVENT_REPORT,
+    MsgSn3 = 79,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    ok = gen_tcp:send(Socket, S3),
+    %% timer:sleep(600),
+    {ok, Packet4} = gen_tcp:recv(Socket, 0, 500),
+
+    % receive general response
+    GenAckPacket4 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size4 = size(GenAckPacket4),
+    MsgId4 = ?MS_GENERAL_RESPONSE,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, GenAckPacket4),
+    ?assertEqual(S4, Packet4),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"msg_id">> => MsgId3,
+                <<"encrypt">> => ?NO_ENCRYPT,
+                <<"phone">> => <<"000123456789">>,
+                <<"len">> => Size3,
+                <<"msg_sn">> => MsgSn3
+            },
+            <<"body">> => #{
+                <<"id">> => 65,
+                <<"type">> => 2,
+                <<"format">> => 1,
+                <<"event">> => 4,
+                <<"channel">> => 103
+            }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+t_case54_ul_0x0900_send_transparent_data(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    %
+    % send event report
+    %
+    MsgBody3 = <<39:8, <<"oufwei">>/binary>>,
+    MsgId3 = ?MC_SEND_TRANSPARENT_DATA,
+    MsgSn3 = 79,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    ok = gen_tcp:send(Socket, S3),
+    %% timer:sleep(600),
+    {ok, Packet4} = gen_tcp:recv(Socket, 0, 500),
+
+    % Receive general response
+    GenAckPacket4 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size4 = size(GenAckPacket4),
+    MsgId4 = ?MS_GENERAL_RESPONSE,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, GenAckPacket4),
+    ?assertEqual(S4, Packet4),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"msg_id">> => MsgId3,
+                <<"encrypt">> => ?NO_ENCRYPT,
+                <<"phone">> => <<"000123456789">>,
+                <<"len">> => Size3,
+                <<"msg_sn">> => MsgSn3
+            },
+            <<"body">> => #{<<"type">> => 39, <<"data">> => base64:encode(<<"oufwei">>)}
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+    ok = gen_tcp:close(Socket).
+
+t_case55_ul_0x0901_send_zip_data(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    %
+    % send event report
+    %
+    MsgBody3 = <<4:?DWORD, <<"1234">>/binary>>,
+    MsgId3 = ?MC_SEND_ZIP_DATA,
+    MsgSn3 = 79,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    ok = gen_tcp:send(Socket, S3),
+    %% timer:sleep(600),
+    {ok, Packet4} = gen_tcp:recv(Socket, 0, 500),
+
+    % receive general response
+    GenAckPacket4 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size4 = size(GenAckPacket4),
+    MsgId4 = ?MS_GENERAL_RESPONSE,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, GenAckPacket4),
+    ?assertEqual(S4, Packet4),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"msg_id">> => MsgId3,
+                <<"encrypt">> => ?NO_ENCRYPT,
+                <<"phone">> => <<"000123456789">>,
+                <<"len">> => Size3,
+                <<"msg_sn">> => MsgSn3
+            },
+            <<"body">> => #{
+                <<"length">> => 4,
+                <<"data">> => base64:encode(<<"1234">>)
+            }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+t_case16_dl_0x8301_set_event(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SET_EVENT},
+        <<"body">> => #{
+            <<"type">> => 3,
+            <<"length">> => 2,
+            <<"events">> =>
+                [
+                    #{<<"id">> => 56, <<"length">> => 3, <<"content">> => <<"111">>},
+                    #{<<"id">> => 7, <<"length">> => 7, <<"content">> => <<"nwKdmww">>}
+                ]
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<3:8, 2:8, 56:8, 3:8, <<"111">>/binary, 7:8, 7:8, <<"nwKdmww">>/binary>>,
+    MsgId3 = ?MS_SET_EVENT,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case17_dl_0x8303_set_menu(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SET_MENU},
+        <<"body">> => #{
+            <<"type">> => 3,
+            <<"length">> => 2,
+            <<"menus">> =>
+                [
+                    #{<<"type">> => 56, <<"length">> => 3, <<"info">> => <<"111">>},
+                    #{<<"type">> => 7, <<"length">> => 7, <<"info">> => <<"nwKdmww">>}
+                ]
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% client get downlink command
+    MsgBody3 = <<3:8, 2:8, 56:8, 3:?WORD, <<"111">>/binary, 7:8, 7:?WORD, <<"nwKdmww">>/binary>>,
+    MsgId3 = ?MS_SET_MENU,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case18_dl_0x8304_info_content(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_INFO_CONTENT},
+        <<"body">> => #{<<"type">> => 3, <<"length">> => 2, <<"info">> => <<"NY">>}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% client get downlink command
+    MsgBody3 = <<3:8, 2:?WORD, <<"NY">>/binary>>,
+    MsgId3 = ?MS_INFO_CONTENT,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case19_dl_0x8400_phone_callback(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_PHONE_CALLBACK},
+        <<"body">> => #{<<"type">> => 0, <<"phone">> => <<"15632597856">>}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% client get downlink command
+    MsgBody3 = <<0:8, <<"15632597856">>/binary>>,
+    MsgId3 = ?MS_PHONE_CALLBACK,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case20_dl_0x8401_set_phone_number(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SET_PHONE_NUMBER},
+        <<"body">> => #{
+            <<"type">> => 2,
+            <<"length">> => 2,
+            <<"contacts">> =>
+                [
+                    #{
+                        <<"type">> => 2,
+                        <<"phone_len">> => 10,
+                        <<"phone">> => <<"13011112222">>,
+                        <<"name_len">> => 3,
+                        <<"name">> => <<"Tom">>
+                    },
+                    #{
+                        <<"type">> => 3,
+                        <<"phone_len">> => 11,
+                        <<"phone">> => <<"013011113333">>,
+                        <<"name_len">> => 4,
+                        <<"name">> => <<"Mike">>
+                    }
+                ]
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 =
+        <<2:8, 2:8, 2:8, 10:8, <<"13011112222">>/binary, 3:8, <<"Tom">>/binary, 3:8, 11:8,
+            <<"013011113333">>/binary, 4:8, <<"Mike">>/binary>>,
+    MsgId3 = ?MS_SET_PHONE_NUMBER,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case21_dl_0x8600_set_circle_area(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SET_CIRCLE_AREA},
+        <<"body">> => #{
+            <<"type">> => 0,
+            <<"length">> => 2,
+            <<"areas">> =>
+                [
+                    #{
+                        <<"id">> => 267,
+                        <<"flag">> => 36,
+                        <<"center_latitude">> => 20057,
+                        <<"center_longitude">> => 4529,
+                        <<"radius">> => 279,
+                        <<"start_time">> => <<"170912103253">>,
+                        <<"end_time">> => <<"170913103253">>,
+                        <<"max_speed">> => 120,
+                        <<"overspeed_duration">> => 36
+                    },
+                    #{
+                        <<"id">> => 355,
+                        <<"flag">> => 36,
+                        <<"center_latitude">> => 20057,
+                        <<"center_longitude">> => 4529,
+                        <<"radius">> => 132,
+                        <<"start_time">> => <<"170912103253">>,
+                        <<"end_time">> => <<"170913103253">>,
+                        <<"max_speed">> => 120,
+                        <<"overspeed_duration">> => 36
+                    }
+                ]
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% client get downlink command
+    MsgBody3 =
+        <<0:8, 2:8, 267:?DWORD, 36:?WORD, 20057:?DWORD, 4529:?DWORD, 279:?DWORD,
+            <<16#17, 16#09, 16#12, 16#10, 16#32, 16#53>>/binary,
+            <<16#17, 16#09, 16#13, 16#10, 16#32, 16#53>>/binary, 120:?WORD, 36:8, 355:?DWORD,
+            36:?WORD, 20057:?DWORD, 4529:?DWORD, 132:?DWORD,
+            <<16#17, 16#09, 16#12, 16#10, 16#32, 16#53>>/binary,
+            <<16#17, 16#09, 16#13, 16#10, 16#32, 16#53>>/binary, 120:?WORD, 36:8>>,
+    MsgId3 = ?MS_SET_CIRCLE_AREA,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case22_dl_0x8601_del_circle_area(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_DEL_CIRCLE_AREA},
+        <<"body">> => #{<<"length">> => 2, <<"ids">> => [3, 78]}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<2:8, 3:?DWORD, 78:?DWORD>>,
+    MsgId3 = ?MS_DEL_CIRCLE_AREA,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case23_dl_0x8602_set_rect_area(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SET_RECT_AREA},
+        <<"body">> => #{
+            <<"type">> => 0,
+            <<"length">> => 2,
+            <<"areas">> =>
+                [
+                    #{
+                        <<"id">> => 267,
+                        <<"flag">> => 36,
+                        <<"lt_lat">> => 20057,
+                        <<"lt_lng">> => 4529,
+                        <<"rb_lat">> => 30057,
+                        <<"rb_lng">> => 5529,
+                        <<"start_time">> => <<"170912103253">>,
+                        <<"end_time">> => <<"170913103253">>,
+                        <<"max_speed">> => 120,
+                        <<"overspeed_duration">> => 36
+                    },
+                    #{
+                        <<"id">> => 355,
+                        <<"flag">> => 36,
+                        <<"lt_lat">> => 20057,
+                        <<"lt_lng">> => 4529,
+                        <<"rb_lat">> => 30057,
+                        <<"rb_lng">> => 5529,
+                        <<"start_time">> => <<"170912103253">>,
+                        <<"end_time">> => <<"170913103253">>,
+                        <<"max_speed">> => 120,
+                        <<"overspeed_duration">> => 36
+                    }
+                ]
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 =
+        <<0:8, 2:8, 267:?DWORD, 36:?WORD, 20057:?DWORD, 4529:?DWORD, 30057:?DWORD, 5529:?DWORD,
+            <<16#17, 16#09, 16#12, 16#10, 16#32, 16#53>>/binary,
+            <<16#17, 16#09, 16#13, 16#10, 16#32, 16#53>>/binary, 120:?WORD, 36:8, 355:?DWORD,
+            36:?WORD, 20057:?DWORD, 4529:?DWORD, 30057:?DWORD, 5529:?DWORD,
+            <<16#17, 16#09, 16#12, 16#10, 16#32, 16#53>>/binary,
+            <<16#17, 16#09, 16#13, 16#10, 16#32, 16#53>>/binary, 120:?WORD, 36:8>>,
+    MsgId3 = ?MS_SET_RECT_AREA,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case24_dl_0x8603_del_circle_area(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_DEL_RECT_AREA},
+        <<"body">> => #{<<"length">> => 2, <<"ids">> => [3, 78]}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<2:8, 3:?DWORD, 78:?DWORD>>,
+    MsgId3 = ?MS_DEL_RECT_AREA,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case25_dl_0x8604_set_poly_area(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SET_POLY_AREA},
+        <<"body">> => #{
+            <<"id">> => 267,
+            <<"flag">> => 36,
+            <<"start_time">> => <<"170912103253">>,
+            <<"end_time">> => <<"170913103253">>,
+            <<"max_speed">> => 120,
+            <<"overspeed_duration">> => 36,
+            <<"length">> => 3,
+            <<"points">> =>
+                [
+                    #{<<"lat">> => 20057, <<"lng">> => 4529},
+                    #{<<"lat">> => 21057, <<"lng">> => 14569},
+                    #{<<"lat">> => 7032, <<"lng">> => 429}
+                ]
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 =
+        <<267:?DWORD, 36:?WORD, <<16#17, 16#09, 16#12, 16#10, 16#32, 16#53>>/binary,
+            <<16#17, 16#09, 16#13, 16#10, 16#32, 16#53>>/binary, 120:?WORD, 36:8, 3:?WORD,
+            20057:?DWORD, 4529:?DWORD, 21057:?DWORD, 14569:?DWORD, 7032:?DWORD, 429:?DWORD>>,
+    MsgId3 = ?MS_SET_POLY_AREA,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case26_dl_0x8605_del_poly_area(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_DEL_POLY_AREA},
+        <<"body">> => #{<<"length">> => 2, <<"ids">> => [3, 78]}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<2:8, 3:?DWORD, 78:?DWORD>>,
+    MsgId3 = ?MS_DEL_POLY_AREA,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case27_dl_0x8606_set_path(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SET_PATH},
+        <<"body">> => #{
+            <<"id">> => 267,
+            <<"flag">> => 36,
+            <<"start_time">> => <<"170912103253">>,
+            <<"end_time">> => <<"170913103253">>,
+            <<"length">> => 2,
+            <<"points">> =>
+                [
+                    #{
+                        <<"point_id">> => 3,
+                        <<"path_id">> => 71,
+                        <<"point_lat">> => 7324,
+                        <<"point_lng">> => 9732,
+                        <<"width">> => 54,
+                        <<"attrib">> => 23,
+                        <<"passed">> => 0,
+                        <<"uncovered">> => 1,
+                        <<"max_speed">> => 132,
+                        <<"overspeed_duration">> => 4
+                    },
+                    #{
+                        <<"point_id">> => 4,
+                        <<"path_id">> => 72,
+                        <<"point_lat">> => 7324,
+                        <<"point_lng">> => 9732,
+                        <<"width">> => 54,
+                        <<"attrib">> => 23,
+                        <<"passed">> => 0,
+                        <<"uncovered">> => 1,
+                        <<"max_speed">> => 169,
+                        <<"overspeed_duration">> => 69
+                    }
+                ]
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 =
+        <<267:?DWORD, 36:?WORD, <<16#17, 16#09, 16#12, 16#10, 16#32, 16#53>>/binary,
+            <<16#17, 16#09, 16#13, 16#10, 16#32, 16#53>>/binary, 2:?WORD, 3:?DWORD, 71:?DWORD,
+            7324:?DWORD, 9732:?DWORD, 54:8, 23:8, 0:?WORD, 1:?WORD, 132:?WORD, 4:8, 4:?DWORD,
+            72:?DWORD, 7324:?DWORD, 9732:?DWORD, 54:8, 23:8, 0:?WORD, 1:?WORD, 169:?WORD, 69:8>>,
+    MsgId3 = ?MS_SET_PATH,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case26_dl_0x8607_del_path(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_DEL_PATH},
+        <<"body">> => #{<<"length">> => 2, <<"ids">> => [3, 78]}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<2:8, 3:?DWORD, 78:?DWORD>>,
+    MsgId3 = ?MS_DEL_PATH,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case27_dl_0x8700_drive_record_capture(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    CaptureCmd = 2,
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_DRIVE_RECORD_CAPTURE},
+        <<"body">> => #{
+            <<"command">> => CaptureCmd, <<"param">> => base64:encode(<<"000123456789">>)
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<2:8, <<"000123456789">>/binary>>,
+    MsgId3 = ?MS_DRIVE_RECORD_CAPTURE,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    % client send "drive record report"
+    UlPacket4 = <<MsgSn3:?WORD, CaptureCmd:8, <<"77777">>/binary>>,
+    Size4 = size(UlPacket4),
+    MsgId4 = ?MC_DRIVE_RECORD_REPORT,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, UlPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"encrypt">> => 0,
+                <<"len">> => Size4,
+                <<"msg_id">> => ?MC_DRIVE_RECORD_REPORT,
+                <<"msg_sn">> => 2,
+                <<"phone">> => <<"000123456789">>
+            },
+            <<"body">> => #{
+                <<"seq">> => MsgSn3,
+                <<"command">> => CaptureCmd,
+                <<"data">> => base64:encode(<<"77777">>)
+            }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    % no retrasmition of downlink message
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case28_dl_0x8701_drive_record_param_send(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    CaptureCmd = 2,
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_DRIVE_REC_PARAM_SEND},
+        <<"body">> => #{
+            <<"command">> => CaptureCmd, <<"param">> => base64:encode(<<"000123456789">>)
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<CaptureCmd:8, <<"000123456789">>/binary>>,
+    MsgId3 = ?MS_DRIVE_REC_PARAM_SEND,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case29_dl_0x8702_request_driver_id(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    DlCommand = #{<<"header">> => #{<<"msg_id">> => ?MS_REQ_DRIVER_ID}},
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<>>,
+    MsgId3 = ?MS_REQ_DRIVER_ID,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    % client send "drive record report"
+    UlPacket4 =
+        <<1:8, 16#17, 16#10, 16#12, 16#09, 16#03, 16#52, 0:8, 3:8, <<"Tom">>/binary,
+            <<"77778888999900001111">>/binary, 6:8, <<"org123">>/binary, 16#20, 16#30, 16#12,
+            16#31>>,
+    Size4 = size(UlPacket4),
+    MsgId4 = ?MC_DRIVER_ID_REPORT,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, UlPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"encrypt">> => 0,
+                <<"len">> => Size4,
+                <<"msg_id">> => ?MC_DRIVER_ID_REPORT,
+                <<"msg_sn">> => 2,
+                <<"phone">> => <<"000123456789">>
+            },
+            <<"body">> => #{
+                <<"status">> => 1,
+                <<"time">> => <<"171012090352">>,
+                <<"ic_result">> => 0,
+                <<"driver_name">> => <<"Tom">>,
+                <<"certificate">> => <<"77778888999900001111">>,
+                <<"organization">> => <<"org123">>,
+                <<"cert_expiry">> => <<"20301231">>
+            }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case30_dl_0x8801_camera_shot(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_CAMERA_SHOT},
+        <<"body">> => #{
+            <<"channel_id">> => 172,
+            <<"command">> => 5,
+            <<"period">> => 2,
+            <<"save">> => 1,
+            <<"resolution">> => 8,
+            <<"quality">> => 3,
+            <<"bright">> => 4,
+            <<"contrast">> => 5,
+            <<"saturate">> => 6,
+            <<"chromaticity">> => 7
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<172:8, 5:?WORD, 2:?WORD, 1:8, 8:8, 3:8, 4:8, 5:8, 6:8, 7:8>>,
+    MsgId3 = ?MS_CAMERA_SHOT,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    % client send "camera shot ack"
+    UlPacket4 = <<MsgSn3:?WORD, 0:8, 2:?WORD, 220:?DWORD, 221:?DWORD>>,
+    Size4 = size(UlPacket4),
+    MsgId4 = ?MC_CAMERA_SHOT_ACK,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, UlPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"encrypt">> => 0,
+                <<"len">> => Size4,
+                <<"msg_id">> => ?MC_CAMERA_SHOT_ACK,
+                <<"msg_sn">> => 2,
+                <<"phone">> => <<"000123456789">>
+            },
+            <<"body">> => #{
+                <<"seq">> => MsgSn3,
+                <<"result">> => 0,
+                <<"length">> => 2,
+                <<"ids">> => [220, 221]
+            }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    % No retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case31_dl_0x8802_mm_data_search(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_MM_DATA_SEARCH},
+        <<"body">> => #{
+            <<"type">> => 0,
+            <<"channel">> => 17,
+            <<"event">> => 2,
+            <<"start_time">> => <<"170923144607">>,
+            <<"end_time">> => <<"170923145826">>
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 =
+        <<0:8, 17:8, 2:8, 16#17, 16#09, 16#23, 16#14, 16#46, 16#07, 16#17, 16#09, 16#23, 16#14,
+            16#58, 16#26>>,
+    MsgId3 = ?MS_MM_DATA_SEARCH,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    % client send "mm data search ack"
+    {LocBin, LocJson} = location_report_28bytes(),
+    UlPacket4 =
+        <<MsgSn3:?WORD, 2:?WORD, 25:?DWORD, 1:8, 97:8, 1:8, LocBin/binary, 26:?DWORD, 2:8, 98:8,
+            3:8, LocBin/binary>>,
+    Size4 = size(UlPacket4),
+    MsgId4 = ?MC_MM_DATA_SEARCH_ACK,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, UlPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"encrypt">> => 0,
+                <<"len">> => Size4,
+                <<"msg_id">> => ?MC_MM_DATA_SEARCH_ACK,
+                <<"msg_sn">> => 2,
+                <<"phone">> => <<"000123456789">>
+            },
+            <<"body">> => #{
+                <<"seq">> => MsgSn3,
+                <<"length">> => 2,
+                <<"result">> => [
+                    #{
+                        <<"id">> => 25,
+                        <<"type">> => 1,
+                        <<"channel">> => 97,
+                        <<"event">> => 1,
+                        <<"location">> => LocJson
+                    },
+                    #{
+                        <<"id">> => 26,
+                        <<"type">> => 2,
+                        <<"channel">> => 98,
+                        <<"event">> => 3,
+                        <<"location">> => LocJson
+                    }
+                ]
+            }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    %% No retrasmition of downlink message
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case32_dl_0x8803_mm_data_upload(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_MM_DATA_UPLOAD},
+        <<"body">> => #{
+            <<"type">> => 0,
+            <<"channel">> => 17,
+            <<"event">> => 2,
+            <<"start_time">> => <<"170923144607">>,
+            <<"end_time">> => <<"170923145826">>,
+            <<"delete">> => 1
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 =
+        <<0:8, 17:8, 2:8, 16#17, 16#09, 16#23, 16#14, 16#46, 16#07, 16#17, 16#09, 16#23, 16#14,
+            16#58, 16#26, 1:8>>,
+    MsgId3 = ?MS_MM_DATA_UPLOAD,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case33_dl_0x8804_voice_record(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_VOICE_RECORD},
+        <<"body">> => #{
+            <<"command">> => 1,
+            <<"time">> => 2,
+            <<"save">> => 3,
+            <<"rate">> => 4
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %
+    % client get downlink command
+    %
+    MsgBody3 = <<1:8, 2:?WORD, 3:8, 4:8>>,
+    MsgId3 = ?MS_VOICE_RECORD,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    client_send_general_response(Socket, MsgId3, MsgSn3, PhoneBCD),
+
+    % no retrasmition of downlink message
+    %% timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case34_dl_0x8805_single_mm_data_ctrl(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SINGLE_MM_DATA_CTRL},
+        <<"body">> => #{
+            <<"id">> => 30,
+            <<"flag">> => 40
+        }
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% client get downlink command
+    MsgBody3 = <<30:?DWORD, 40:8>>,
+    MsgId3 = ?MS_SINGLE_MM_DATA_CTRL,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet(Header3, MsgBody3),
+
+    %% timer:sleep(600),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    ?LOGT("client receive command from server ~p", [S3]),
+
+    {LocBin, LocJson} = location_report_28bytes(),
+    UlPacket4 =
+        <<MsgSn3:?WORD, 2:?WORD, 25:?DWORD, 1:8, 97:8, 1:8, LocBin/binary, 26:?DWORD, 2:8, 98:8,
+            3:8, LocBin/binary>>,
+    Size4 = size(UlPacket4),
+    MsgId4 = ?MC_MM_DATA_SEARCH_ACK,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size4),
+            PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet(Header4, UlPacket4),
+    ?LOGT("S4 = ~p", [S4]),
+
+    ok = gen_tcp:send(Socket, S4),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"encrypt">> => 0,
+                <<"len">> => Size4,
+                <<"msg_id">> => ?MC_MM_DATA_SEARCH_ACK,
+                <<"msg_sn">> => 2,
+                <<"phone">> => <<"000123456789">>
+            },
+            <<"body">> => #{
+                <<"seq">> => MsgSn3,
+                <<"length">> => 2,
+                <<"result">> => [
+                    #{
+                        <<"id">> => 25,
+                        <<"type">> => 1,
+                        <<"channel">> => 97,
+                        <<"event">> => 1,
+                        <<"location">> => LocJson
+                    },
+                    #{
+                        <<"id">> => 26,
+                        <<"type">> => 2,
+                        <<"channel">> => 98,
+                        <<"event">> => 3,
+                        <<"location">> => LocJson
+                    }
+                ]
+            }
+        },
+        emqx_utils_json:decode(Payload)
+    ),
+
+    % no retrasmition of downlink message
+    %%timer:sleep(10000),
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+t_case_dl_invalid_msg(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+    DlCommand = #{
+        %% missing msg_id
+        <<"header">> => #{},
+        <<"body">> => #{
+            <<"id">> => 30,
+            <<"flag">> => 40
+        }
+    },
+
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+    ?block_until(#{?snk_kind := invalid_dl_message}),
+
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, <<"invliad_json_str">>)),
+    ?block_until(#{?snk_kind := invalid_dl_message}),
+
+    ok = gen_tcp:close(Socket).
+
+t_case_invalid_auth_reg_server(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    %
+    % send REGISTER
+    %
+    Manuf = <<"examp">>,
+    Model = <<"33333333333333333333">>,
+    DevId = <<"1234567">>,
+
+    Color = 3,
+    Plate = <<"ujvl239">>,
+    RegisterPacket =
+        <<58:?WORD, 59:?WORD, Manuf/binary, Model/binary, DevId/binary, Color, Plate/binary>>,
+    MsgId = ?MC_REGISTER,
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgSn = 78,
+    Size = size(RegisterPacket),
+    Header =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size), PhoneBCD/binary,
+            MsgSn:?WORD>>,
+    S1 = gen_packet(Header, RegisterPacket),
+
+    %% Send REGISTER Packet
+    ok = gen_tcp:send(Socket, S1),
+    %% Receive REGISTER_ACK Packet
+    {ok, RecvPacket} = gen_tcp:recv(Socket, 0, 50_000),
+
+    %% No AuthCode when register failed
+    AuthCode = <<>>,
+
+    AckPacket = <<MsgSn:?WORD, 1, AuthCode/binary>>,
+    Size2 = size(AckPacket),
+    MsgId2 = ?MS_REGISTER_ACK,
+    MsgSn2 = 0,
+    Header2 =
+        <<MsgId2:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size2),
+            PhoneBCD/binary, MsgSn2:?WORD>>,
+    S2 = gen_packet(Header2, AckPacket),
+
+    ?LOGT("S1=~p", [binary_to_hex_string(S1)]),
+    ?LOGT("S2=~p", [binary_to_hex_string(S2)]),
+    ?LOGT("Received REGISTER_ACK Packet=~p", [binary_to_hex_string(RecvPacket)]),
+
+    ?assertEqual(S2, RecvPacket),
+    ok.
+
+t_create_ALLOW_invalid_auth_config(_Config) ->
+    test_invalid_config(create, true).
+
+t_create_DISALLOW_invalid_auth_config(_Config) ->
+    test_invalid_config(create, false).
+
+t_update_ALLOW_invalid_auth_config(_Config) ->
+    test_invalid_config(update, true).
+
+t_update_DISALLOW_invalid_auth_config(_Config) ->
+    test_invalid_config(update, false).
+
+test_invalid_config(CreateOrUpdate, AnonymousAllowed) ->
+    InvalidConfig = raw_jt808_config(AnonymousAllowed),
+    UpdateResult = create_or_update(CreateOrUpdate, InvalidConfig),
+    ?assertMatch(
+        {error, #{
+            kind := validation_error,
+            reason := matched_no_union_member,
+            path := "gateway.jt808.proto.auth"
+        }},
+        UpdateResult
+    ).
+
+t_ignore_unsupported_frames_default(_Config) ->
+    %% default value is true
+    ?assertEqual(true, emqx_config:get([gateway, jt808, proto, ignore_unsupported_frames])),
+    %% set parse_unknown_message to false
+    RawConfig = emqx_config:get_raw([gateway, jt808]),
+    RawConfig1 = emqx_utils_maps:deep_put(
+        [<<"frame">>, <<"parse_unknown_message">>], RawConfig, false
+    ),
+    {ok, _} = emqx_gateway_conf:update_gateway(jt808, RawConfig1),
+
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    %% send unsupported frame
+    ok = gen_tcp:send(Socket, unsupported_frame_packet()),
+    %% nothing to happen
+
+    %% send heartbeat
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgId = ?MC_HEARTBEAT,
+    MsgSn = 78,
+    Size = 0,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size), PhoneBCD/binary,
+            MsgSn:?WORD>>,
+    S1 = gen_packet(Header, <<>>),
+
+    ok = gen_tcp:send(Socket, S1),
+    %% timer:sleep(200),
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 500),
+
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size2 = size(GenAckPacket),
+    MsgId2 = ?MS_GENERAL_RESPONSE,
+    MsgSn2 = 2,
+    Header2 =
+        <<MsgId2:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size2),
+            PhoneBCD/binary, MsgSn2:?WORD>>,
+    S2 = gen_packet(Header2, GenAckPacket),
+    ?assertEqual(S2, Packet),
+
+    %% restore config
+    {ok, _} = emqx_gateway_conf:update_gateway(jt808, RawConfig),
+
+    ok = gen_tcp:close(Socket).
+
+t_ignore_unsupported_frames_set_to_false(_Config) ->
+    RawConfig = emqx_config:get_raw([gateway, jt808]),
+    RawConfig1 = emqx_utils_maps:deep_put(
+        [<<"proto">>, <<"ignore_unsupported_frames">>], RawConfig, false
+    ),
+    RawConfig2 = emqx_utils_maps:deep_put(
+        [<<"frame">>, <<"parse_unknown_message">>], RawConfig1, false
+    ),
+    {ok, _} = emqx_gateway_conf:update_gateway(jt808, RawConfig2),
+
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    %% send unsupported frame
+    ok = gen_tcp:send(Socket, unsupported_frame_packet()),
+    %% socket should be closed
+    {error, closed} = gen_tcp:recv(Socket, 0, 1000),
+
+    ok = gen_tcp:close(Socket),
+
+    %% restore config
+    {ok, _} = emqx_gateway_conf:update_gateway(jt808, RawConfig),
+    ok.
+
+t_forward_unknown_message_default(_Config) ->
+    %% default value is true
+    ?assertEqual(true, emqx_config:get([gateway, jt808, frame, parse_unknown_message])),
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    %% send unsupported frame
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+    ok = gen_tcp:send(Socket, unsupported_frame_packet()),
+
+    %% block until receive MQTT publish message
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    ?assertEqual(
+        true,
+        emqx_utils_maps:deep_get(
+            [<<"body">>, <<"unknown_id">>],
+            emqx_utils_json:decode(Payload)
+        )
+    ),
+
+    %% send heartbeat
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgId = ?MC_HEARTBEAT,
+    MsgSn = 78,
+    Size = 0,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size), PhoneBCD/binary,
+            MsgSn:?WORD>>,
+    S1 = gen_packet(Header, <<>>),
+
+    ok = gen_tcp:send(Socket, S1),
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 500),
+
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size2 = size(GenAckPacket),
+    MsgId2 = ?MS_GENERAL_RESPONSE,
+    MsgSn2 = 2,
+    Header2 =
+        <<MsgId2:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size2),
+            PhoneBCD/binary, MsgSn2:?WORD>>,
+    S2 = gen_packet(Header2, GenAckPacket),
+    ?assertEqual(S2, Packet),
+
+    ok = gen_tcp:close(Socket).
+
+create_or_update(create, InvalidConfig) ->
+    emqx_gateway_conf:load_gateway(jt808, InvalidConfig);
+create_or_update(update, InvalidConfig) ->
+    emqx_gateway_conf:update_gateway(jt808, InvalidConfig).
+
+%% Allow: allow anonymous connection, registry and authentication URL not required.
+raw_jt808_config(Allow = true) ->
+    AuthConfig = #{
+        <<"auth">> => #{
+            <<"allow_anonymous">> => Allow,
+            %% registry and authentication `NOT REQUIRED`, but can be configured
+            <<"registry">> => <<?PROTO_REG_SERVER_HOST, ?PROTO_REG_REGISTRY_PATH>>,
+            <<"authentication">> => <<?PROTO_REG_SERVER_HOST, ?PROTO_REG_AUTH_PATH>>,
+            <<"BADKEY_registry_url">> => <<?PROTO_REG_SERVER_HOST, ?PROTO_REG_REGISTRY_PATH>>
+        }
+    },
+    emqx_utils_maps:deep_merge(raw_jt808_config(), #{<<"proto">> => AuthConfig});
+%% DisAllow: required registry and authentication URL configuration to auth client.
+raw_jt808_config(DisAllow = false) ->
+    AuthConfig = #{
+        <<"auth">> => #{
+            <<"allow_anonymous">> => DisAllow
+            %% registry and authentication are required but missed here
+            %%
+            %% <<"registry">> => <<?PROTO_REG_SERVER_HOST, ?PROTO_REG_REGISTRY_PATH>>,
+            %% <<"authentication">> => <<?PROTO_REG_SERVER_HOST, ?PROTO_REG_AUTH_PATH>>
+        }
+    },
+    emqx_utils_maps:deep_merge(raw_jt808_config(), #{<<"proto">> => AuthConfig}).
+
+raw_jt808_config() ->
+    #{
+        <<"enable">> => true,
+        <<"enable_stats">> => true,
+        <<"frame">> => #{<<"max_length">> => 8192},
+        <<"idle_timeout">> => <<"30s">>,
+        <<"max_retry_times">> => 3,
+        <<"message_queue_len">> => 10,
+        <<"mountpoint">> => <<"jt808/${clientid}/">>,
+        <<"proto">> =>
+            #{
+                <<"dn_topic">> => <<"jt808/${clientid}/${phone}/dn">>,
+                <<"up_topic">> => <<"jt808/${clientid}/${phone}/up">>
+            },
+        <<"retry_interval">> => <<"8s">>
+    }.
+
+unsupported_frame_packet() ->
+    <<126, 2, 5, 0, 128, 1, 137, 112, 19, 0, 64, 1, 98, 72, 66, 77, 54, 48, 49, 67, 86, 77, 48, 49,
+        49, 77, 50, 50, 48, 50, 53, 45, 48, 49, 45, 49, 55, 253, 255, 2, 0, 255, 127, 0, 128, 80,
+        17, 1, 54, 69, 67, 56, 48, 48, 77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 56, 54, 56, 48, 49, 57, 48,
+        55, 51, 55, 48, 52, 51, 56, 48, 52, 54, 48, 49, 49, 51, 56, 55, 49, 49, 48, 49, 53, 55, 52,
+        56, 57, 56, 54, 49, 49, 50, 52, 50, 51, 51, 48, 56, 49, 51, 49, 53, 55, 57, 53, 0, 0, 76,
+        67, 48, 68, 55, 52, 67, 52, 49, 80, 48, 50, 49, 49, 50, 54, 48, 4, 20, 164, 132, 0, 0, 0, 0,
+        66, 126>>.
+
+%%--------------------------------------------------------------------
+%% JT/T 808-2019 Protocol Integration Tests
+%%--------------------------------------------------------------------
+
+%% 2019 header format macros
+-define(VERSION_BIT_2019, 1).
+
+%% 2019 format uses BCD[10] phone (20 chars), padded with leading zeros
+%% Same phone "000123456789" as 2013, but padded to 20 digits with leading zeros
+-define(JT808_PHONE_2019, "00000000000123456789").
+-define(JT808_MOUNTPOINT_2019, "jt808/" ?JT808_PHONE_2019 "/").
+-define(JT808_UP_TOPIC_2019, <<?JT808_MOUNTPOINT_2019, ?JT808_PHONE_2019, "/up">>).
+-define(JT808_DN_TOPIC_2019, <<?JT808_MOUNTPOINT_2019, ?JT808_PHONE_2019, "/dn">>).
+
+%% BCD[10] phone: 00000000000123456789 (leading zeros padded)
+-define(JT808_PHONE_BCD_2019,
+    <<16#00, 16#00, 16#00, 16#00, 16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>
+).
+
+%% Helper to pad binary with trailing nulls
+pad_binary(Bin, TargetLen) when byte_size(Bin) >= TargetLen ->
+    binary:part(Bin, 0, TargetLen);
+pad_binary(Bin, TargetLen) ->
+    PadLen = TargetLen - byte_size(Bin),
+    <<Bin/binary, 0:(PadLen * 8)>>.
+
+%% Helper to pad binary with leading nulls
+pad_binary_leading(Bin, TargetLen) when byte_size(Bin) >= TargetLen ->
+    binary:part(Bin, 0, TargetLen);
+pad_binary_leading(Bin, TargetLen) ->
+    PadLen = TargetLen - byte_size(Bin),
+    <<0:(PadLen * 8), Bin/binary>>.
+
+%% Generate packet with 2019 header format
+gen_packet_2019(Header, Body) ->
+    S1 = <<Header/binary, Body/binary>>,
+    Crc = make_crc(S1, undefined),
+    S2 = do_escape(<<S1/binary, Crc:8>>),
+    Stream = <<16#7e:8, S2/binary, 16#7e:8>>,
+    ?LOGT("encode a 2019 packet=~p", [binary_to_hex_string(Stream)]),
+    Stream.
+
+%% 2019 registration procedure with larger field sizes
+client_regi_procedure_2019(Socket) ->
+    client_regi_procedure_2019(Socket, <<"123456">>).
+
+client_regi_procedure_2019(Socket, ExpectedAuthCode) ->
+    %% 2019 format: manufacturer[11], model[30], dev_id[30]
+    Manuf = <<"MANUFACTURER">>,
+    ManufPadded = pad_binary(Manuf, 11),
+    %% 30 bytes - spec says pad with leading zeros
+    Model = <<"MODEL_2019">>,
+    ModelPadded = pad_binary_leading(Model, 30),
+    %% 30 bytes (padded with trailing zeros per spec for dev_id)
+    DevId = <<"DEVICE_ID_2019">>,
+    DevIdPadded = pad_binary(DevId, 30),
+    Color = 3,
+    Plate = <<"TEST123">>,
+    RegisterPacket =
+        <<58:?WORD, 59:?WORD, ManufPadded/binary, ModelPadded/binary, DevIdPadded/binary, Color,
+            Plate/binary>>,
+
+    MsgId = ?MC_REGISTER,
+    %% 2019: BCD[10] phone number with leading zeros
+    PhoneBCD = ?JT808_PHONE_BCD_2019,
+    MsgSn = 78,
+    Size = size(RegisterPacket),
+    %% 2019 header: bit 14 = 1 (version identifier), proto_ver byte
+    ProtoVer = ?PROTO_VER_2019,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size), ProtoVer:8, PhoneBCD/binary, MsgSn:?WORD>>,
+    S1 = gen_packet_2019(Header, RegisterPacket),
+
+    ok = gen_tcp:send(Socket, S1),
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 500),
+
+    %% Response should be in 2019 format as well
+    AckPacket = <<MsgSn:?WORD, 0, ExpectedAuthCode/binary>>,
+    Size2 = size(AckPacket),
+    MsgId2 = ?MS_REGISTER_ACK,
+    MsgSn2 = 0,
+    Header2 =
+        <<MsgId2:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size2), ProtoVer:8, PhoneBCD/binary, MsgSn2:?WORD>>,
+    S2 = gen_packet_2019(Header2, AckPacket),
+    ?LOGT("2019 S2=~p", [binary_to_hex_string(S2)]),
+    ?LOGT("2019 Packet=~p", [binary_to_hex_string(Packet)]),
+    ?assertEqual(S2, Packet),
+    {ok, ExpectedAuthCode}.
+
+%% 2019 authentication procedure with IMEI and software version
+client_auth_procedure_2019(Socket, AuthCode) ->
+    ?LOGT("start 2019 auth procedure", []),
+    PhoneBCD = ?JT808_PHONE_BCD_2019,
+    MsgId = ?MC_AUTH,
+    MsgSn = 78,
+
+    %% 2019 format: length prefix + code + IMEI[15] + software_version[20]
+    CodeLen = byte_size(AuthCode),
+    IMEI = pad_binary(<<"123456789012345">>, 15),
+    SoftwareVersion = pad_binary(<<"V1.0.0">>, 20),
+    AuthBody = <<CodeLen:8, AuthCode/binary, IMEI/binary, SoftwareVersion/binary>>,
+
+    Size = size(AuthBody),
+    ProtoVer = ?PROTO_VER_2019,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size), ProtoVer:8, PhoneBCD/binary, MsgSn:?WORD>>,
+    S1 = gen_packet_2019(Header, AuthBody),
+    ?LOGT("2019 auth S1=~p", [S1]),
+
+    ok = gen_tcp:send(Socket, S1),
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 500),
+
+    %% receive general response in 2019 format
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size2 = size(GenAckPacket),
+    MsgId2 = ?MS_GENERAL_RESPONSE,
+    MsgSn2 = 1,
+    Header2 =
+        <<MsgId2:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size2), ProtoVer:8, PhoneBCD/binary, MsgSn2:?WORD>>,
+    S2 = gen_packet_2019(Header2, GenAckPacket),
+    ?assertEqual(S2, Packet),
+    ?assert(lists:member(?JT808_DN_TOPIC_2019, emqx:topics())),
+
+    ?LOGT("============= 2019 auth procedure success ===============", []).
+
+%% Test: 2019 terminal registration flow
+t_case_2019_register(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, _AuthCode} = client_regi_procedure_2019(Socket),
+    ok = gen_tcp:close(Socket).
+
+%% Test: 2019 authentication with IMEI and software version
+t_case_2019_auth(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure_2019(Socket),
+    ok = client_auth_procedure_2019(Socket, AuthCode),
+    ok = gen_tcp:close(Socket).
+
+%% Test: 2019 client sends heartbeat after authentication
+t_case_2019_heartbeat(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure_2019(Socket),
+    ok = client_auth_procedure_2019(Socket, AuthCode),
+
+    %% Send heartbeat in 2019 format
+    PhoneBCD = ?JT808_PHONE_BCD_2019,
+    MsgId = ?MC_HEARTBEAT,
+    MsgSn = 79,
+    Size = 0,
+    ProtoVer = ?PROTO_VER_2019,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size), ProtoVer:8, PhoneBCD/binary, MsgSn:?WORD>>,
+    S1 = gen_packet_2019(Header, <<>>),
+
+    ok = gen_tcp:send(Socket, S1),
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 500),
+
+    %% Receive general response in 2019 format
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size2 = size(GenAckPacket),
+    MsgId2 = ?MS_GENERAL_RESPONSE,
+    MsgSn2 = 2,
+    Header2 =
+        <<MsgId2:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size2), ProtoVer:8, PhoneBCD/binary, MsgSn2:?WORD>>,
+    S2 = gen_packet_2019(Header2, GenAckPacket),
+    ?assertEqual(S2, Packet),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: Mixed 2013/2019 clients can coexist
+t_case_mixed_2013_2019_clients(_Config) ->
+    %% Connect 2013 client
+    {ok, Socket2013} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode2013} = client_regi_procedure(Socket2013),
+    ok = client_auth_procedure(Socket2013, AuthCode2013),
+
+    %% Connect 2019 client
+    {ok, Socket2019} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode2019} = client_regi_procedure_2019(Socket2019),
+    ok = client_auth_procedure_2019(Socket2019, AuthCode2019),
+
+    %% Both clients should be connected
+    ?assert(lists:member(?JT808_DN_TOPIC, emqx:topics())),
+    ?assert(lists:member(?JT808_DN_TOPIC_2019, emqx:topics())),
+
+    %% Send heartbeat from 2013 client
+    PhoneBCD2013 = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgId = ?MC_HEARTBEAT,
+    MsgSn = 80,
+    Size = 0,
+    Header2013 =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size),
+            PhoneBCD2013/binary, MsgSn:?WORD>>,
+    S1_2013 = gen_packet(Header2013, <<>>),
+    ok = gen_tcp:send(Socket2013, S1_2013),
+    {ok, _Packet2013} = gen_tcp:recv(Socket2013, 0, 500),
+
+    %% Send heartbeat from 2019 client
+    PhoneBCD2019 = ?JT808_PHONE_BCD_2019,
+    ProtoVer = ?PROTO_VER_2019,
+    Header2019 =
+        <<MsgId:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size), ProtoVer:8, PhoneBCD2019/binary, MsgSn:?WORD>>,
+    S1_2019 = gen_packet_2019(Header2019, <<>>),
+    ok = gen_tcp:send(Socket2019, S1_2019),
+    {ok, _Packet2019} = gen_tcp:recv(Socket2019, 0, 500),
+
+    ok = gen_tcp:close(Socket2013),
+    ok = gen_tcp:close(Socket2019).
+
+%% Test: 2019 location report
+t_case_2019_location_report(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure_2019(Socket),
+    ok = client_auth_procedure_2019(Socket, AuthCode),
+
+    %% Subscribe to upstream topic
+    ok = emqx:subscribe(?JT808_UP_TOPIC_2019),
+
+    %% Send location report in 2019 format
+    {LocationBinary, _LocationJson} = location_report_28bytes(),
+    PhoneBCD = ?JT808_PHONE_BCD_2019,
+    MsgId = ?MC_LOCATION_REPORT,
+    MsgSn = 79,
+    Size = size(LocationBinary),
+    ProtoVer = ?PROTO_VER_2019,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size), ProtoVer:8, PhoneBCD/binary, MsgSn:?WORD>>,
+    S1 = gen_packet_2019(Header, LocationBinary),
+
+    ok = gen_tcp:send(Socket, S1),
+
+    %% Receive MQTT message with location data
+    {?JT808_UP_TOPIC_2019, Payload} = receive_msg(),
+    DecodedPayload = emqx_utils_json:decode(Payload),
+    ?assertMatch(
+        #{
+            <<"header">> := #{
+                <<"msg_id">> := ?MC_LOCATION_REPORT,
+                <<"proto_ver">> := ?PROTO_VER_2019
+            },
+            <<"body">> := #{
+                <<"alarm">> := _,
+                <<"status">> := _,
+                <<"latitude">> := _,
+                <<"longitude">> := _
+            }
+        },
+        DecodedPayload
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: Backward compatibility - 2013 clients still work
+t_case_2013_backward_compatibility(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    %% Subscribe to upstream topic
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    %% Send location report in 2013 format
+    {LocationBinary, _LocationJson} = location_report_28bytes(),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgId = ?MC_LOCATION_REPORT,
+    MsgSn = 79,
+    Size = size(LocationBinary),
+    Header =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size), PhoneBCD/binary,
+            MsgSn:?WORD>>,
+    S1 = gen_packet(Header, LocationBinary),
+
+    ok = gen_tcp:send(Socket, S1),
+
+    %% Receive MQTT message with location data
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    DecodedPayload = emqx_utils_json:decode(Payload),
+    ?assertMatch(
+        #{
+            <<"header">> := #{
+                <<"msg_id">> := ?MC_LOCATION_REPORT
+            },
+            <<"body">> := #{
+                <<"alarm">> := _,
+                <<"status">> := _,
+                <<"latitude">> := _,
+                <<"longitude">> := _
+            }
+        },
+        DecodedPayload
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+%%--------------------------------------------------------------------
+%% JT/T 808-2019 Integration Tests (JT808 Frame <-> MQTT Message)
+%% These tests verify that 2019-format messages are correctly published
+%% to MQTT with all relevant fields preserved.
+%%--------------------------------------------------------------------
+
+%% Test: 2019 Register - verify subsequent MQTT messages have correct 2019 header fields
+%% Note: Register itself is not published to MQTT (session establishment message)
+%% but we verify that after 2019 registration, subsequent messages have proto_ver=1
+t_case_2019_register_mqtt_fields(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure_2019(Socket),
+    ok = client_auth_procedure_2019(Socket, AuthCode),
+
+    %% Subscribe to upstream topic
+    ok = emqx:subscribe(?JT808_UP_TOPIC_2019),
+
+    %% Send heartbeat to generate an MQTT publish with 2019 header
+    %% Heartbeat response is from server, but location report will be published
+    {LocationBinary, _LocationJson} = location_report_28bytes(),
+    PhoneBCD = ?JT808_PHONE_BCD_2019,
+    MsgId = ?MC_LOCATION_REPORT,
+    MsgSn = 100,
+    Size = size(LocationBinary),
+    ProtoVer = ?PROTO_VER_2019,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size), ProtoVer:8, PhoneBCD/binary, MsgSn:?WORD>>,
+    S1 = gen_packet_2019(Header, LocationBinary),
+
+    ok = gen_tcp:send(Socket, S1),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC_2019, Payload} = receive_msg(),
+    DecodedPayload = emqx_utils_json:decode(Payload),
+
+    %% Verify 2019 header fields after registration
+    ?assertEqual(
+        #{
+            <<"msg_id">> => ?MC_LOCATION_REPORT,
+            <<"encrypt">> => 0,
+            <<"phone">> => <<"00000000000123456789">>,
+            <<"len">> => Size,
+            <<"msg_sn">> => MsgSn,
+            <<"proto_ver">> => ?PROTO_VER_2019
+        },
+        maps:get(<<"header">>, DecodedPayload)
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: 2019 Auth - verify MQTT messages have auth-related fields preserved
+%% Note: Auth itself is not published to MQTT, but we verify that the
+%% 2019 auth procedure establishes correct session state for subsequent messages
+t_case_2019_auth_mqtt_fields(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure_2019(Socket),
+    ok = client_auth_procedure_2019(Socket, AuthCode),
+
+    %% Subscribe to upstream topic
+    ok = emqx:subscribe(?JT808_UP_TOPIC_2019),
+
+    %% Send an event report to verify session is in 2019 mode with correct proto_ver
+    EventReportId = 5,
+    EventBody = <<EventReportId:8>>,
+    PhoneBCD = ?JT808_PHONE_BCD_2019,
+    MsgId = ?MC_EVENT_REPORT,
+    MsgSn = 101,
+    Size = size(EventBody),
+    ProtoVer = ?PROTO_VER_2019,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size), ProtoVer:8, PhoneBCD/binary, MsgSn:?WORD>>,
+    S1 = gen_packet_2019(Header, EventBody),
+
+    ok = gen_tcp:send(Socket, S1),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC_2019, Payload} = receive_msg(),
+    DecodedPayload = emqx_utils_json:decode(Payload),
+
+    %% Verify 2019 format is preserved in MQTT publish
+    ?assertEqual(
+        ?PROTO_VER_2019, maps:get(<<"proto_ver">>, maps:get(<<"header">>, DecodedPayload))
+    ),
+    ?assertEqual(
+        <<"00000000000123456789">>, maps:get(<<"phone">>, maps:get(<<"header">>, DecodedPayload))
+    ),
+    ?assertEqual(#{<<"id">> => EventReportId}, maps:get(<<"body">>, DecodedPayload)),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: 2019 Query Terminal Attributes Response (0x0107) with 30-byte model/id
+t_case_2019_query_attrib_mqtt_fields(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure_2019(Socket),
+    ok = client_auth_procedure_2019(Socket, AuthCode),
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC_2019),
+
+    %% Server sends query command
+    DlCommand = #{<<"header">> => #{<<"msg_id">> => ?MS_QUERY_CLIENT_ATTRIB}},
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC_2019, emqx_utils_json:encode(DlCommand))),
+
+    %% Client receives downlink command
+    timer:sleep(100),
+    {ok, _Packet3} = gen_tcp:recv(Socket, 0, 500),
+
+    %% Client sends 0x0107 response in 2019 format (30-byte model, 30-byte id)
+    Model2019 = <<"MODEL_2019_TERMINAL_DEVICE">>,
+    ModelPadded = pad_binary(Model2019, 30),
+    Id2019 = <<"DEVICE_ID_2019_SERIAL">>,
+    IdPadded = pad_binary(Id2019, 30),
+    %% Manufacturer is 5 bytes in 0x0107 (same for 2013 and 2019)
+    Manufacturer = <<"MNF19">>,
+    ICCID = <<16#12, 16#34, 16#56, 16#78, 16#90, 16#12, 16#34, 16#56, 16#78, 16#90>>,
+    HwVerLen = 6,
+    HwVer = <<"v3.0.0">>,
+    FwVerLen = 5,
+    FwVer = <<"v2.19">>,
+    GnssProp = 200,
+    CommProp = 201,
+
+    UlPacket =
+        <<12:?WORD, Manufacturer/binary, ModelPadded/binary, IdPadded/binary, ICCID/binary,
+            HwVerLen:8, HwVer/binary, FwVerLen:8, FwVer/binary, GnssProp:8, CommProp:8>>,
+    Size = size(UlPacket),
+    PhoneBCD = ?JT808_PHONE_BCD_2019,
+    MsgId = ?MC_QUERY_ATTRIB_ACK,
+    MsgSn = 2,
+    ProtoVer = ?PROTO_VER_2019,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size), ProtoVer:8, PhoneBCD/binary, MsgSn:?WORD>>,
+    S1 = gen_packet_2019(Header, UlPacket),
+
+    ok = gen_tcp:send(Socket, S1),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC_2019, Payload} = receive_msg(),
+    DecodedPayload = emqx_utils_json:decode(Payload),
+
+    %% Verify all 2019 fields in MQTT message
+    Header_Decoded = maps:get(<<"header">>, DecodedPayload),
+    Body_Decoded = maps:get(<<"body">>, DecodedPayload),
+
+    %% Header assertions
+    ?assertEqual(?MC_QUERY_ATTRIB_ACK, maps:get(<<"msg_id">>, Header_Decoded)),
+    ?assertEqual(?PROTO_VER_2019, maps:get(<<"proto_ver">>, Header_Decoded)),
+    ?assertEqual(<<"00000000000123456789">>, maps:get(<<"phone">>, Header_Decoded)),
+
+    %% Body assertions - verify 30-byte model and 30-byte id fields
+    ?assertEqual(12, maps:get(<<"type">>, Body_Decoded)),
+    ?assertEqual(Model2019, maps:get(<<"model">>, Body_Decoded)),
+    ?assertEqual(Id2019, maps:get(<<"id">>, Body_Decoded)),
+    ?assertEqual(<<"MNF19">>, maps:get(<<"manufacturer">>, Body_Decoded)),
+    ?assertEqual(<<"12345678901234567890">>, maps:get(<<"iccid">>, Body_Decoded)),
+    ?assertEqual(<<"v3.0.0">>, maps:get(<<"hardware_version">>, Body_Decoded)),
+    ?assertEqual(<<"v2.19">>, maps:get(<<"firmware_version">>, Body_Decoded)),
+    ?assertEqual(GnssProp, maps:get(<<"gnss_prop">>, Body_Decoded)),
+    ?assertEqual(CommProp, maps:get(<<"comm_prop">>, Body_Decoded)),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: 2019 Query Server Time (0x0004) - verify server response (0x8004) with BCD[6] time
+t_case_2019_query_server_time_mqtt(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure_2019(Socket),
+    ok = client_auth_procedure_2019(Socket, AuthCode),
+
+    %% Capture UTC time before request (for comparison)
+    {{Year, Month, Day}, {Hour, Min, _Sec}} = calendar:universal_time(),
+
+    %% Client sends 0x0004 Query Server Time (empty body)
+    PhoneBCD = ?JT808_PHONE_BCD_2019,
+    MsgId = ?MC_QUERY_SERVER_TIME,
+    MsgSn = 102,
+    Size = 0,
+    ProtoVer = ?PROTO_VER_2019,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size), ProtoVer:8, PhoneBCD/binary, MsgSn:?WORD>>,
+    S1 = gen_packet_2019(Header, <<>>),
+
+    ok = gen_tcp:send(Socket, S1),
+
+    %% Receive server response 0x8004 (Server Time ACK)
+    {ok, ResponsePacket} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("Server Time ACK Response=~p", [binary_to_hex_string(ResponsePacket)]),
+
+    %% Parse response - should be 0x8004 with BCD[6] time
+    %% After unescaping, packet structure:
+    %% 7E | MsgId(2) | Attrs(2) | ProtoVer(1) | Phone(10) | MsgSn(2) | Body(6) | Checksum(1) | 7E
+    UnescapedPacket = unescape_packet(ResponsePacket),
+    <<16#7E, MsgId2:16/big, _Attrs:16/big, _ProtoVer2:8, _Phone:10/binary, _RespMsgSn:16/big,
+        TimeBCD:6/binary, _Checksum:8, 16#7E>> = UnescapedPacket,
+
+    %% Verify message ID is 0x8004 (Server Time ACK)
+    ?assertEqual(?MS_SERVER_TIME_ACK, MsgId2),
+
+    %% Parse BCD[6] time: YYMMDDHHMMSS
+    <<YY1:4, YY2:4, MM1:4, MM2:4, DD1:4, DD2:4, HH1:4, HH2:4, Mi1:4, Mi2:4, SS1:4, SS2:4>> =
+        TimeBCD,
+    RecvYY = YY1 * 10 + YY2,
+    RecvMM = MM1 * 10 + MM2,
+    RecvDD = DD1 * 10 + DD2,
+    RecvHH = HH1 * 10 + HH2,
+    RecvMi = Mi1 * 10 + Mi2,
+    RecvSS = SS1 * 10 + SS2,
+
+    ?LOGT(
+        "Received time: 20~2.10.0B-~2.10.0B-~2.10.0B ~2.10.0B:~2.10.0B:~2.10.0B",
+        [RecvYY, RecvMM, RecvDD, RecvHH, RecvMi, RecvSS]
+    ),
+
+    %% Verify time components are within valid ranges
+    ExpectedYY = Year rem 100,
+    ?assertEqual(ExpectedYY, RecvYY),
+    ?assertEqual(Month, RecvMM),
+    ?assertEqual(Day, RecvDD),
+    ?assertEqual(Hour, RecvHH),
+    %% Allow 1 minute tolerance for minute (in case of minute boundary crossing)
+    ?assert(
+        abs(RecvMi - Min) =< 1 orelse (Min == 59 andalso RecvMi == 0) orelse
+            (Min == 0 andalso RecvMi == 59)
+    ),
+    %% Seconds should be valid (0-59)
+    ?assert(RecvSS >= 0 andalso RecvSS =< 59),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: 2019 Terminal Request Fragment (0x0005) - verify WORD count and packet IDs
+t_case_2019_request_fragment_mqtt(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure_2019(Socket),
+    ok = client_auth_procedure_2019(Socket, AuthCode),
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC_2019),
+
+    %% Client sends 0x0005 Request Fragment
+    %% Body format: Seq(WORD) + Count(WORD) + IDs(WORD each)
+    Seq = 1234,
+    Count = 3,
+    Id1 = 100,
+    Id2 = 200,
+    Id3 = 300,
+    Body = <<Seq:?WORD, Count:?WORD, Id1:?WORD, Id2:?WORD, Id3:?WORD>>,
+
+    PhoneBCD = ?JT808_PHONE_BCD_2019,
+    MsgId = ?MC_REQUEST_FRAGMENT,
+    MsgSn = 103,
+    Size = size(Body),
+    ProtoVer = ?PROTO_VER_2019,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size), ProtoVer:8, PhoneBCD/binary, MsgSn:?WORD>>,
+    S1 = gen_packet_2019(Header, Body),
+
+    ok = gen_tcp:send(Socket, S1),
+
+    %% Receive general response (0x8001) from server
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 500),
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size2 = size(GenAckPacket),
+    MsgId2 = ?MS_GENERAL_RESPONSE,
+    MsgSn2 = 2,
+    Header2 =
+        <<MsgId2:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size2), ProtoVer:8, PhoneBCD/binary, MsgSn2:?WORD>>,
+    S2 = gen_packet_2019(Header2, GenAckPacket),
+    ?assertEqual(S2, Packet),
+
+    {?JT808_UP_TOPIC_2019, Payload} = receive_msg(),
+    DecodedPayload = emqx_utils_json:decode(Payload),
+
+    Header_Decoded = maps:get(<<"header">>, DecodedPayload),
+    Body_Decoded = maps:get(<<"body">>, DecodedPayload),
+
+    %% Header assertions
+    ?assertEqual(?MC_REQUEST_FRAGMENT, maps:get(<<"msg_id">>, Header_Decoded)),
+    ?assertEqual(?PROTO_VER_2019, maps:get(<<"proto_ver">>, Header_Decoded)),
+
+    %% Body assertions - verify seq, count (WORD), and ids list
+    ?assertEqual(Seq, maps:get(<<"seq">>, Body_Decoded)),
+    ?assertEqual(Count, maps:get(<<"count">>, Body_Decoded)),
+    ?assertEqual([Id1, Id2, Id3], maps:get(<<"ids">>, Body_Decoded)),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: 0x8608 Query Area/Route -> 0x0608 Response (2019 new message)
+t_case26_dl_0x8608_query_area_route(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure_2019(Socket),
+    ok = client_auth_procedure_2019(Socket, AuthCode),
+
+    PhoneBCD = ?JT808_PHONE_BCD_2019,
+    ProtoVer = ?PROTO_VER_2019,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC_2019),
+
+    %% Server sends 0x8608 Query Area/Route command
+    %% Body: type (BYTE) + count (DWORD) + ids (DWORD list, optional)
+
+    %% 1=circle, 2=rect, 3=poly, 4=path
+    QueryType = 1,
+    %% 0 = query all
+    QueryCount = 0,
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_QUERY_AREA_ROUTE},
+        <<"body">> => #{<<"type">> => QueryType, <<"count">> => QueryCount}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC_2019, emqx_utils_json:encode(DlCommand))),
+
+    %% Client receives downlink 0x8608
+    MsgBody3 = <<QueryType:8, QueryCount:?DWORD>>,
+    MsgId3 = ?MS_QUERY_AREA_ROUTE,
+    MsgSn3 = 2,
+    Size3 = size(MsgBody3),
+    Header3 =
+        <<MsgId3:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size3), ProtoVer:8, PhoneBCD/binary, MsgSn3:?WORD>>,
+    S3 = gen_packet_2019(Header3, MsgBody3),
+
+    timer:sleep(300),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 500),
+    ?LOGT("     S3=~p", [binary_to_hex_string(S3)]),
+    ?LOGT("Packet3=~p", [binary_to_hex_string(Packet3)]),
+    ?assertEqual(S3, Packet3),
+
+    %% Client sends 0x0608 Query Area/Route Response
+    %% Body: type (BYTE) + count (DWORD) + data (variable)
+    RespType = QueryType,
+    RespCount = 2,
+    AreaData = <<"test_area_data">>,
+    UlBody = <<RespType:8, RespCount:?DWORD, AreaData/binary>>,
+    Size4 = size(UlBody),
+    MsgId4 = ?MC_QUERY_AREA_ROUTE_ACK,
+    MsgSn4 = 2,
+    Header4 =
+        <<MsgId4:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size4), ProtoVer:8, PhoneBCD/binary, MsgSn4:?WORD>>,
+    S4 = gen_packet_2019(Header4, UlBody),
+
+    ok = gen_tcp:send(Socket, S4),
+    timer:sleep(100),
+
+    %% Verify response published to MQTT uplink
+    {?JT808_UP_TOPIC_2019, Payload} = receive_msg(),
+    DecodedPayload = emqx_utils_json:decode(Payload),
+    ?assertEqual(
+        #{
+            <<"header">> => #{
+                <<"encrypt">> => 0,
+                <<"len">> => Size4,
+                <<"msg_id">> => ?MC_QUERY_AREA_ROUTE_ACK,
+                <<"msg_sn">> => MsgSn4,
+                <<"phone">> => <<"00000000000123456789">>,
+                <<"proto_ver">> => ProtoVer
+            },
+            <<"body">> => #{
+                <<"type">> => RespType,
+                <<"count">> => RespCount,
+                <<"data">> => base64:encode(AreaData)
+            }
+        },
+        DecodedPayload
+    ),
+
+    %% No retransmission of downlink message (ACK clears inflight)
+    {error, timeout} = gen_tcp:recv(Socket, 0, 500),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: 2019 Query Area/Route Response (0x0608) - verify type, count (DWORD), and data
+t_case_2019_query_area_route_mqtt(_Config) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure_2019(Socket),
+    ok = client_auth_procedure_2019(Socket, AuthCode),
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC_2019),
+
+    %% Client sends 0x0608 Query Area/Route Response
+    %% Body format: Type(BYTE) + Count(DWORD) + Data(variable)
+
+    %% 1 = circle area
+    Type = 1,
+    Count = 2,
+    AreaData = <<"test_area_data_binary">>,
+    Body = <<Type:8, Count:?DWORD, AreaData/binary>>,
+
+    PhoneBCD = ?JT808_PHONE_BCD_2019,
+    MsgId = ?MC_QUERY_AREA_ROUTE_ACK,
+    MsgSn = 104,
+    Size = size(Body),
+    ProtoVer = ?PROTO_VER_2019,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:1, ?VERSION_BIT_2019:1, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+            ?MSG_SIZE(Size), ProtoVer:8, PhoneBCD/binary, MsgSn:?WORD>>,
+    S1 = gen_packet_2019(Header, Body),
+
+    ok = gen_tcp:send(Socket, S1),
+    timer:sleep(100),
+
+    {?JT808_UP_TOPIC_2019, Payload} = receive_msg(),
+    DecodedPayload = emqx_utils_json:decode(Payload),
+
+    Header_Decoded = maps:get(<<"header">>, DecodedPayload),
+    Body_Decoded = maps:get(<<"body">>, DecodedPayload),
+
+    %% Header assertions
+    ?assertEqual(?MC_QUERY_AREA_ROUTE_ACK, maps:get(<<"msg_id">>, Header_Decoded)),
+    ?assertEqual(?PROTO_VER_2019, maps:get(<<"proto_ver">>, Header_Decoded)),
+
+    %% Body assertions - verify type, count (DWORD), and base64-encoded data
+    ?assertEqual(Type, maps:get(<<"type">>, Body_Decoded)),
+    ?assertEqual(Count, maps:get(<<"count">>, Body_Decoded)),
+    ?assertEqual(base64:encode(AreaData), maps:get(<<"data">>, Body_Decoded)),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: Verify that multiple downlink messages get unique msg_sn values
+%% This tests the fix for the bug where two MQTT messages published quickly
+%% would get duplicate msg_sn values, causing {error,{key_exists,...}}
+t_case_downlink_msg_sn_unique(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    %% Publish two downlink messages in quick succession
+    Flag1 = 15,
+    Text1 = <<"first message">>,
+    DlCommand1 = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SEND_TEXT},
+        <<"body">> => #{<<"flag">> => Flag1, <<"text">> => Text1}
+    },
+    Flag2 = 15,
+    Text2 = <<"second message">>,
+    DlCommand2 = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SEND_TEXT},
+        <<"body">> => #{<<"flag">> => Flag2, <<"text">> => Text2}
+    },
+
+    %% Publish both messages without delay (to trigger the msg_sn duplication bug)
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand1))),
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand2))),
+
+    %% Receive first batch of data.
+    %% Depending on timing, we may get 1 or 2 frames:
+    %% - 2 frames: both publishes were processed as separate handle_deliver calls
+    %% - 1 frame: both were batched, and dispatch_frame/1 only dispatches one at a time
+    {ok, RecvData1} = gen_tcp:recv(Socket, 0, 5000),
+    Frames1 = split_jt808_frames(RecvData1),
+    ?assert(length(Frames1) >= 1),
+
+    {Frame1, Frame2} =
+        case Frames1 of
+            [F1, F2 | _] ->
+                %% Got both frames in first recv
+                {F1, F2};
+            [F1] ->
+                %% Only got one frame; ACK it to trigger dispatch of the second
+                MsgSn = parse_msg_sn_from_frame(F1, PhoneBCD),
+                AckPkt = <<MsgSn:?WORD, (?MS_SEND_TEXT):?WORD, 0>>,
+                AckSz = size(AckPkt),
+                AckHdr =
+                    <<(?MC_GENERAL_RESPONSE):?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3,
+                        ?MSG_SIZE(AckSz), PhoneBCD/binary, 2:?WORD>>,
+                ok = gen_tcp:send(Socket, gen_packet(AckHdr, AckPkt)),
+                {ok, RecvData2} = gen_tcp:recv(Socket, 0, 5000),
+                [F2] = split_jt808_frames(RecvData2),
+                {F1, F2}
+        end,
+
+    %% Parse msg_sn from both frames
+    MsgSn1 = parse_msg_sn_from_frame(Frame1, PhoneBCD),
+    MsgSn2 = parse_msg_sn_from_frame(Frame2, PhoneBCD),
+    ?LOGT("MsgSn1=~p, MsgSn2=~p", [MsgSn1, MsgSn2]),
+
+    %% Verify that msg_sn values are different and sequential
+    ?assertNotEqual(MsgSn1, MsgSn2),
+    ?assertEqual(MsgSn1 + 1, MsgSn2),
+
+    %% ACK both messages (first may already be ACK'd above, but second always needs ACK)
+    MsgId1 = ?MS_SEND_TEXT,
+    MsgIdAck = ?MC_GENERAL_RESPONSE,
+    lists:foreach(
+        fun({MsgSn, AckSn}) ->
+            GenAckPacket = <<MsgSn:?WORD, MsgId1:?WORD, 0>>,
+            Sz = size(GenAckPacket),
+            AckHeader =
+                <<MsgIdAck:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Sz),
+                    PhoneBCD/binary, AckSn:?WORD>>,
+            ok = gen_tcp:send(Socket, gen_packet(AckHeader, GenAckPacket))
+        end,
+        [{MsgSn1, 2}, {MsgSn2, 3}]
+    ),
+
+    ok = gen_tcp:close(Socket).
+
+%% Split JT808 frames from received data (frames are delimited by 0x7E)
+split_jt808_frames(Data) ->
+    split_jt808_frames(Data, [], <<>>).
+
+split_jt808_frames(<<>>, Acc, <<>>) ->
+    lists:reverse(Acc);
+split_jt808_frames(<<>>, Acc, Current) when byte_size(Current) > 0 ->
+    lists:reverse([Current | Acc]);
+split_jt808_frames(<<16#7E, Rest/binary>>, Acc, <<>>) ->
+    %% Start of a new frame
+    split_jt808_frames(Rest, Acc, <<16#7E>>);
+split_jt808_frames(<<16#7E, Rest/binary>>, Acc, Current) when byte_size(Current) > 1 ->
+    %% End of current frame, might be start of next
+    Frame = <<Current/binary, 16#7E>>,
+    split_jt808_frames(Rest, [Frame | Acc], <<>>);
+split_jt808_frames(<<16#7E, Rest/binary>>, Acc, <<16#7E>>) ->
+    %% Double 0x7E - end of one frame, start of next
+    split_jt808_frames(Rest, Acc, <<16#7E>>);
+split_jt808_frames(<<Byte, Rest/binary>>, Acc, Current) ->
+    split_jt808_frames(Rest, Acc, <<Current/binary, Byte>>).
+
+%% Parse msg_sn from a complete JT808 frame (with 0x7E delimiters)
+parse_msg_sn_from_frame(Frame, PhoneBCD) ->
+    %% Remove leading and trailing 0x7E delimiters
+    <<16#7E, Inner/binary>> = Frame,
+    InnerSize = byte_size(Inner) - 1,
+    <<Escaped:InnerSize/binary, 16#7E>> = Inner,
+    %% Unescape the content
+    UnescapedPacket = unescape_packet(Escaped),
+    %% Header format: MsgId(2) + MsgAttr(2) + Phone(6) + MsgSn(2)
+    PhoneLen = byte_size(PhoneBCD),
+    <<_MsgId:2/binary, _MsgAttr:2/binary, _Phone:PhoneLen/binary, MsgSn:?WORD, _Rest/binary>> =
+        UnescapedPacket,
+    MsgSn.
+
+%%--------------------------------------------------------------------
+%% Test Cases for custom msg_sn in downlink messages
+%%--------------------------------------------------------------------
+
+%% Test: Downlink message without msg_sn should use auto-generated channel sn
+t_case_downlink_auto_msg_sn(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    %% Publish downlink without msg_sn - should use auto-generated sn (2 after auth)
+    Flag = 15,
+    Text = <<"auto sn test">>,
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => ?MS_SEND_TEXT},
+        <<"body">> => #{<<"flag">> => Flag, <<"text">> => Text}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% Receive the downlink message
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 1000),
+
+    %% Parse and verify msg_sn is auto-generated (should be 2)
+    [Frame | _] = split_jt808_frames(Packet),
+    MsgSn = parse_msg_sn_from_frame(Frame, PhoneBCD),
+    ?LOGT("Auto msg_sn = ~p", [MsgSn]),
+    ?assertEqual(2, MsgSn),
+
+    %% Send ACK
+    MsgId = ?MS_SEND_TEXT,
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size = size(GenAckPacket),
+    MsgIdAck = ?MC_GENERAL_RESPONSE,
+    AckSn = 2,
+    AckHeader =
+        <<MsgIdAck:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size),
+            PhoneBCD/binary, AckSn:?WORD>>,
+    AckFrame = gen_packet(AckHeader, GenAckPacket),
+    ok = gen_tcp:send(Socket, AckFrame),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: Downlink message with custom msg_sn should use the provided sn
+t_case_downlink_custom_msg_sn(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    %% Publish downlink with custom msg_sn
+    CustomMsgSn = 12345,
+    Flag = 15,
+    Text = <<"custom sn test">>,
+    DlCommand = #{
+        <<"header">> => #{
+            <<"msg_id">> => ?MS_SEND_TEXT,
+            <<"msg_sn">> => CustomMsgSn
+        },
+        <<"body">> => #{<<"flag">> => Flag, <<"text">> => Text}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% Receive the downlink message
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 1000),
+
+    %% Parse and verify msg_sn is the custom value
+    [Frame | _] = split_jt808_frames(Packet),
+    MsgSn = parse_msg_sn_from_frame(Frame, PhoneBCD),
+    ?LOGT("Custom msg_sn = ~p", [MsgSn]),
+    ?assertEqual(CustomMsgSn, MsgSn),
+
+    %% Send ACK with the custom msg_sn
+    MsgId = ?MS_SEND_TEXT,
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size = size(GenAckPacket),
+    MsgIdAck = ?MC_GENERAL_RESPONSE,
+    AckSn = 2,
+    AckHeader =
+        <<MsgIdAck:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size),
+            PhoneBCD/binary, AckSn:?WORD>>,
+    AckFrame = gen_packet(AckHeader, GenAckPacket),
+    ok = gen_tcp:send(Socket, AckFrame),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: Mixed auto and custom msg_sn in sequence
+%% Send messages one at a time and ACK each before sending the next
+t_case_downlink_mixed_msg_sn(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgId = ?MS_SEND_TEXT,
+    MsgIdAck = ?MC_GENERAL_RESPONSE,
+
+    %% First message with auto msg_sn
+    DlCommand1 = #{
+        <<"header">> => #{<<"msg_id">> => MsgId},
+        <<"body">> => #{<<"flag">> => 1, <<"text">> => <<"first auto">>}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand1))),
+    {ok, Packet1} = gen_tcp:recv(Socket, 0, 1000),
+    [Frame1 | _] = split_jt808_frames(Packet1),
+    MsgSn1 = parse_msg_sn_from_frame(Frame1, PhoneBCD),
+    ?LOGT("MsgSn1 (auto) = ~p", [MsgSn1]),
+    ?assertEqual(2, MsgSn1),
+
+    %% ACK first message
+    GenAckPacket1 = <<MsgSn1:?WORD, MsgId:?WORD, 0>>,
+    Size1 = size(GenAckPacket1),
+    AckHeader1 =
+        <<MsgIdAck:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size1),
+            PhoneBCD/binary, 2:?WORD>>,
+    ok = gen_tcp:send(Socket, gen_packet(AckHeader1, GenAckPacket1)),
+
+    %% Second message with custom msg_sn
+    CustomMsgSn = 9999,
+    DlCommand2 = #{
+        <<"header">> => #{<<"msg_id">> => MsgId, <<"msg_sn">> => CustomMsgSn},
+        <<"body">> => #{<<"flag">> => 2, <<"text">> => <<"second custom">>}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand2))),
+    {ok, Packet2} = gen_tcp:recv(Socket, 0, 1000),
+    [Frame2 | _] = split_jt808_frames(Packet2),
+    MsgSn2 = parse_msg_sn_from_frame(Frame2, PhoneBCD),
+    ?LOGT("MsgSn2 (custom) = ~p", [MsgSn2]),
+    ?assertEqual(CustomMsgSn, MsgSn2),
+
+    %% ACK second message
+    GenAckPacket2 = <<MsgSn2:?WORD, MsgId:?WORD, 0>>,
+    Size2 = size(GenAckPacket2),
+    AckHeader2 =
+        <<MsgIdAck:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size2),
+            PhoneBCD/binary, 3:?WORD>>,
+    ok = gen_tcp:send(Socket, gen_packet(AckHeader2, GenAckPacket2)),
+
+    %% Third message with auto msg_sn
+    DlCommand3 = #{
+        <<"header">> => #{<<"msg_id">> => MsgId},
+        <<"body">> => #{<<"flag">> => 3, <<"text">> => <<"third auto">>}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand3))),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 1000),
+    [Frame3 | _] = split_jt808_frames(Packet3),
+    MsgSn3 = parse_msg_sn_from_frame(Frame3, PhoneBCD),
+    ?LOGT("MsgSn3 (auto) = ~p", [MsgSn3]),
+    %% Auto msg_sn should continue from 3 (not affected by custom 9999)
+    ?assertEqual(3, MsgSn3),
+
+    %% ACK third message
+    GenAckPacket3 = <<MsgSn3:?WORD, MsgId:?WORD, 0>>,
+    Size3 = size(GenAckPacket3),
+    AckHeader3 =
+        <<MsgIdAck:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, 4:?WORD>>,
+    ok = gen_tcp:send(Socket, gen_packet(AckHeader3, GenAckPacket3)),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: Different message types with same custom msg_sn should not conflict
+%% Both MS_SEND_TEXT and MS_CLIENT_CONTROL expect MC_GENERAL_RESPONSE,
+%% but they should be tracked separately using {MsgId, MsgSn} as the key.
+t_case_downlink_msg_sn_conflict_different_msg_types(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgIdAck = ?MC_GENERAL_RESPONSE,
+    CustomMsgSn = 8888,
+
+    %% Send MS_SEND_TEXT with custom msg_sn=8888
+    MsgId1 = ?MS_SEND_TEXT,
+    DlCommand1 = #{
+        <<"header">> => #{<<"msg_id">> => MsgId1, <<"msg_sn">> => CustomMsgSn},
+        <<"body">> => #{<<"flag">> => 1, <<"text">> => <<"text message">>}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand1))),
+    {ok, Packet1} = gen_tcp:recv(Socket, 0, 1000),
+    [Frame1 | _] = split_jt808_frames(Packet1),
+    MsgSn1 = parse_msg_sn_from_frame(Frame1, PhoneBCD),
+    ?LOGT("MsgSn1 (MS_SEND_TEXT) = ~p", [MsgSn1]),
+    ?assertEqual(CustomMsgSn, MsgSn1),
+
+    %% Send MS_CLIENT_CONTROL with same custom msg_sn=8888
+    MsgId2 = ?MS_CLIENT_CONTROL,
+    DlCommand2 = #{
+        <<"header">> => #{<<"msg_id">> => MsgId2, <<"msg_sn">> => CustomMsgSn},
+        <<"body">> => #{<<"command">> => 1, <<"param">> => <<>>}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand2))),
+    {ok, Packet2} = gen_tcp:recv(Socket, 0, 1000),
+    [Frame2 | _] = split_jt808_frames(Packet2),
+    MsgSn2 = parse_msg_sn_from_frame(Frame2, PhoneBCD),
+    ?LOGT("MsgSn2 (MS_CLIENT_CONTROL) = ~p", [MsgSn2]),
+    ?assertEqual(CustomMsgSn, MsgSn2),
+
+    %% Both messages have the same MsgSn but different MsgId
+    %% They should be tracked separately in inflight
+
+    %% ACK the first message (MS_SEND_TEXT)
+    %% General response format: <<AckMsgSn:WORD, AckMsgId:WORD, Result:BYTE>>
+    GenAckPacket1 = <<CustomMsgSn:?WORD, MsgId1:?WORD, 0>>,
+    Size1 = size(GenAckPacket1),
+    AckHeader1 =
+        <<MsgIdAck:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size1),
+            PhoneBCD/binary, 2:?WORD>>,
+    ok = gen_tcp:send(Socket, gen_packet(AckHeader1, GenAckPacket1)),
+
+    %% ACK the second message (MS_CLIENT_CONTROL)
+    GenAckPacket2 = <<CustomMsgSn:?WORD, MsgId2:?WORD, 0>>,
+    Size2 = size(GenAckPacket2),
+    AckHeader2 =
+        <<MsgIdAck:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size2),
+            PhoneBCD/binary, 3:?WORD>>,
+    ok = gen_tcp:send(Socket, gen_packet(AckHeader2, GenAckPacket2)),
+
+    %% Both ACKs should be processed without conflict
+    %% If they were conflicting, we would see retransmission attempts
+
+    %% Send a third message to verify channel is still working properly
+    MsgId3 = ?MS_SEND_TEXT,
+    DlCommand3 = #{
+        <<"header">> => #{<<"msg_id">> => MsgId3},
+        <<"body">> => #{<<"flag">> => 2, <<"text">> => <<"after conflict test">>}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand3))),
+    {ok, Packet3} = gen_tcp:recv(Socket, 0, 1000),
+    [Frame3 | _] = split_jt808_frames(Packet3),
+    MsgSn3 = parse_msg_sn_from_frame(Frame3, PhoneBCD),
+    ?LOGT("MsgSn3 (auto after conflict) = ~p", [MsgSn3]),
+    %% Auto msg_sn should be 2 (continuing from auth)
+    ?assertEqual(2, MsgSn3),
+
+    %% ACK the third message
+    GenAckPacket3 = <<MsgSn3:?WORD, MsgId3:?WORD, 0>>,
+    Size3 = size(GenAckPacket3),
+    AckHeader3 =
+        <<MsgIdAck:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size3),
+            PhoneBCD/binary, 4:?WORD>>,
+    ok = gen_tcp:send(Socket, gen_packet(AckHeader3, GenAckPacket3)),
+
+    ok = gen_tcp:close(Socket).
+
+%%--------------------------------------------------------------------
+%% Test Cases for string encoding (UTF-8 vs GBK)
+%%--------------------------------------------------------------------
+
+%% Test: Downlink text message with UTF-8 encoding (default passthrough)
+%% When string_encoding=utf8, Chinese text should be sent as UTF-8 bytes
+t_case_downlink_text_encoding_utf8(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket, <<"anonymous">>),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgId = ?MS_SEND_TEXT,
+    MsgIdAck = ?MC_GENERAL_RESPONSE,
+
+    %% Chinese text "你好" in UTF-8 is: E4 BD A0 E5 A5 BD
+    ChineseText = <<"你好"/utf8>>,
+    ExpectedUtf8Bytes = <<16#E4, 16#BD, 16#A0, 16#E5, 16#A5, 16#BD>>,
+
+    %% Publish downlink message with Chinese text
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => MsgId},
+        <<"body">> => #{<<"flag">> => 8, <<"text">> => ChineseText}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% Receive the downlink message
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 1000),
+    [Frame | _] = split_jt808_frames(Packet),
+
+    %% Parse the text body from the frame
+    TextBody = parse_text_body_from_frame(Frame, PhoneBCD),
+    ?LOGT("UTF-8 encoding test: received text body (hex) = ~s", [binary_to_hex(TextBody)]),
+    ?LOGT("UTF-8 encoding test: expected UTF-8 bytes (hex) = ~s", [binary_to_hex(ExpectedUtf8Bytes)]),
+
+    %% Verify the text is sent as UTF-8 (not converted)
+    ?assertEqual(ExpectedUtf8Bytes, TextBody),
+
+    %% Send ACK
+    MsgSn = parse_msg_sn_from_frame(Frame, PhoneBCD),
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size = size(GenAckPacket),
+    AckHeader =
+        <<MsgIdAck:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size),
+            PhoneBCD/binary, 2:?WORD>>,
+    ok = gen_tcp:send(Socket, gen_packet(AckHeader, GenAckPacket)),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: Downlink text message with GBK encoding
+%% When string_encoding=gbk, Chinese text (UTF-8) should be converted to GBK bytes
+t_case_downlink_text_encoding_gbk(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket, <<"anonymous">>),
+    ok = client_auth_procedure(Socket, AuthCode),
+
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+    MsgId = ?MS_SEND_TEXT,
+    MsgIdAck = ?MC_GENERAL_RESPONSE,
+
+    %% Chinese text "你好"
+    %% UTF-8: E4 BD A0 E5 A5 BD
+    %% GBK:   C4 E3 BA C3
+    ChineseText = <<"你好"/utf8>>,
+    ExpectedGbkBytes = <<16#C4, 16#E3, 16#BA, 16#C3>>,
+
+    %% Publish downlink message with Chinese text
+    DlCommand = #{
+        <<"header">> => #{<<"msg_id">> => MsgId},
+        <<"body">> => #{<<"flag">> => 8, <<"text">> => ChineseText}
+    },
+    emqx:publish(emqx_message:make(?JT808_DN_TOPIC, emqx_utils_json:encode(DlCommand))),
+
+    %% Receive the downlink message
+    {ok, Packet} = gen_tcp:recv(Socket, 0, 1000),
+    [Frame | _] = split_jt808_frames(Packet),
+
+    %% Parse the text body from the frame
+    TextBody = parse_text_body_from_frame(Frame, PhoneBCD),
+    ?LOGT("GBK encoding test: received text body (hex) = ~s", [binary_to_hex(TextBody)]),
+    ?LOGT("GBK encoding test: expected GBK bytes (hex) = ~s", [binary_to_hex(ExpectedGbkBytes)]),
+
+    %% Verify the text is converted to GBK
+    ?assertEqual(ExpectedGbkBytes, TextBody),
+
+    %% Send ACK
+    MsgSn = parse_msg_sn_from_frame(Frame, PhoneBCD),
+    GenAckPacket = <<MsgSn:?WORD, MsgId:?WORD, 0>>,
+    Size = size(GenAckPacket),
+    AckHeader =
+        <<MsgIdAck:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size),
+            PhoneBCD/binary, 2:?WORD>>,
+    ok = gen_tcp:send(Socket, gen_packet(AckHeader, GenAckPacket)),
+
+    ok = gen_tcp:close(Socket).
+
+%% Parse text body from 0x8300 (MS_SEND_TEXT) frame
+%% Frame format: 7E + Header(12 bytes) + Body(flag:1 + text:n) + Checksum + 7E
+parse_text_body_from_frame(Frame, PhoneBCD) ->
+    %% Remove leading and trailing 0x7E delimiters
+    <<16#7E, Inner/binary>> = Frame,
+    InnerSize = byte_size(Inner) - 1,
+    <<Escaped:InnerSize/binary, 16#7E>> = Inner,
+    %% Unescape the content
+    Unescaped = unescape_packet(Escaped),
+    %% Header format: MsgId(2) + MsgAttr(2) + Phone(6) + MsgSn(2) = 12 bytes
+    PhoneLen = byte_size(PhoneBCD),
+    <<_MsgId:2/binary, MsgAttr:16, _Phone:PhoneLen/binary, _MsgSn:2/binary, Rest/binary>> =
+        Unescaped,
+    %% Body length from MsgAttr (lower 10 bits)
+    BodyLen = MsgAttr band 16#3FF,
+    %% Extract body and checksum
+    <<Body:BodyLen/binary, _Checksum:1/binary>> = Rest,
+    %% Body format for 0x8300: flag(1 byte) + text(n bytes)
+    <<_Flag:1/binary, TextBody/binary>> = Body,
+    TextBody.
+
+%% Convert binary to hex string for logging
+binary_to_hex(Bin) ->
+    lists:flatten([io_lib:format("~2.16.0B", [B]) || <<B>> <= Bin]).
+
+%%--------------------------------------------------------------------
+%% Test Cases for uplink string encoding (GBK to UTF-8 conversion)
+%%--------------------------------------------------------------------
+
+%% Test: Uplink driver identity report with UTF-8 encoding (passthrough)
+%% When string_encoding=utf8, UTF-8 bytes from client pass through unchanged
+t_case_uplink_text_encoding_utf8(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket, <<"anonymous">>),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    %% Driver name "张三" in UTF-8: E5 BC A0 E4 B8 89
+    DriverNameUtf8 = <<16#E5, 16#BC, 16#A0, 16#E4, 16#B8, 16#89>>,
+    DriverNameLen = byte_size(DriverNameUtf8),
+
+    %% Organization "北京" in UTF-8: E5 8C 97 E4 BA AC
+    OrgUtf8 = <<16#E5, 16#8C, 16#97, 16#E4, 16#BA, 16#AC>>,
+    OrgLen = byte_size(OrgUtf8),
+
+    %% Build driver identity report packet
+    %% Format: status(1) + time(BCD6) + ic_result(1) + driver_name_len(1) + driver_name(n)
+    %%         + certificate(20) + org_len(1) + org(m) + cert_expiry(BCD4)
+    UlPacket =
+        % status: IC card inserted
+        <<1:8,
+            % time: 2025-01-30 10:30:00
+            16#25, 16#01, 16#30, 16#10, 16#30, 16#00,
+            % ic_result: success
+            0:8,
+            % driver_name
+            DriverNameLen:8, DriverNameUtf8/binary,
+            % certificate (20 bytes)
+            "12345678901234567890",
+            % organization
+            OrgLen:8, OrgUtf8/binary,
+            % cert_expiry: 2030-12-31
+            16#20, 16#30, 16#12, 16#31>>,
+
+    Size = byte_size(UlPacket),
+    MsgId = ?MC_DRIVER_ID_REPORT,
+    MsgSn = 2,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size), PhoneBCD/binary,
+            MsgSn:?WORD>>,
+    S = gen_packet(Header, UlPacket),
+
+    ok = gen_tcp:send(Socket, S),
+    timer:sleep(100),
+
+    %% Receive and verify the uplink message
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    DecodedPayload = emqx_utils_json:decode(Payload),
+    Body = maps:get(<<"body">>, DecodedPayload),
+
+    %% With UTF-8 encoding, the driver_name should be the UTF-8 bytes interpreted as UTF-8
+    %% Since we sent UTF-8 bytes and string_encoding=utf8, it should pass through
+    ReceivedDriverName = maps:get(<<"driver_name">>, Body),
+    ReceivedOrg = maps:get(<<"organization">>, Body),
+
+    ?LOGT("UTF-8 uplink: driver_name = ~p", [ReceivedDriverName]),
+    ?LOGT("UTF-8 uplink: organization = ~p", [ReceivedOrg]),
+
+    %% The received strings should be UTF-8 encoded "张三" and "北京"
+    ?assertEqual(<<"张三"/utf8>>, ReceivedDriverName),
+    ?assertEqual(<<"北京"/utf8>>, ReceivedOrg),
+
+    ok = gen_tcp:close(Socket).
+
+%% Test: Uplink driver identity report with GBK encoding
+%% When string_encoding=gbk, GBK bytes from client are decoded to UTF-8
+t_case_uplink_text_encoding_gbk(_) ->
+    {ok, Socket} = gen_tcp:connect({127, 0, 0, 1}, ?PORT, [binary, {active, false}]),
+    {ok, AuthCode} = client_regi_procedure(Socket, <<"anonymous">>),
+    ok = client_auth_procedure(Socket, AuthCode),
+    PhoneBCD = <<16#00, 16#01, 16#23, 16#45, 16#67, 16#89>>,
+
+    ok = emqx:subscribe(?JT808_UP_TOPIC),
+
+    %% Driver name "张三" in GBK: D5 C5 C8 FD
+    DriverNameGbk = <<16#D5, 16#C5, 16#C8, 16#FD>>,
+    DriverNameLen = byte_size(DriverNameGbk),
+
+    %% Organization "北京" in GBK: B1 B1 BE A9
+    OrgGbk = <<16#B1, 16#B1, 16#BE, 16#A9>>,
+    OrgLen = byte_size(OrgGbk),
+
+    %% Build driver identity report packet
+    UlPacket =
+        % status: IC card inserted
+        <<1:8,
+            % time: 2025-01-30 10:30:00
+            16#25, 16#01, 16#30, 16#10, 16#30, 16#00,
+            % ic_result: success
+            0:8,
+            % driver_name (GBK encoded)
+            DriverNameLen:8, DriverNameGbk/binary,
+            % certificate (20 bytes)
+            "12345678901234567890",
+            % organization (GBK encoded)
+            OrgLen:8, OrgGbk/binary,
+            % cert_expiry: 2030-12-31
+            16#20, 16#30, 16#12, 16#31>>,
+
+    Size = byte_size(UlPacket),
+    MsgId = ?MC_DRIVER_ID_REPORT,
+    MsgSn = 2,
+    Header =
+        <<MsgId:?WORD, ?RESERVE:2, ?NO_FRAGMENT:1, ?NO_ENCRYPT:3, ?MSG_SIZE(Size), PhoneBCD/binary,
+            MsgSn:?WORD>>,
+    S = gen_packet(Header, UlPacket),
+
+    ok = gen_tcp:send(Socket, S),
+    timer:sleep(100),
+
+    %% Receive and verify the uplink message
+    {?JT808_UP_TOPIC, Payload} = receive_msg(),
+    DecodedPayload = emqx_utils_json:decode(Payload),
+    Body = maps:get(<<"body">>, DecodedPayload),
+
+    %% With GBK encoding, the GBK bytes should be decoded to UTF-8
+    ReceivedDriverName = maps:get(<<"driver_name">>, Body),
+    ReceivedOrg = maps:get(<<"organization">>, Body),
+
+    ?LOGT("GBK uplink: driver_name = ~p", [ReceivedDriverName]),
+    ?LOGT("GBK uplink: organization = ~p", [ReceivedOrg]),
+
+    %% The received strings should be UTF-8 encoded "张三" and "北京"
+    ?assertEqual(<<"张三"/utf8>>, ReceivedDriverName),
+    ?assertEqual(<<"北京"/utf8>>, ReceivedOrg),
+
+    ok = gen_tcp:close(Socket).

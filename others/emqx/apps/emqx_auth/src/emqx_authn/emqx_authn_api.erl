@@ -1,0 +1,1855 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2021-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+
+-module(emqx_authn_api).
+
+-behaviour(minirest_api).
+
+-include("emqx_authn.hrl").
+-include_lib("emqx/include/logger.hrl").
+-include_lib("emqx/include/emqx_placeholder.hrl").
+-include_lib("hocon/include/hoconsc.hrl").
+-include_lib("emqx/include/emqx_config.hrl").
+-include_lib("emqx_utils/include/emqx_http_api.hrl").
+
+-import(hoconsc, [mk/2, ref/1, ref/2]).
+-import(emqx_dashboard_swagger, [error_codes/2]).
+
+-define(CONFIG, emqx_authn_config).
+
+-define(join(List), lists:join(", ", List)).
+
+% Swagger
+
+-define(API_TAGS_GLOBAL, [<<"Authentication">>]).
+-define(API_TAGS_SINGLE, [<<"Listener Authentication">>]).
+
+-export([
+    api_spec/0,
+    paths/0,
+    schema/1,
+    namespace/0
+]).
+
+-export([
+    roots/0,
+    fields/1
+]).
+
+-export([
+    authenticators/2,
+    authenticator/2,
+    authenticator_status/2,
+    listener_authenticators/2,
+    listener_authenticator/2,
+    listener_authenticator_status/2,
+    authenticator_position/2,
+    authenticators_order/2,
+    listener_authenticator_position/2,
+    authenticator_users/2,
+    authenticator_user/2,
+    listener_authenticator_users/2,
+    listener_authenticator_user/2,
+    lookup_from_local_node/2,
+    lookup_from_all_nodes/2,
+    authentication_settings/2,
+    authentication_node_cache_status/2,
+    authentication_node_cache_reset/2,
+    authenticator_metrics_reset/2,
+    reset_metrics_local/2
+]).
+
+-export([
+    authenticator_examples/0,
+    request_user_create_examples/0,
+    request_user_update_examples/0,
+    response_user_examples/0,
+    response_users_example/0,
+    authn_settings_example/0,
+    authn_cache_status_example/0
+]).
+
+%% export these funcs for gateway
+-export([
+    list_users/3,
+    add_user/3,
+    delete_user/4,
+    find_user/4,
+    update_user/5,
+    serialize_error/1,
+    aggregate_metrics/1,
+
+    with_chain/2,
+    param_auth_id/0,
+    param_listener_id/0
+]).
+
+%% minirest filter callback
+-export([filter/2]).
+
+-export([update_config/2]).
+
+-elvis([{elvis_style, god_modules, disable}]).
+
+namespace() -> undefined.
+
+api_spec() ->
+    emqx_dashboard_swagger:spec(?MODULE, #{check_schema => true}).
+
+paths() ->
+    [
+        "/authentication",
+        "/authentication/:id",
+        "/authentication/:id/status",
+        "/authentication/:id/position/:position",
+        "/authentication/:id/users",
+        "/authentication/:id/users/:user_id",
+        "/authentication/order",
+        "/authentication/settings",
+        "/authentication/node_cache/status",
+        "/authentication/node_cache/reset",
+        "/authentication/:id/metrics/reset"
+
+        %% hide listener authn api since 5.1.0
+        %% "/listeners/:listener_id/authentication",
+        %% "/listeners/:listener_id/authentication/:id",
+        %% "/listeners/:listener_id/authentication/:id/status",
+        %% "/listeners/:listener_id/authentication/:id/position/:position",
+        %% "/listeners/:listener_id/authentication/:id/users",
+        %% "/listeners/:listener_id/authentication/:id/users/:user_id"
+    ].
+
+roots() ->
+    [
+        request_user_create,
+        request_user_update,
+        response_user,
+        response_users,
+        request_authn_order
+    ].
+
+fields(request_user_create) ->
+    [
+        {namespace, mk(binary(), #{required => false})},
+        {user_id, mk(binary(), #{required => true})}
+        | fields(request_user_update)
+    ];
+fields(request_user_update) ->
+    [
+        {password, mk(binary(), #{required => true})},
+        {is_superuser, mk(boolean(), #{default => false, required => false})}
+    ];
+fields(response_user) ->
+    [
+        {namespace, mk(binary(), #{required => false})},
+        {user_id, mk(binary(), #{required => true})},
+        {is_superuser, mk(boolean(), #{default => false, required => false})}
+    ];
+fields(response_users) ->
+    paginated_list_type(ref(response_user));
+fields(request_authn_order) ->
+    [
+        {id,
+            mk(binary(), #{
+                desc => ?DESC(param_auth_id),
+                required => true,
+                example => "password_based:built_in_database"
+            })}
+    ];
+fields(request_authn_settings) ->
+    emqx_authn_schema:fields("settings");
+fields(response_authn_settings) ->
+    emqx_authn_schema:fields("settings").
+
+schema("/authentication") ->
+    #{
+        'operationId' => authenticators,
+        get => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_get),
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_example(
+                    hoconsc:array(authenticator_type(config)),
+                    authenticator_array_example()
+                )
+            }
+        },
+        post => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_post),
+            'requestBody' => emqx_dashboard_swagger:schema_with_examples(
+                authenticator_type(api_write),
+                authenticator_examples()
+            ),
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_examples(
+                    authenticator_type(config),
+                    authenticator_examples()
+                ),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST)),
+                409 => error_codes([?ALREADY_EXISTS], ?DESC(?ALREADY_EXISTS))
+            }
+        }
+    };
+schema("/authentication/:id") ->
+    #{
+        'operationId' => authenticator,
+        get => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_id_get),
+            parameters => [param_auth_id()],
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_examples(
+                    authenticator_type(config),
+                    authenticator_examples()
+                ),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        },
+        put => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_id_put),
+            parameters => [param_auth_id()],
+            'requestBody' => emqx_dashboard_swagger:schema_with_examples(
+                authenticator_type(api_write),
+                authenticator_examples()
+            ),
+            responses => #{
+                204 => ?DESC("authenticator_updated"),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST)),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND)),
+                409 => error_codes([?ALREADY_EXISTS], ?DESC(?ALREADY_EXISTS))
+            }
+        },
+        delete => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_id_delete),
+            parameters => [param_auth_id()],
+            responses => #{
+                204 => ?DESC("authenticator_deleted")
+            }
+        }
+    };
+schema("/authentication/:id/status") ->
+    #{
+        'operationId' => authenticator_status,
+        get => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_id_status_get),
+            parameters => [param_auth_id()],
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_examples(
+                    ref(emqx_authn_schema, "metrics_status_fields"),
+                    status_metrics_example()
+                ),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND)),
+                500 => error_codes([?INTERNAL_ERROR], ?DESC(?INTERNAL_ERROR))
+            }
+        }
+    };
+schema("/listeners/:listener_id/authentication") ->
+    #{
+        'operationId' => listener_authenticators,
+        get => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_get),
+            parameters => [param_listener_id()],
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_example(
+                    hoconsc:array(authenticator_type(config)),
+                    authenticator_array_example()
+                )
+            }
+        },
+        post => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_post),
+            parameters => [param_listener_id()],
+            'requestBody' => emqx_dashboard_swagger:schema_with_examples(
+                authenticator_type(api_write),
+                authenticator_examples()
+            ),
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_examples(
+                    authenticator_type(config),
+                    authenticator_examples()
+                ),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST)),
+                409 => error_codes([?ALREADY_EXISTS], ?DESC(?ALREADY_EXISTS))
+            }
+        }
+    };
+schema("/listeners/:listener_id/authentication/:id") ->
+    #{
+        'operationId' => listener_authenticator,
+        get => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_id_get),
+            parameters => [param_listener_id(), param_auth_id()],
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_examples(
+                    authenticator_type(config),
+                    authenticator_examples()
+                ),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        },
+        put => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_id_put),
+            parameters => [param_listener_id(), param_auth_id()],
+            'requestBody' => emqx_dashboard_swagger:schema_with_examples(
+                authenticator_type(api_write),
+                authenticator_examples()
+            ),
+            responses => #{
+                204 => ?DESC("authenticator_updated"),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST)),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND)),
+                409 => error_codes([?ALREADY_EXISTS], ?DESC(?ALREADY_EXISTS))
+            }
+        },
+        delete => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_id_delete),
+            parameters => [param_listener_id(), param_auth_id()],
+            responses => #{
+                204 => ?DESC("authenticator_deleted"),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        }
+    };
+schema("/listeners/:listener_id/authentication/:id/status") ->
+    #{
+        'operationId' => listener_authenticator_status,
+        get => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_id_status_get),
+            parameters => [param_listener_id(), param_auth_id()],
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_examples(
+                    ref(emqx_authn_schema, "metrics_status_fields"),
+                    status_metrics_example()
+                ),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST)),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        }
+    };
+schema("/authentication/:id/position/:position") ->
+    #{
+        'operationId' => authenticator_position,
+        put => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_id_position_put),
+            parameters => [param_auth_id(), param_position()],
+            responses => #{
+                204 => ?DESC("authenticator_moved"),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST)),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        }
+    };
+schema("/listeners/:listener_id/authentication/:id/position/:position") ->
+    #{
+        'operationId' => listener_authenticator_position,
+        put => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_id_position_put),
+            parameters => [param_listener_id(), param_auth_id(), param_position()],
+            responses => #{
+                204 => ?DESC("authenticator_moved"),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST)),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        }
+    };
+schema("/authentication/:id/users") ->
+    #{
+        'operationId' => authenticator_users,
+        filter => fun ?MODULE:filter/2,
+        post => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_id_users_post),
+            parameters => [param_auth_id()],
+            'requestBody' => emqx_dashboard_swagger:schema_with_examples(
+                ref(request_user_create),
+                request_user_create_examples()
+            ),
+            responses => #{
+                201 => emqx_dashboard_swagger:schema_with_examples(
+                    ref(response_user),
+                    response_user_examples()
+                ),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST)),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        },
+        get => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_id_users_get),
+            parameters => [
+                param_auth_id(),
+                ns_qs_param(),
+                ref(emqx_dashboard_swagger, page),
+                ref(emqx_dashboard_swagger, limit),
+                {like_user_id,
+                    mk(binary(), #{
+                        in => query,
+                        desc => ?DESC(like_user_id),
+                        required => false
+                    })},
+                {is_superuser,
+                    mk(boolean(), #{
+                        in => query,
+                        desc => ?DESC(is_superuser),
+                        required => false
+                    })}
+            ],
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_example(
+                    ref(response_users),
+                    response_users_example()
+                ),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        }
+    };
+schema("/listeners/:listener_id/authentication/:id/users") ->
+    #{
+        'operationId' => listener_authenticator_users,
+        post => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_id_users_post),
+            parameters => [param_auth_id(), param_listener_id()],
+            'requestBody' => emqx_dashboard_swagger:schema_with_examples(
+                ref(request_user_create),
+                request_user_create_examples()
+            ),
+            responses => #{
+                201 => emqx_dashboard_swagger:schema_with_examples(
+                    ref(response_user),
+                    response_user_examples()
+                ),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST)),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        },
+        get => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_id_users_get),
+            parameters => [
+                param_listener_id(),
+                param_auth_id(),
+                ref(emqx_dashboard_swagger, page),
+                ref(emqx_dashboard_swagger, limit),
+                {is_superuser,
+                    mk(boolean(), #{
+                        in => query,
+                        desc => ?DESC(is_superuser),
+                        required => false
+                    })}
+            ],
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_example(
+                    ref(response_users),
+                    response_users_example()
+                ),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        }
+    };
+schema("/authentication/:id/users/:user_id") ->
+    #{
+        'operationId' => authenticator_user,
+        filter => fun ?MODULE:filter/2,
+        get => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_id_users_user_id_get),
+            parameters => [param_auth_id(), param_user_id(), ns_qs_param()],
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_examples(
+                    ref(response_user),
+                    response_user_examples()
+                ),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        },
+        put => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_id_users_user_id_put),
+            parameters => [param_auth_id(), param_user_id(), ns_qs_param()],
+            'requestBody' => emqx_dashboard_swagger:schema_with_examples(
+                ref(request_user_update),
+                request_user_update_examples()
+            ),
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_example(
+                    ref(response_user),
+                    response_user_examples()
+                ),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST)),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        },
+        delete => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_id_users_user_id_delete),
+            parameters => [param_auth_id(), param_user_id(), ns_qs_param()],
+            responses => #{
+                204 => ?DESC("user_deleted"),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        }
+    };
+schema("/listeners/:listener_id/authentication/:id/users/:user_id") ->
+    #{
+        'operationId' => listener_authenticator_user,
+        get => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_id_users_user_id_get),
+            parameters => [param_listener_id(), param_auth_id(), param_user_id()],
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_example(
+                    ref(response_user),
+                    response_user_examples()
+                ),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        },
+        put => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_id_users_user_id_put),
+            parameters => [param_listener_id(), param_auth_id(), param_user_id()],
+            'requestBody' => emqx_dashboard_swagger:schema_with_example(
+                ref(request_user_update),
+                request_user_update_examples()
+            ),
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_example(
+                    ref(response_user),
+                    response_user_examples()
+                ),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST)),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        },
+        delete => #{
+            tags => ?API_TAGS_SINGLE,
+            deprecated => true,
+            description => ?DESC(listeners_listener_id_authentication_id_users_user_id_delete),
+            parameters => [param_listener_id(), param_auth_id(), param_user_id()],
+            responses => #{
+                204 => ?DESC("user_deleted"),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        }
+    };
+schema("/authentication/order") ->
+    #{
+        'operationId' => authenticators_order,
+        put => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_order_put),
+            'requestBody' => mk(
+                hoconsc:array(ref(?MODULE, request_authn_order)),
+                #{}
+            ),
+            responses => #{
+                204 => ?DESC("authenticators_order_updated"),
+                400 => error_codes([?BAD_REQUEST], ?DESC(?BAD_REQUEST))
+            }
+        }
+    };
+schema("/authentication/settings") ->
+    #{
+        'operationId' => authentication_settings,
+        get => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_settings_get),
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_example(
+                    ref(?MODULE, response_authn_settings),
+                    authn_settings_example()
+                )
+            }
+        },
+        put => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_settings_put),
+            'requestBody' => emqx_dashboard_swagger:schema_with_example(
+                ref(?MODULE, request_authn_settings),
+                authn_settings_example()
+            ),
+            responses => #{
+                204 => ?DESC("authentication_settings_updated"),
+                400 => error_codes([?BAD_REQUEST], ?DESC("bad_request"))
+            }
+        }
+    };
+schema("/authentication/node_cache/status") ->
+    #{
+        'operationId' => authentication_node_cache_status,
+        get => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_node_cache_status_get),
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_example(
+                    ref(emqx_auth_cache_schema, status),
+                    authn_cache_status_example()
+                ),
+                500 => error_codes([?INTERNAL_ERROR], ?DESC("internal_service_error"))
+            }
+        }
+    };
+schema("/authentication/node_cache/reset") ->
+    #{
+        'operationId' => authentication_node_cache_reset,
+        post =>
+            #{
+                description => ?DESC(authentication_node_cache_reset_post),
+                responses =>
+                    #{
+                        204 => ?DESC("no_content"),
+                        500 => error_codes([?INTERNAL_ERROR], ?DESC("internal_service_error"))
+                    }
+            }
+    };
+schema("/authentication/:id/metrics/reset") ->
+    #{
+        'operationId' => authenticator_metrics_reset,
+        post => #{
+            tags => ?API_TAGS_GLOBAL,
+            description => ?DESC(authentication_id_metrics_reset_post),
+            parameters => [param_auth_id()],
+            responses => #{
+                204 => ?DESC("no_content"),
+                404 => error_codes([?NOT_FOUND], ?DESC(?NOT_FOUND))
+            }
+        }
+    }.
+
+param_auth_id() ->
+    {
+        id,
+        mk(binary(), #{
+            in => path,
+            desc => ?DESC(param_auth_id),
+            required => true
+        })
+    }.
+
+param_listener_id() ->
+    {
+        listener_id,
+        mk(binary(), #{
+            in => path,
+            desc => ?DESC(param_listener_id),
+            required => true,
+            example => emqx_listeners:id_example()
+        })
+    }.
+
+param_position() ->
+    {
+        position,
+        mk(binary(), #{
+            in => path,
+            desc => ?DESC(param_position),
+            required => true,
+            example => "before:password_based:built_in_database"
+        })
+    }.
+
+param_user_id() ->
+    {
+        user_id,
+        mk(binary(), #{
+            in => path,
+            desc => ?DESC(param_user_id)
+        })
+    }.
+
+ns_qs_param() ->
+    {ns, mk(binary(), #{in => query, required => false})}.
+
+authenticators(post, #{body := Config}) ->
+    create_authenticator([authentication], ?GLOBAL, Config);
+authenticators(get, _Params) ->
+    list_authenticators([authentication]).
+
+authenticator(get, #{bindings := #{id := AuthenticatorID}}) ->
+    list_authenticator(?GLOBAL, [authentication], AuthenticatorID);
+authenticator(put, #{bindings := #{id := AuthenticatorID}, body := Config}) ->
+    update_authenticator([authentication], ?GLOBAL, AuthenticatorID, Config);
+authenticator(delete, #{bindings := #{id := AuthenticatorID}}) ->
+    delete_authenticator([authentication], ?GLOBAL, AuthenticatorID).
+
+authenticator_status(get, #{bindings := #{id := AuthenticatorID}}) ->
+    with_authenticator(
+        AuthenticatorID,
+        [authentication],
+        fun(_) -> lookup_from_all_nodes(?GLOBAL, AuthenticatorID) end
+    ).
+
+listener_authenticators(post, #{bindings := #{listener_id := ListenerID}, body := Config}) ->
+    with_listener(
+        ListenerID,
+        fun(Type, Name, ChainName) ->
+            create_authenticator(
+                [listeners, Type, Name, authentication],
+                ChainName,
+                Config
+            )
+        end
+    );
+listener_authenticators(get, #{bindings := #{listener_id := ListenerID}}) ->
+    with_listener(
+        ListenerID,
+        fun(Type, Name, _) ->
+            list_authenticators([listeners, Type, Name, authentication])
+        end
+    ).
+
+listener_authenticator(get, #{bindings := #{listener_id := ListenerID, id := AuthenticatorID}}) ->
+    with_listener(
+        ListenerID,
+        fun(Type, Name, ChainName) ->
+            list_authenticator(
+                ChainName,
+                [listeners, Type, Name, authentication],
+                AuthenticatorID
+            )
+        end
+    );
+listener_authenticator(
+    put,
+    #{
+        bindings := #{listener_id := ListenerID, id := AuthenticatorID},
+        body := Config
+    }
+) ->
+    with_listener(
+        ListenerID,
+        fun(Type, Name, ChainName) ->
+            update_authenticator(
+                [listeners, Type, Name, authentication],
+                ChainName,
+                AuthenticatorID,
+                Config
+            )
+        end
+    );
+listener_authenticator(
+    delete,
+    #{bindings := #{listener_id := ListenerID, id := AuthenticatorID}}
+) ->
+    with_listener(
+        ListenerID,
+        fun(Type, Name, ChainName) ->
+            delete_authenticator(
+                [listeners, Type, Name, authentication],
+                ChainName,
+                AuthenticatorID
+            )
+        end
+    ).
+
+listener_authenticator_status(
+    get,
+    #{bindings := #{listener_id := ListenerID, id := AuthenticatorID}}
+) ->
+    with_listener(
+        ListenerID,
+        fun(Type, Name, ChainName) ->
+            with_authenticator(
+                AuthenticatorID,
+                [listeners, Type, Name, authentication],
+                fun(_) -> lookup_from_all_nodes(ChainName, AuthenticatorID) end
+            )
+        end
+    ).
+
+authenticators_order(put, #{body := AuthnOrder}) ->
+    AuthnIdsOrder = [Id || #{<<"id">> := Id} <- AuthnOrder],
+    case update_config([authentication], {reorder_authenticators, AuthnIdsOrder}) of
+        {ok, _} ->
+            {204};
+        {error, {_PrePostConfigUpdate, ?CONFIG, Reason}} ->
+            serialize_error(Reason);
+        {error, Reason} ->
+            serialize_error(Reason)
+    end.
+
+authentication_settings(get, _Params) ->
+    RawConfig = emqx:get_raw_config([authentication_settings]),
+    {200, emqx_authn_schema:fill_defaults(RawConfig)};
+authentication_settings(put, #{body := Config}) ->
+    case update_config([authentication_settings], Config) of
+        {ok, _} ->
+            {204};
+        {error, Reason} ->
+            serialize_error(Reason)
+    end.
+
+authentication_node_cache_status(get, _Params) ->
+    Nodes = mria:running_nodes(),
+    LookupResult = emqx_auth_cache_proto_v1:metrics(Nodes, ?AUTHN_CACHE),
+    case is_ok(LookupResult) of
+        {ok, ResList} ->
+            NodeMetrics = lists:map(
+                fun({Node, Metrics}) ->
+                    #{node => Node, metrics => Metrics}
+                end,
+                ResList
+            ),
+            {_, Metrics} = lists:unzip(ResList),
+            AggregatedMetrics = aggregate_metrics(Metrics),
+            Response = #{
+                node_metrics => NodeMetrics,
+                metrics => AggregatedMetrics
+            },
+            {200, Response};
+        {error, ErrL} ->
+            {500, #{
+                code => <<"INTERNAL_ERROR">>,
+                message => bin(ErrL)
+            }}
+    end.
+
+authentication_node_cache_reset(post, _) ->
+    Nodes = mria:running_nodes(),
+    case is_ok(emqx_auth_cache_proto_v1:reset(Nodes, ?AUTHN_CACHE)) of
+        {ok, _} ->
+            {204};
+        {error, ErrL} ->
+            {500, #{
+                code => <<"INTERNAL_ERROR">>,
+                message => bin(ErrL)
+            }}
+    end.
+
+authenticator_metrics_reset(post, #{bindings := #{id := AuthenticatorID}}) ->
+    with_authenticator(
+        AuthenticatorID,
+        [authentication],
+        fun(_) ->
+            Nodes = mria:running_nodes(),
+            case is_ok(emqx_authn_proto_v2:reset_metrics(Nodes, ?GLOBAL, AuthenticatorID)) of
+                {ok, _} ->
+                    {204};
+                {error, ErrL} ->
+                    {500, #{
+                        code => <<"INTERNAL_ERROR">>,
+                        message => bin(ErrL)
+                    }}
+            end
+        end
+    ).
+
+reset_metrics_local(ChainName, AuthenticatorID) ->
+    MetricsId = emqx_authn_chains:metrics_id(ChainName, AuthenticatorID),
+    ok = emqx_metrics_worker:reset_metrics(authn_metrics, MetricsId).
+
+authenticator_position(
+    put,
+    #{bindings := #{id := AuthenticatorID, position := Position}}
+) ->
+    move_authenticator([authentication], ?GLOBAL, AuthenticatorID, Position).
+
+listener_authenticator_position(
+    put,
+    #{bindings := #{listener_id := ListenerID, id := AuthenticatorID, position := Position}}
+) ->
+    with_listener(
+        ListenerID,
+        fun(Type, Name, ChainName) ->
+            move_authenticator(
+                [listeners, Type, Name, authentication],
+                ChainName,
+                AuthenticatorID,
+                Position
+            )
+        end
+    ).
+
+authenticator_users(post, #{
+    bindings := #{id := AuthenticatorID},
+    body := UserInfo,
+    resolved_ns := ResolvedNs
+}) ->
+    case effective_user_namespace(UserInfo, ResolvedNs) of
+        {ok, Namespace} ->
+            add_user(?GLOBAL, AuthenticatorID, UserInfo#{<<"namespace">> => Namespace});
+        {error, forbidden} ->
+            ?FORBIDDEN(<<"User not authorized to operate on requested namespace">>)
+    end;
+authenticator_users(get, #{
+    bindings := #{id := AuthenticatorID},
+    query_string := QueryString,
+    resolved_ns := ResolvedNs
+}) ->
+    list_users(?GLOBAL, AuthenticatorID, QueryString#{<<"ns">> => ResolvedNs}).
+
+authenticator_user(
+    put,
+    #{
+        bindings := #{
+            id := AuthenticatorID,
+            user_id := UserID
+        },
+        body := UserInfo
+    } = Req
+) ->
+    Namespace = get_namespace(Req),
+    update_user(?GLOBAL, Namespace, AuthenticatorID, UserID, UserInfo);
+authenticator_user(get, #{bindings := #{id := AuthenticatorID, user_id := UserID}} = Req) ->
+    Namespace = get_namespace(Req),
+    find_user(?GLOBAL, Namespace, AuthenticatorID, UserID);
+authenticator_user(delete, #{bindings := #{id := AuthenticatorID, user_id := UserID}} = Req) ->
+    Namespace = get_namespace(Req),
+    delete_user(?GLOBAL, Namespace, AuthenticatorID, UserID).
+
+listener_authenticator_users(post, #{
+    bindings := #{
+        listener_id := ListenerID,
+        id := AuthenticatorID
+    },
+    body := UserInfo
+}) ->
+    with_chain(
+        ListenerID,
+        fun(ChainName) ->
+            add_user(ChainName, AuthenticatorID, UserInfo)
+        end
+    );
+listener_authenticator_users(get, #{
+    bindings := #{
+        listener_id := ListenerID,
+        id := AuthenticatorID
+    },
+    query_string := PageParams
+}) ->
+    with_chain(
+        ListenerID,
+        fun(ChainName) ->
+            list_users(ChainName, AuthenticatorID, PageParams)
+        end
+    ).
+
+listener_authenticator_user(
+    put,
+    #{
+        bindings := #{
+            listener_id := ListenerID,
+            id := AuthenticatorID,
+            user_id := UserID
+        },
+        body := UserInfo
+    } = Req
+) ->
+    Namespace = get_namespace(Req),
+    with_chain(
+        ListenerID,
+        fun(ChainName) ->
+            update_user(ChainName, Namespace, AuthenticatorID, UserID, UserInfo)
+        end
+    );
+listener_authenticator_user(
+    get,
+    #{
+        bindings := #{
+            listener_id := ListenerID,
+            id := AuthenticatorID,
+            user_id := UserID
+        }
+    } = Req
+) ->
+    Namespace = get_namespace(Req),
+    with_chain(
+        ListenerID,
+        fun(ChainName) ->
+            find_user(ChainName, Namespace, AuthenticatorID, UserID)
+        end
+    );
+listener_authenticator_user(
+    delete,
+    #{
+        bindings := #{
+            listener_id := ListenerID,
+            id := AuthenticatorID,
+            user_id := UserID
+        }
+    } = Req
+) ->
+    Namespace = get_namespace(Req),
+    with_chain(
+        ListenerID,
+        fun(ChainName) ->
+            delete_user(ChainName, Namespace, AuthenticatorID, UserID)
+        end
+    ).
+
+%%------------------------------------------------------------------------------
+%% Internal functions
+%%------------------------------------------------------------------------------
+
+with_authenticator(AuthenticatorID, ConfKeyPath, Fun) ->
+    case find_authenticator_config(AuthenticatorID, ConfKeyPath) of
+        {ok, AuthenticatorConfig} ->
+            Fun(AuthenticatorConfig);
+        {error, Reason} ->
+            serialize_error(Reason)
+    end.
+
+find_authenticator_config(AuthenticatorID, ConfKeyPath) ->
+    AuthenticatorsConfig = get_raw_config_with_defaults(ConfKeyPath),
+    find_config(AuthenticatorID, AuthenticatorsConfig).
+
+with_listener(ListenerID, Fun) ->
+    case find_listener(ListenerID) of
+        {ok, {BType, BName}} ->
+            Type = binary_to_existing_atom(BType),
+            Name = binary_to_existing_atom(BName),
+            ChainName = binary_to_atom(ListenerID),
+            Fun(Type, Name, ChainName);
+        {error, Reason} ->
+            serialize_error(Reason)
+    end.
+
+find_listener(ListenerID) ->
+    case binary:split(ListenerID, <<":">>) of
+        [BType, BName] ->
+            case
+                emqx_config:find([
+                    listeners, binary_to_existing_atom(BType), binary_to_existing_atom(BName)
+                ])
+            of
+                {ok, _} ->
+                    {ok, {BType, BName}};
+                {not_found, _, _} ->
+                    {error, {not_found, {listener, ListenerID}}}
+            end;
+        _ ->
+            {error, {not_found, {listener, ListenerID}}}
+    end.
+
+with_chain(ListenerID, Fun) ->
+    {ok, ChainNames} = emqx_authn_chains:list_chain_names(),
+    ListenerChainName =
+        [Name || Name <- ChainNames, atom_to_binary(Name) =:= ListenerID],
+    case ListenerChainName of
+        [ChainName] ->
+            Fun(ChainName);
+        _ ->
+            serialize_error({not_found, {chain, ListenerID}})
+    end.
+
+create_authenticator(ConfKeyPath, ChainName, Config) ->
+    case update_config(ConfKeyPath, {create_authenticator, ChainName, Config}) of
+        {ok, #{
+            post_config_update := #{?CONFIG := #{id := ID}},
+            raw_config := AuthenticatorsConfig
+        }} ->
+            {ok, AuthenticatorConfig} = find_config(ID, AuthenticatorsConfig),
+            {200, maps:put(id, ID, convert_certs(fill_defaults(AuthenticatorConfig)))};
+        {error, {_PrePostConfigUpdate, ?CONFIG, Reason}} ->
+            serialize_error(Reason);
+        {error, Reason} ->
+            serialize_error(Reason)
+    end.
+
+list_authenticators(ConfKeyPath) ->
+    AuthenticatorsConfig = get_raw_config_with_defaults(ConfKeyPath),
+    NAuthenticators = [
+        maps:put(
+            id,
+            emqx_authn_chains:authenticator_id(AuthenticatorConfig),
+            convert_certs(emqx_utils:redact(AuthenticatorConfig))
+        )
+     || AuthenticatorConfig <- AuthenticatorsConfig
+    ],
+    {200, NAuthenticators}.
+
+list_authenticator(_, ConfKeyPath, AuthenticatorID) ->
+    with_authenticator(
+        AuthenticatorID,
+        ConfKeyPath,
+        fun(AuthenticatorConfig0) ->
+            AuthenticatorConfig = emqx_utils:redact(AuthenticatorConfig0),
+            {200, maps:put(id, AuthenticatorID, convert_certs(AuthenticatorConfig))}
+        end
+    ).
+
+%% TODO
+%% This breaks encapsulation, resource_id should be obtained
+%% through provider callback
+lookup_from_local_node(ChainName, AuthenticatorID) ->
+    NodeId = node(self()),
+    case emqx_authn_chains:lookup_authenticator(ChainName, AuthenticatorID) of
+        {ok, #{state := State}} ->
+            MetricsId = emqx_authn_chains:metrics_id(ChainName, AuthenticatorID),
+            Metrics = emqx_metrics_worker:get_metrics(authn_metrics, MetricsId),
+            case State of
+                #{resource_id := ResourceId} ->
+                    case emqx_resource:get_instance(ResourceId) of
+                        {error, not_found} ->
+                            {error, {NodeId, not_found_resource}};
+                        {ok, _, #{status := Status}} ->
+                            {ok, {NodeId, Status, Metrics, emqx_resource:get_metrics(ResourceId)}}
+                    end;
+                _ ->
+                    {ok, {NodeId, connected, Metrics, #{}}}
+            end;
+        {error, Reason} ->
+            {error, {NodeId, list_to_binary(io_lib:format("~p", [Reason]))}}
+    end.
+
+lookup_from_all_nodes(ChainName, AuthenticatorID) ->
+    Nodes = mria:running_nodes(),
+    LookupResult = emqx_authn_proto_v1:lookup_from_all_nodes(Nodes, ChainName, AuthenticatorID),
+    case is_ok(LookupResult) of
+        {ok, ResList} ->
+            {StatusMap, MetricsMap, ResourceMetricsMap, ErrorMap} = make_result_map(ResList),
+            AggregateStatus = aggregate_status(maps:values(StatusMap)),
+            AggregateMetrics = aggregate_metrics(maps:values(MetricsMap)),
+            AggregateResourceMetrics = aggregate_metrics(maps:values(ResourceMetricsMap)),
+            Fun = fun(_, V1) -> restructure_map(V1) end,
+            MKMap = fun(Name) -> fun({Key, Val}) -> #{node => Key, Name => Val} end end,
+            HelpFun = fun(M, Name) -> lists:map(MKMap(Name), maps:to_list(M)) end,
+            {200, #{
+                node_resource_metrics => HelpFun(maps:map(Fun, ResourceMetricsMap), metrics),
+                resource_metrics =>
+                    case maps:size(AggregateResourceMetrics) of
+                        0 -> #{};
+                        _ -> restructure_map(AggregateResourceMetrics)
+                    end,
+                node_metrics => HelpFun(maps:map(Fun, MetricsMap), metrics),
+                metrics => restructure_map(AggregateMetrics),
+
+                node_status => HelpFun(StatusMap, status),
+                status => AggregateStatus,
+                node_error => HelpFun(maps:map(Fun, ErrorMap), reason)
+            }};
+        {error, ErrL} ->
+            {500, #{
+                code => <<"INTERNAL_ERROR">>,
+                message => bin(ErrL)
+            }}
+    end.
+
+aggregate_status([]) ->
+    empty_metrics_and_status;
+aggregate_status(AllStatus) ->
+    Head = fun([A | _]) -> A end,
+    HeadVal = Head(AllStatus),
+    AllRes = lists:all(fun(Val) -> Val == HeadVal end, AllStatus),
+    case AllRes of
+        true -> HeadVal;
+        false -> inconsistent
+    end.
+
+aggregate_metrics([]) ->
+    #{};
+aggregate_metrics([HeadMetrics | AllMetrics]) ->
+    ErrorLogger = fun(Reason) -> ?SLOG(info, #{msg => "bad_metrics_value", error => Reason}) end,
+    Fun = fun(ElemMap, AccMap) ->
+        emqx_utils_maps:best_effort_recursive_sum(AccMap, ElemMap, ErrorLogger)
+    end,
+    lists:foldl(Fun, HeadMetrics, AllMetrics).
+
+make_result_map(ResList) ->
+    Fun =
+        fun(Elem, {StatusMap, MetricsMap, ResourceMetricsMap, ErrorMap}) ->
+            case Elem of
+                {ok, {NodeId, Status, Metrics, ResourceMetrics}} ->
+                    {
+                        maps:put(NodeId, Status, StatusMap),
+                        maps:put(NodeId, Metrics, MetricsMap),
+                        maps:put(NodeId, ResourceMetrics, ResourceMetricsMap),
+                        ErrorMap
+                    };
+                {error, {NodeId, Reason}} ->
+                    {StatusMap, MetricsMap, ResourceMetricsMap, maps:put(NodeId, Reason, ErrorMap)}
+            end
+        end,
+    lists:foldl(Fun, {maps:new(), maps:new(), maps:new(), maps:new()}, ResList).
+
+restructure_map(#{
+    counters := #{failed := Failed, total := Total, success := Succ, nomatch := Nomatch},
+    rate := #{total := #{current := Rate, last5m := Rate5m, max := RateMax}}
+}) ->
+    #{
+        total => Total,
+        success => Succ,
+        failed => Failed,
+        nomatch => Nomatch,
+        rate => Rate,
+        rate_last5m => Rate5m,
+        rate_max => RateMax
+    };
+restructure_map(#{
+    counters := #{failed := Failed, matched := Match, success := Succ},
+    rate := #{matched := #{current := Rate, last5m := Rate5m, max := RateMax}}
+}) ->
+    #{
+        matched => Match,
+        success => Succ,
+        failed => Failed,
+        rate => Rate,
+        rate_last5m => Rate5m,
+        rate_max => RateMax
+    };
+restructure_map(Error) ->
+    Error.
+
+is_ok(ResL) ->
+    case
+        lists:filter(
+            fun
+                ({ok, _}) -> false;
+                (_) -> true
+            end,
+            ResL
+        )
+    of
+        [] -> {ok, [Res || {ok, Res} <- ResL]};
+        ErrL -> {error, ErrL}
+    end.
+
+update_authenticator(ConfKeyPath, ChainName, AuthenticatorID, Config) ->
+    case
+        with_deobfuscate_update(
+            ConfKeyPath,
+            AuthenticatorID,
+            Config,
+            fun(AuthenticatorConfig) ->
+                update_config(
+                    ConfKeyPath,
+                    {update_authenticator, ChainName, AuthenticatorID, AuthenticatorConfig}
+                )
+            end
+        )
+    of
+        {ok, _} ->
+            {204};
+        {error, {_PrePostConfigUpdate, ?CONFIG, Reason}} ->
+            serialize_error(Reason);
+        {error, Reason} ->
+            serialize_error(Reason)
+    end.
+
+delete_authenticator(ConfKeyPath, ChainName, AuthenticatorID) ->
+    case update_config(ConfKeyPath, {delete_authenticator, ChainName, AuthenticatorID}) of
+        {ok, _} ->
+            {204};
+        {error, {_PrePostConfigUpdate, ?CONFIG, Reason}} ->
+            serialize_error(Reason);
+        {error, Reason} ->
+            serialize_error(Reason)
+    end.
+
+move_authenticator(ConfKeyPath, ChainName, AuthenticatorID, Position) ->
+    case parse_position(Position) of
+        {ok, NPosition} ->
+            case
+                update_config(
+                    ConfKeyPath,
+                    {move_authenticator, ChainName, AuthenticatorID, NPosition}
+                )
+            of
+                {ok, _} ->
+                    {204};
+                {error, {_PrePostConfigUpdate, ?CONFIG, Reason}} ->
+                    serialize_error(Reason);
+                {error, Reason} ->
+                    serialize_error(Reason)
+            end;
+        {error, Reason} ->
+            serialize_error(Reason)
+    end.
+
+add_user(
+    ChainName,
+    AuthenticatorID,
+    #{<<"user_id">> := UserID, <<"password">> := Password} = UserInfo
+) ->
+    Namespace = maps:get(<<"namespace">>, UserInfo, ?global_ns),
+    IsSuperuser = maps:get(<<"is_superuser">>, UserInfo, false),
+    case check_superuser_allowed(Namespace, IsSuperuser) of
+        ok ->
+            case
+                emqx_authn_chains:add_user(
+                    ChainName,
+                    AuthenticatorID,
+                    #{
+                        namespace => Namespace,
+                        user_id => UserID,
+                        password => Password,
+                        is_superuser => IsSuperuser
+                    }
+                )
+            of
+                {ok, User} ->
+                    {201, user_out(User)};
+                {error, Reason} ->
+                    serialize_error({user_error, Reason})
+            end;
+        {error, Reason} ->
+            serialize_error(Reason)
+    end;
+add_user(_, _, #{<<"user_id">> := _}) ->
+    serialize_error({missing_parameter, password});
+add_user(_, _, _) ->
+    serialize_error({missing_parameter, user_id}).
+
+update_user(ChainName, Namespace, AuthenticatorID, UserID, UserInfo0) ->
+    case maps:with([<<"password">>, <<"is_superuser">>], UserInfo0) =:= #{} of
+        true ->
+            serialize_error({missing_parameter, password});
+        false ->
+            IsSuperuser = maps:get(<<"is_superuser">>, UserInfo0, false),
+            case check_superuser_allowed(Namespace, IsSuperuser) of
+                ok ->
+                    UserInfo = emqx_utils_maps:safe_atom_key_map(UserInfo0),
+                    case
+                        emqx_authn_chains:update_user(
+                            ChainName, AuthenticatorID, Namespace, UserID, UserInfo
+                        )
+                    of
+                        {ok, User} ->
+                            {200, user_out(User)};
+                        {error, Reason} ->
+                            serialize_error({user_error, Reason})
+                    end;
+                {error, Reason} ->
+                    serialize_error(Reason)
+            end
+    end.
+
+%% A global admin (resolved_ns = ?global_ns) may write to any namespace by
+%% specifying it in the body; a namespaced admin may only write to their own
+%% namespace and any mismatch in the body is rejected.
+effective_user_namespace(UserInfo, ?global_ns) ->
+    {ok, maps:get(<<"namespace">>, UserInfo, ?global_ns)};
+effective_user_namespace(UserInfo, ResolvedNs) ->
+    case maps:get(<<"namespace">>, UserInfo, ResolvedNs) of
+        ResolvedNs -> {ok, ResolvedNs};
+        _Other -> {error, forbidden}
+    end.
+
+%% MQTT users in a non-global namespace must never be superusers: explicit ACL
+%% rules are enforced for tenant clients.
+check_superuser_allowed(?global_ns, _IsSuperuser) -> ok;
+check_superuser_allowed(_Namespace, false) -> ok;
+check_superuser_allowed(_Namespace, _IsSuperuser) -> {error, superuser_not_allowed_in_namespace}.
+
+find_user(ChainName, Namespace, AuthenticatorID, UserID) ->
+    case emqx_authn_chains:lookup_user(ChainName, AuthenticatorID, Namespace, UserID) of
+        {ok, User} ->
+            {200, user_out(User)};
+        {error, Reason} ->
+            serialize_error({user_error, Reason})
+    end.
+
+delete_user(ChainName, Namespace, AuthenticatorID, UserID) ->
+    case emqx_authn_chains:delete_user(ChainName, AuthenticatorID, Namespace, UserID) of
+        ok ->
+            {204};
+        {error, Reason} ->
+            serialize_error({user_error, Reason})
+    end.
+
+list_users(ChainName, AuthenticatorID, QueryString) ->
+    case emqx_authn_chains:list_users(ChainName, AuthenticatorID, QueryString) of
+        {error, page_limit_invalid} ->
+            {400, #{code => <<"INVALID_PARAMETER">>, message => <<"page_limit_invalid">>}};
+        {error, Reason} ->
+            serialize_error({user_error, Reason});
+        Result ->
+            {200, Result}
+    end.
+
+with_deobfuscate_update(ConfKeyPath, AuthenticatorID, NewConf, Fun) ->
+    case find_authenticator_config(AuthenticatorID, ConfKeyPath) of
+        {ok, RawConf} ->
+            Conf = emqx_utils:deobfuscate(NewConf, RawConf),
+            Fun(Conf);
+        {error, _} = Error ->
+            Error
+    end.
+
+update_config(Path, ConfigRequest) ->
+    emqx_conf:update(Path, ConfigRequest, #{
+        rawconf_with_defaults => true,
+        override_to => cluster
+    }).
+
+get_raw_config_with_defaults(ConfKeyPath) ->
+    NConfKeyPath = [atom_to_binary(Key, utf8) || Key <- ConfKeyPath],
+    RawConfig = emqx:get_raw_config(NConfKeyPath, []),
+    ensure_list(fill_defaults(RawConfig)).
+
+find_config(AuthenticatorID, AuthenticatorsConfig) ->
+    MatchingACs =
+        [
+            AC
+         || AC <- ensure_list(AuthenticatorsConfig),
+            AuthenticatorID =:= emqx_authn_chains:authenticator_id(AC)
+        ],
+    case MatchingACs of
+        [] -> {error, {not_found, {authenticator, AuthenticatorID}}};
+        [AuthenticatorConfig] -> {ok, AuthenticatorConfig}
+    end.
+
+fill_defaults(Configs) when is_list(Configs) ->
+    lists:map(fun fill_defaults/1, Configs);
+fill_defaults(Config) ->
+    emqx_authn:fill_defaults(merge_default_headers(Config)).
+
+%% TODO
+%% this breaks encapsulation, this should be done through provider callbacks
+merge_default_headers(Config) ->
+    case maps:find(<<"headers">>, Config) of
+        {ok, Headers} ->
+            NewHeaders =
+                case Config of
+                    #{<<"method">> := <<"get">>} ->
+                        emqx_auth_http_utils:convert_headers_no_content_type(Headers);
+                    #{<<"method">> := <<"post">>} ->
+                        emqx_auth_http_utils:convert_headers(Headers);
+                    _ ->
+                        Headers
+                end,
+            Config#{<<"headers">> => NewHeaders};
+        error ->
+            Config
+    end.
+
+convert_certs(#{ssl := SSL} = Config) when SSL =/= undefined ->
+    Config#{ssl := emqx_tls_lib:drop_invalid_certs(SSL)};
+convert_certs(Config) ->
+    Config.
+
+serialize_error({user_error, not_found}) ->
+    {404, #{
+        code => <<"NOT_FOUND">>,
+        message => binfmt("User not found", [])
+    }};
+serialize_error({user_error, {not_found, {chain, ?GLOBAL}}}) ->
+    {404, #{
+        code => <<"NOT_FOUND">>,
+        message => <<"Authenticator not found in the 'global' scope">>
+    }};
+serialize_error({user_error, {not_found, {chain, Name}}}) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => binfmt("No authentication has been created for listener ~p", [Name])
+    }};
+serialize_error({user_error, already_exist}) ->
+    {409, #{
+        code => <<"ALREADY_EXISTS">>,
+        message => binfmt("User already exists", [])
+    }};
+serialize_error({user_error, Reason}) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => binfmt("User error: ~p", [Reason])
+    }};
+serialize_error({not_found, {authenticator, ID}}) ->
+    {404, #{
+        code => <<"NOT_FOUND">>,
+        message => binfmt("Authenticator '~ts' does not exist", [ID])
+    }};
+serialize_error({not_found, {listener, ID}}) ->
+    {404, #{
+        code => <<"NOT_FOUND">>,
+        message => binfmt("Listener '~ts' does not exist", [ID])
+    }};
+serialize_error({not_found, {chain, ?GLOBAL}}) ->
+    {404, #{
+        code => <<"NOT_FOUND">>,
+        message => <<"Authenticator not found in the 'global' scope">>
+    }};
+serialize_error({not_found, {chain, Name}}) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => binfmt("No authentication has been created for listener ~p", [Name])
+    }};
+serialize_error({already_exists, {authenticator, ID}}) ->
+    {409, #{
+        code => <<"ALREADY_EXISTS">>,
+        message => binfmt("Authenticator '~ts' already exist", [ID])
+    }};
+serialize_error(no_available_provider) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => <<"Unsupported authentication type">>
+    }};
+serialize_error(change_of_authentication_type_is_not_allowed) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => <<"Change of authentication type is not allowed">>
+    }};
+serialize_error(unsupported_operation) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => <<"Operation not supported in this authentication type">>
+    }};
+serialize_error({bad_ssl_config, Details}) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => binfmt("bad_ssl_config ~0p", [Details])
+    }};
+serialize_error(superuser_not_allowed_in_namespace) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => <<"is_superuser cannot be true for a namespaced user">>
+    }};
+serialize_error({missing_parameter, Detail}) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => binfmt("Missing required parameter: ~p", [Detail])
+    }};
+serialize_error({invalid_parameter, Name}) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => binfmt("Invalid value for '~p'", [Name])
+    }};
+serialize_error({unknown_authn_type, Type}) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => binfmt("Unknown type '~p'", [Type])
+    }};
+serialize_error(#{not_found := NotFound, not_reordered := NotReordered}) ->
+    NotFoundFmt = "Authenticators: ~ts are not found",
+    NotReorderedFmt = "No positions are specified for authenticators: ~ts",
+    Msg =
+        case {NotFound, NotReordered} of
+            {[_ | _], []} ->
+                binfmt(NotFoundFmt, [?join(NotFound)]);
+            {[], [_ | _]} ->
+                binfmt(NotReorderedFmt, [?join(NotReordered)]);
+            _ ->
+                binfmt(NotFoundFmt ++ ", " ++ NotReorderedFmt, [
+                    ?join(NotFound), ?join(NotReordered)
+                ])
+        end,
+    {400, #{code => <<"BAD_REQUEST">>, message => Msg}};
+serialize_error(Reason) ->
+    {400, #{
+        code => <<"BAD_REQUEST">>,
+        message => binfmt("~0p", [Reason])
+    }}.
+
+parse_position(<<"front">>) ->
+    {ok, ?CMD_MOVE_FRONT};
+parse_position(<<"rear">>) ->
+    {ok, ?CMD_MOVE_REAR};
+parse_position(<<"before:">>) ->
+    {error, {invalid_parameter, position}};
+parse_position(<<"after:">>) ->
+    {error, {invalid_parameter, position}};
+parse_position(<<"before:", Before/binary>>) ->
+    {ok, ?CMD_MOVE_BEFORE(Before)};
+parse_position(<<"after:", After/binary>>) ->
+    {ok, ?CMD_MOVE_AFTER(After)};
+parse_position(_) ->
+    {error, {invalid_parameter, position}}.
+
+ensure_list(M) when is_map(M) -> [M];
+ensure_list(L) when is_list(L) -> L.
+
+binfmt(Fmt, Args) -> iolist_to_binary(io_lib:format(Fmt, Args)).
+bin(Arg) -> binfmt("~0p", [Arg]).
+
+paginated_list_type(Type) ->
+    [
+        {data, hoconsc:array(Type)},
+        {meta, ref(emqx_dashboard_swagger, meta)}
+    ].
+
+authenticator_type(Kind) ->
+    emqx_authn_schema:authenticator_type(Kind).
+
+authenticator_array_example() ->
+    [Config || #{value := Config} <- maps:values(authenticator_examples())].
+
+authenticator_examples() ->
+    #{
+        'password_based:built_in_database' => #{
+            summary => ?DESC("example_builtin_password_authn"),
+            value => #{
+                mechanism => <<"password_based">>,
+                backend => <<"built_in_database">>,
+                user_id_type => <<"username">>,
+                password_hash_algorithm => #{
+                    name => <<"sha256">>,
+                    salt_position => <<"suffix">>
+                }
+            }
+        },
+        'password_based:http' => #{
+            summary => ?DESC("example_http_password_authn"),
+            value => #{
+                mechanism => <<"password_based">>,
+                backend => <<"http">>,
+                method => <<"post">>,
+                url => <<"http://127.0.0.1:18083">>,
+                headers => #{
+                    <<"content-type">> => <<"application/json">>
+                },
+                body => #{
+                    <<"username">> => ?PH_USERNAME,
+                    <<"password">> => ?PH_PASSWORD
+                },
+                pool_size => 8,
+                connect_timeout => <<"5s">>,
+                request_timeout => <<"5s">>,
+                enable_pipelining => 100,
+                ssl => #{enable => false}
+            }
+        },
+        'jwt' => #{
+            summary => ?DESC("example_jwt_authn"),
+            value => #{
+                mechanism => <<"jwt">>,
+                use_jwks => false,
+                algorithm => <<"hmac-based">>,
+                secret => <<"mysecret">>,
+                secret_base64_encoded => false,
+                verify_claims => #{
+                    <<"username">> => ?PH_USERNAME
+                }
+            }
+        },
+        'password_based:mongodb' => #{
+            summary => ?DESC("example_mongodb_password_authn"),
+            value => #{
+                mechanism => <<"password_based">>,
+                backend => <<"mongodb">>,
+                server => <<"127.0.0.1:27017">>,
+                database => example,
+                collection => users,
+                filter => #{
+                    username => ?PH_USERNAME
+                },
+                password_hash_field => <<"password_hash">>,
+                salt_field => <<"salt">>,
+                is_superuser_field => <<"is_superuser">>,
+                password_hash_algorithm => #{
+                    name => <<"sha256">>,
+                    salt_position => <<"suffix">>
+                }
+            }
+        },
+        'password_based:redis' => #{
+            summary => ?DESC("example_redis_password_authn"),
+            value => #{
+                mechanism => <<"password_based">>,
+                backend => <<"redis">>,
+                server => <<"127.0.0.1:6379">>,
+                redis_type => <<"single">>,
+                database => 0,
+                cmd => <<"HMGET ${username} password_hash salt">>,
+                password_hash_algorithm => #{
+                    name => <<"sha256">>,
+                    salt_position => <<"suffix">>
+                }
+            }
+        }
+    }.
+
+status_metrics_example() ->
+    #{
+        status_metrics => #{
+            summary => ?DESC("example_authn_status_metrics"),
+            value => #{
+                resource_metrics => #{
+                    matched => 0,
+                    success => 0,
+                    failed => 0,
+                    rate => 0.0,
+                    rate_last5m => 0.0,
+                    rate_max => 0.0
+                },
+                node_resource_metrics => [
+                    #{
+                        node => node(),
+                        metrics => #{
+                            matched => 0,
+                            success => 0,
+                            failed => 0,
+                            rate => 0.0,
+                            rate_last5m => 0.0,
+                            rate_max => 0.0
+                        }
+                    }
+                ],
+                metrics => #{
+                    total => 0,
+                    success => 0,
+                    failed => 0,
+                    nomatch => 0,
+                    rate => 0.0,
+                    rate_last5m => 0.0,
+                    rate_max => 0.0
+                },
+                node_error => [],
+                node_metrics => [
+                    #{
+                        node => node(),
+                        metrics => #{
+                            matched => 0,
+                            total => 0,
+                            failed => 0,
+                            nomatch => 0,
+                            rate => 0.0,
+                            rate_last5m => 0.0,
+                            rate_max => 0.0
+                        }
+                    }
+                ],
+                status => connected,
+                node_status => [
+                    #{
+                        node => node(),
+                        status => connected
+                    }
+                ]
+            }
+        }
+    }.
+
+request_user_create_examples() ->
+    #{
+        regular_user => #{
+            summary => ?DESC("example_regular_user"),
+            value => #{
+                user_id => <<"user1">>,
+                password => <<"******">>
+            }
+        },
+        super_user => #{
+            summary => ?DESC("example_superuser"),
+            value => #{
+                user_id => <<"user2">>,
+                password => <<"******">>,
+                is_superuser => true
+            }
+        }
+    }.
+
+request_user_update_examples() ->
+    #{
+        regular_user => #{
+            summary => ?DESC("example_update_regular_user"),
+            value => #{
+                password => <<"******">>
+            }
+        },
+        super_user => #{
+            summary => ?DESC("example_update_promote_superuser"),
+            value => #{
+                password => <<"******">>,
+                is_superuser => true
+            }
+        }
+    }.
+
+response_user_examples() ->
+    #{
+        regular_user => #{
+            summary => ?DESC("example_regular_user"),
+            value => #{
+                user_id => <<"user1">>
+            }
+        },
+        super_user => #{
+            summary => ?DESC("example_superuser"),
+            value => #{
+                user_id => <<"user2">>,
+                is_superuser => true
+            }
+        }
+    }.
+
+response_users_example() ->
+    #{
+        data => [
+            #{
+                user_id => <<"user1">>
+            },
+            #{
+                user_id => <<"user2">>,
+                is_superuser => true
+            }
+        ],
+        meta => #{
+            page => 0,
+            limit => 20,
+            count => 300
+        }
+    }.
+
+authn_settings_example() ->
+    #{<<"node_cache">> => emqx_auth_cache_schema:cache_settings_example()}.
+
+authn_cache_status_example() ->
+    emqx_auth_cache_schema:metrics_example().
+
+user_out(#{namespace := ?global_ns} = User) ->
+    User#{namespace := null};
+user_out(User) ->
+    User.
+
+get_namespace(#{resolved_ns := Namespace}) ->
+    Namespace.
+
+parse_namespace(#{query_string := QueryString} = Req) ->
+    ActorNamespace = emqx_dashboard:get_namespace(Req),
+    case maps:get(<<"ns">>, QueryString, ActorNamespace) of
+        QSNamespace when QSNamespace /= ActorNamespace andalso ActorNamespace /= ?global_ns ->
+            {error, not_authorized};
+        QSNamespace ->
+            {ok, QSNamespace}
+    end.
+
+resolve_namespace(Req, _Meta) ->
+    case parse_namespace(Req) of
+        {ok, Namespace} ->
+            {ok, Req#{resolved_ns => Namespace}};
+        {error, not_authorized} ->
+            ?FORBIDDEN(<<"User not authorized to operate on requested namespace">>)
+    end.
+
+validate_managed_namespace(#{resolved_ns := ?global_ns} = Req, _Meta) ->
+    {ok, Req};
+validate_managed_namespace(#{resolved_ns := Namespace} = Req, _Meta) ->
+    Res = emqx_hooks:run_fold('namespace.resource_pre_create', [#{namespace => Namespace}], #{
+        exists => false
+    }),
+    case Res of
+        #{exists := false} ->
+            ?BAD_REQUEST(<<"Managed namespace not found">>);
+        #{exists := true} ->
+            {ok, Req}
+    end.
+
+filter(Req0, Meta) ->
+    maybe
+        {ok, Req1} ?= resolve_namespace(Req0, Meta),
+        validate_managed_namespace(Req1, Meta)
+    end.

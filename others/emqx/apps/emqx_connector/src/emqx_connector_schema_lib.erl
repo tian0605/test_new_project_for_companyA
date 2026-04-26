@@ -1,0 +1,151 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2020-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+-module(emqx_connector_schema_lib).
+
+-include("emqx_connector.hrl").
+-include_lib("typerefl/include/types.hrl").
+-include_lib("hocon/include/hoconsc.hrl").
+
+-export([
+    pool_size/1,
+    relational_db_fields/0,
+    relational_db_fields/1,
+    ssl_fields/0,
+    ssl_fields/1,
+    prepare_statement_fields/0,
+    prepare_statement_field/0,
+    prepare_statement_field/1,
+    password_field/0,
+    password_field/1,
+    username_field/0,
+    username_field/1,
+    connect_timeout_field/0,
+    connect_timeout_field/1,
+    disable_prepared_statements_field/0
+]).
+
+-export([
+    database/1,
+    auto_reconnect/1
+]).
+
+-type database() :: binary().
+-type username() :: binary().
+-type password() :: binary().
+
+-reflect_type([
+    database/0,
+    username/0,
+    password/0
+]).
+
+ssl_fields() ->
+    ssl_fields(#{enable_by_default => false}).
+
+ssl_fields(Opts) ->
+    EnableByDefault = maps:get(enable_by_default, Opts, false),
+    [
+        {ssl, #{
+            type => hoconsc:ref(emqx_schema, "ssl_client_opts"),
+            default => #{<<"enable">> => EnableByDefault},
+            desc => ?DESC("ssl")
+        }}
+    ].
+
+relational_db_fields() ->
+    relational_db_fields(#{}).
+
+relational_db_fields(Overrides) ->
+    [
+        {database, fun database/1},
+        %% TODO: The `pool_size` for drivers will be deprecated. Use `worker_pool_size` for emqx_resource
+        %% See emqx_resource.hrl
+        {pool_size, fun pool_size/1},
+        {username, username_field(maps:get(username, Overrides, #{}))},
+        {password, password_field(maps:get(password, Overrides, #{}))},
+        {auto_reconnect, fun auto_reconnect/1}
+    ].
+
+-spec password_field() -> hocon_schema:field_schema().
+password_field() ->
+    password_field(#{}).
+
+-spec password_field(#{atom() => _}) -> hocon_schema:field_schema().
+password_field(Overrides) ->
+    Base = #{desc => ?DESC("password")},
+    emqx_schema_secret:mk(maps:merge(Base, Overrides)).
+
+prepare_statement_fields() ->
+    [{prepare_statement, prepare_statement_field()}].
+
+prepare_statement_field() ->
+    prepare_statement_field(#{}).
+
+prepare_statement_field(Opts) ->
+    hoconsc:mk(
+        map(),
+        maps:merge(
+            #{desc => ?DESC("prepare_statement"), required => false},
+            Opts
+        )
+    ).
+
+database(type) -> binary();
+database(desc) -> ?DESC("database_desc");
+database(required) -> true;
+database(validator) -> [?NOT_EMPTY("the value of the field 'database' cannot be empty")];
+database(_) -> undefined.
+
+pool_size(type) -> pos_integer();
+pool_size(desc) -> ?DESC("pool_size");
+pool_size(default) -> 8;
+pool_size(validator) -> [?MIN(1)];
+pool_size(_) -> undefined.
+
+username_field() ->
+    username_field(#{}).
+
+username_field(Opts) ->
+    hoconsc:mk(
+        binary(),
+        maps:merge(
+            #{
+                desc => ?DESC("username"),
+                required => false
+            },
+            Opts
+        )
+    ).
+
+auto_reconnect(type) -> boolean();
+auto_reconnect(desc) -> ?DESC("auto_reconnect");
+auto_reconnect(default) -> true;
+auto_reconnect(deprecated) -> {since, "5.0.15"};
+auto_reconnect(_) -> undefined.
+
+connect_timeout_field() ->
+    connect_timeout_field(#{}).
+
+connect_timeout_field(Opts) ->
+    hoconsc:mk(
+        emqx_schema:timeout_duration_ms(),
+        maps:merge(
+            #{
+                required => false,
+                desc => ?DESC("connect_timeout"),
+                default => <<"15s">>
+            },
+            Opts
+        )
+    ).
+
+disable_prepared_statements_field() ->
+    hoconsc:mk(
+        boolean(),
+        #{
+            default => false,
+            required => false,
+            desc => ?DESC("disable_prepared_statements")
+        }
+    ).

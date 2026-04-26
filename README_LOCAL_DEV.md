@@ -17,6 +17,7 @@ The following services are installed and configured but are not required for bas
 - myems-cleaning
 - myems-normalization
 - myems-modbus-tcp
+- myems-mqtt
 
 ## Verified Environment
 
@@ -110,6 +111,29 @@ This serves the static admin UI on:
 - Web UI: http://127.0.0.1:3000
 - Admin UI: http://127.0.0.1:8001
 - API: http://127.0.0.1:8000
+
+## Optional Local MQTT Ingestion Experiment
+
+This workspace now includes a local MQTT ingestion service under `myems-mqtt`.
+
+Recommended local experiment flow:
+
+1. Start a local EMQX node or another MQTT broker bound to `127.0.0.1:1883`.
+2. Run `powershell -ExecutionPolicy Bypass -File .\scripts\setup-mqtt-dev.ps1` to provision datasource `10001` and point `10001`.
+3. Start the adapter with `powershell -ExecutionPolicy Bypass -File .\scripts\start-mqtt-dev.ps1`.
+4. Start the test publisher with `powershell -ExecutionPolicy Bypass -File .\scripts\start-mqtt-test-publisher.ps1`.
+5. Verify inserts in `myems_historical_db.tbl_analog_value` and `myems_historical_db.tbl_analog_value_latest` for point `10001`.
+
+Expected local payload:
+
+```json
+{
+  "data_source_id": 10001,
+  "point_id": 10001,
+  "utc_date_time": "2026-04-26T12:00:00",
+  "value": 42.5
+}
+```
 
 Note:
 

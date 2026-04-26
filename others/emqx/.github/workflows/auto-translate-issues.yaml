@@ -1,0 +1,24 @@
+name: Translate Chinese Issues
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'The issue number to translate'
+        required: true
+        type: string
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write # Grant permission to edit issues
+  models: read
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: emqx/translate-issue-action@71628143ab1baff386f26de5926bf344cb0d7e50 # v1.1.0
+      with:
+        issue_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.issue_number || github.event.issue.number }}
+        translate_attachments: true

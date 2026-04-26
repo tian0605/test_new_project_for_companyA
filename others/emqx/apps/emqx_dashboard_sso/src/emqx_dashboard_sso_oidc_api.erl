@@ -1,0 +1,303 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2023-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+
+-module(emqx_dashboard_sso_oidc_api).
+
+-behaviour(minirest_api).
+
+-include_lib("hocon/include/hoconsc.hrl").
+-include_lib("oidcc/include/oidcc_token.hrl").
+-include_lib("emqx/include/logger.hrl").
+-include_lib("emqx_dashboard/include/emqx_dashboard.hrl").
+-include_lib("emqx/include/emqx_config.hrl").
+
+-export([
+    api_spec/0,
+    paths/0,
+    schema/1,
+    namespace/0
+]).
+
+-export([code_callback/2, make_callback_url/1]).
+
+-define(BPAPI, emqx_dashboard_sso_oidc).
+
+-define(BAD_REQUEST, 'BAD_REQUEST').
+-define(BAD_USERNAME_OR_PWD, 'BAD_USERNAME_OR_PWD').
+-define(BACKEND_NOT_FOUND, 'BACKEND_NOT_FOUND').
+
+-define(REDIRECT_HEADERS(TARGET), #{
+    <<"cache-control">> => <<"no-cache">>,
+    <<"pragma">> => <<"no-cache">>,
+    <<"content-type">> => <<"text/plain">>,
+    <<"location">> => TARGET
+}).
+
+-define(REDIRECT_BODY, <<"Redirecting...">>).
+
+-define(TAGS, <<"Dashboard Single Sign-On">>).
+-define(BACKEND, oidc).
+-define(BASE_PATH, "/api/v5").
+-define(CALLBACK_PATH, "/sso/oidc/callback").
+
+namespace() -> "dashboard_sso".
+
+api_spec() ->
+    emqx_dashboard_swagger:spec(?MODULE, #{check_schema => false, translate_body => false}).
+
+paths() ->
+    [
+        ?CALLBACK_PATH
+    ].
+
+%% Handles Authorization Code callback from the OP.
+schema("/sso/oidc/callback") ->
+    #{
+        'operationId' => code_callback,
+        get => #{
+            tags => [?TAGS],
+            desc => ?DESC(code_callback),
+            responses => #{
+                200 => emqx_dashboard_api:fields([token, version, license]),
+                400 => response_schema(400),
+                401 => response_schema(401),
+                404 => response_schema(404)
+            },
+            security => [],
+            log_meta => emqx_dashboard_audit:importance(high)
+        }
+    }.
+
+%%--------------------------------------------------------------------
+%% API
+%%--------------------------------------------------------------------
+code_callback(get, #{query_string := QS}) ->
+    minirest_handler:update_log_meta(#{log_from => oidc}),
+    case ensure_sso_state(QS) of
+        {ok, Target} ->
+            ?SLOG(info, #{
+                msg => "dashboard_sso_login_successful"
+            }),
+            {302, ?REDIRECT_HEADERS(Target), ?REDIRECT_BODY};
+        {error, invalid_query_string_param} ->
+            {400, #{code => ?BAD_REQUEST, message => <<"Invalid query string">>}};
+        {error, invalid_backend} ->
+            {404, #{code => ?BACKEND_NOT_FOUND, message => <<"Backend not found">>}};
+        {error, {bad_callback_response, #{} = Details}} ->
+            {401, #{code => ?BAD_USERNAME_OR_PWD, message => Details}};
+        {error, Reason0} ->
+            Reason = emqx_utils:redact(Reason0),
+            ?SLOG(info, #{
+                msg => "dashboard_sso_login_failed",
+                reason => Reason
+            }),
+            {401, #{code => ?BAD_USERNAME_OR_PWD, message => reason_to_message(Reason)}}
+    end.
+
+%%--------------------------------------------------------------------
+%% internal
+%%--------------------------------------------------------------------
+response_schema(400) ->
+    emqx_dashboard_swagger:error_codes([?BAD_REQUEST], ?DESC("bad_request"));
+response_schema(401) ->
+    emqx_dashboard_swagger:error_codes(
+        [?BAD_USERNAME_OR_PWD], ?DESC(emqx_dashboard_api, login_failed401)
+    );
+response_schema(404) ->
+    emqx_dashboard_swagger:error_codes([?BACKEND_NOT_FOUND], ?DESC("backend_not_found")).
+
+reason_to_message(Bin) when is_binary(Bin) ->
+    Bin;
+reason_to_message(Term) ->
+    erlang:iolist_to_binary(io_lib:format("~p", [Term])).
+
+ensure_sso_state(QS) ->
+    case emqx_dashboard_sso_manager:lookup_state(?BACKEND) of
+        undefined ->
+            {error, invalid_backend};
+        Cfg ->
+            ensure_oidc_state(QS, Cfg)
+    end.
+
+ensure_oidc_state(#{<<"state">> := State} = QS, Cfg) ->
+    case lookup_all_nodes(State) of
+        {ok, Data} ->
+            delete_all_nodes(State),
+            retrieve_token(QS, Cfg, Data);
+        _ ->
+            {error, session_not_exists}
+    end;
+ensure_oidc_state(_, _Cfg) ->
+    {error, invalid_query_string_param}.
+
+retrieve_token(
+    #{<<"code">> := Code},
+    #{
+        name := Name,
+        client_jwks := ClientJwks,
+        config := #{
+            clientid := ClientId,
+            secret := Secret,
+            preferred_auth_methods := AuthMethods
+        }
+    } = Cfg,
+    Data
+) ->
+    case
+        oidcc:retrieve_token(
+            Code,
+            Name,
+            ClientId,
+            emqx_secret:unwrap(Secret),
+            Data#{
+                redirect_uri => make_callback_url(Cfg),
+                client_jwks => ClientJwks,
+                preferred_auth_methods => AuthMethods
+            }
+        )
+    of
+        {ok, Token} ->
+            retrieve_userinfo(Token, Cfg);
+        {error, _Reason} = Error ->
+            Error
+    end;
+retrieve_token(#{<<"error">> := _Reason} = QS, _Cfg, _Data) ->
+    {error, {bad_callback_response, QS}}.
+
+retrieve_userinfo(
+    Token,
+    #{
+        name := Name,
+        client_jwks := ClientJwks,
+        config := #{clientid := ClientId, secret := Secret},
+        name_tokens := NameTks,
+        name_var_source := NameVarSource,
+        role_source := RoleSource,
+        role_expr := RoleExpr,
+        namespace_source := NamespaceSource,
+        namespace_expr := NamespaceExpr
+    } = Cfg
+) ->
+    maybe
+        {ok, UserInfo} ?=
+            oidcc:retrieve_userinfo(
+                Token,
+                Name,
+                ClientId,
+                emqx_secret:unwrap(Secret),
+                #{client_jwks => ClientJwks}
+            ),
+        ?SLOG(debug, #{
+            msg => "sso_oidc_login_user_info",
+            user_info => UserInfo
+        }),
+        NameVarData = select_data_source(NameVarSource, Token, UserInfo),
+        Username = render_username(NameVarData, NameTks),
+        minirest_handler:update_log_meta(#{log_source => Username}),
+        RoleData = select_data_source(RoleSource, Token, UserInfo),
+        {ok, MaybeRole} ?= parse_role(RoleData, RoleExpr),
+        NamespaceData = select_data_source(NamespaceSource, Token, UserInfo),
+        {ok, MaybeNamespace} ?= parse_namespace(NamespaceData, NamespaceExpr),
+        ensure_user_exists(Cfg, Username, MaybeRole, MaybeNamespace)
+    end.
+
+render_username(Data, Template) ->
+    emqx_placeholder:proc_tmpl(Template, Data).
+
+select_data_source(userinfo, _Token, UserInfo) ->
+    UserInfo;
+select_data_source(id_token, Token, _UserInfo) ->
+    case Token of
+        #oidcc_token{id = #oidcc_token_id{claims = #{} = Claims}} ->
+            Claims;
+        _ ->
+            #{}
+    end.
+
+parse_role(_Data, undefined = _RoleExpr) ->
+    %% Will later use default, if user does not exist.
+    {ok, undefined};
+parse_role(Data, RoleExpr) ->
+    case eval_jq_single_output(RoleExpr, Data, role_expr) of
+        {ok, Role} when ?IS_VALID_ROLE(Role) ->
+            {ok, Role};
+        {ok, _InvalidRole} ->
+            {error, <<"role expression returned an invalid result; access denied">>};
+        {error, multiple_or_no_output} ->
+            {error, <<"role expression returned an invalid result; access denied">>};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+parse_namespace(_Data, undefined = _NamespaceExpr) ->
+    %% Will later use default, if user does not exist.
+    {ok, undefined};
+parse_namespace(Data, NamespaceExpr) ->
+    case eval_jq_single_output(NamespaceExpr, Data, namespace_expr) of
+        {ok, null} ->
+            {ok, ?global_ns};
+        {ok, Namespace} when is_binary(Namespace) ->
+            %% Namespace existence is validated by hook in `emqx_dashboard_admin:add_sso_user/4`
+            {ok, Namespace};
+        {ok, _} ->
+            {error, <<"namespace expression returned an invalid result; access denied">>};
+        {error, multiple_or_no_output} ->
+            {error, <<"namespace expression returned an invalid result; access denied">>};
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+eval_jq_single_output(Program, Input, ErrorTag) ->
+    InputBin = emqx_utils_json:encode(Input),
+    case jq:process_json(Program, InputBin) of
+        {ok, [ResJSON]} ->
+            Res = emqx_utils_json:decode(ResJSON),
+            {ok, Res};
+        {ok, _ResJSON} ->
+            {error, multiple_or_no_output};
+        {error, Reason} ->
+            {error, {ErrorTag, Reason}}
+    end.
+
+ensure_user_exists(_Cfg, <<>>, _MaybeRole, _MaybeNamespace) ->
+    {error, <<"Username can not be empty">>};
+ensure_user_exists(_Cfg, <<"undefined">>, _MaybeRole, _MaybeNamespace) ->
+    {error, <<"Username can not be undefined">>};
+ensure_user_exists(Cfg, Username, MaybeRole, MaybeNamespace) ->
+    Desc = <<"">>,
+    maybe
+        {ok, #{user_record := UserRec}} ?=
+            emqx_dashboard_admin:upsert_sso_user(
+                ?BACKEND, Username, MaybeRole, MaybeNamespace, Desc
+            ),
+        %% Cannot fail, but returns `ok` tuple?
+        {ok, Role, Token, _Namespace} = emqx_dashboard_token:sign(UserRec),
+        {ok, login_redirect_target(Cfg, Username, Role, Token)}
+    end.
+
+make_callback_url(#{config := #{dashboard_addr := Addr}}) ->
+    list_to_binary(binary_to_list(Addr) ++ ?BASE_PATH ++ ?CALLBACK_PATH).
+
+login_redirect_target(#{config := #{dashboard_addr := Addr}}, Username, Role, Token) ->
+    LoginMeta = emqx_dashboard_sso_api:login_meta(Username, Role, Token, oidc),
+    MetaBin = base64:encode(emqx_utils_json:encode(LoginMeta)),
+    <<Addr/binary, "/?login_meta=", MetaBin/binary>>.
+
+lookup_all_nodes(State) ->
+    Nodes = emqx_bpapi:nodes_supporting_bpapi_version(?BPAPI, 1),
+    Timeout = 15_000,
+    Res0 = emqx_dashboard_sso_oidc_proto_v1:lookup(Nodes, State, Timeout),
+    Res = [Data || {ok, {ok, Data}} <- Res0],
+    case Res of
+        [Data] ->
+            {ok, Data};
+        [] ->
+            undefined
+    end.
+
+delete_all_nodes(State) ->
+    Nodes = emqx_bpapi:nodes_supporting_bpapi_version(?BPAPI, 1),
+    Timeout = 15_000,
+    _ = emqx_dashboard_sso_oidc_proto_v1:delete(Nodes, State, Timeout),
+    ok.

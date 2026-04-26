@@ -1,0 +1,48 @@
+name: Run Configuration tests
+
+concurrency:
+  group: conftest-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_call:
+    inputs:
+      builder:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  run_conf_tests:
+    runs-on: ubuntu-22.04
+    container: ${{ inputs.builder }}
+    env:
+      PROFILE: ${{ matrix.profile }}
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - emqx-enterprise
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: ${{ matrix.profile }}-release
+      - name: extract artifact
+        run: |
+          unzip -o -q ${{ matrix.profile }}-release.zip
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: make ${{ matrix.profile }}
+      - run: ./scripts/test/check-example-configs.sh
+      - run: ./scripts/conf-test/run.sh
+      - name: print erlang log
+        if: failure()
+        run: |
+          cat _build/${{ matrix.profile }}/rel/emqx/log/erlang.log.*
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        if: failure()
+        with:
+          name: conftest-logs-${{ matrix.profile }}
+          path: _build/${{ matrix.profile }}/rel/emqx/log
+          retention-days: 7

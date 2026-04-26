@@ -1,0 +1,50 @@
+emqx_lwm2m_api {
+
+dataType.desc:
+"""Data Type"""
+
+lookup_resource.desc:
+"""Look up a resource"""
+
+name.desc:
+"""Resource Name"""
+
+observe_resource.desc:
+"""Observe or Cancel observe a resource"""
+
+operations.desc:
+"""Resource Operations"""
+
+path.desc:
+"""Resource Path"""
+
+read_resource.desc:
+"""Send a read command to a resource"""
+
+write_resource.desc:
+"""Send a write command to a resource"""
+
+client_not_found.desc:
+"""Client not found"""
+client_not_found.label:
+"""Client Not Found"""
+
+no_content.desc:
+"""No Content"""
+no_content.label:
+"""No Content"""
+
+lookup_resource.label:
+"""Lookup Resource"""
+
+observe_resource.label:
+"""Observe Resource"""
+
+read_resource.label:
+"""Read Resource"""
+
+write_resource.label:
+"""Write Resource"""
+
+
+}

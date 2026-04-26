@@ -1,0 +1,327 @@
+name: Run test case
+
+concurrency:
+  group: test-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_call:
+    inputs:
+      builder:
+        required: true
+        type: string
+      ct-matrix:
+        required: true
+        type: string
+      ct-host:
+        required: true
+        type: string
+      ct-docker:
+        required: true
+        type: string
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  IS_CI: "yes"
+
+jobs:
+  eunit_and_proper:
+    if: inputs.ct-matrix != '[]'
+    runs-on: ${{ github.repository_owner == 'emqx' && 'aws-ubuntu22.04-amd64' || 'ubuntu-22.04' }}
+    name: "eunit_and_proper"
+    strategy:
+      fail-fast: false
+      matrix:
+        # GitHub validates strategy.matrix before job-level if, so keep include non-empty and let the job skip.
+        include: ${{ inputs.ct-matrix == '[]' && fromJson('[{"profile":"skip"}]') || fromJson(inputs.ct-matrix) }}
+
+    defaults:
+      run:
+        shell: bash
+    container: ${{ inputs.builder }}
+
+    env:
+      PROFILE: ${{ matrix.profile }}
+      ENABLE_COVER_COMPILE: 1
+      CT_COVER_EXPORT_PREFIX: ${{ matrix.profile }}
+
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: ${{ matrix.profile }}-test
+
+      - name: extract artifact
+        run: |
+          unzip -o -q ${{ matrix.profile }}-test.zip
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        # produces eunit.coverdata
+      - run: make eunit
+
+        # produces proper.coverdata
+      - run: make proper
+
+      # upload coverdata as artifact
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coverdata-${{ matrix.profile }}-eunit-proper
+          path: _build/${{ matrix.profile }}-test/cover/*.coverdata
+          compression-level: 0
+          retention-days: 1
+
+  ct_docker:
+    if: inputs.ct-docker != '[]'
+    runs-on: ${{ github.repository_owner == 'emqx' && 'aws-ubuntu22.04-amd64' || 'ubuntu-22.04' }}
+    name: "${{ matrix.app }}-${{ matrix.suitegroup }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(inputs.ct-docker) }}
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      PROFILE: ${{ matrix.profile }}
+
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: ${{ matrix.profile }}-test
+      - name: extract artifact
+        run: |
+          unzip -o -q ${{ matrix.profile }}-test.zip
+
+      - name: prepare shared secrets directory
+        run: |
+          mkdir -p /tmp/emqx-ci/emqx-shared-secret
+          chmod 0777 /tmp/emqx-ci/emqx-shared-secret
+
+        # produces $PROFILE-<app-name>-<otp-vsn>-sg<suitegroup>.coverdata
+      - name: run common tests
+        env:
+          DOCKER_CT_RUNNER_IMAGE: ${{ inputs.builder }}
+          MONGO_TAG: "5"
+          MYSQL_TAG: "8"
+          PGSQL_TAG: "13"
+          REDIS_TAG: "7.0"
+          TDENGINE_TAG: "3.0.2.4"
+          OPENTS_TAG: "9aa7f88"
+          MINIO_TAG: "RELEASE.2023-03-20T20-16-18Z"
+          SUITEGROUP: ${{ matrix.suitegroup }}
+          ENABLE_COVER_COMPILE: 1
+          CT_COVER_EXPORT_PREFIX: ${{ matrix.profile }}-sg${{ matrix.suitegroup }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/ct/run.sh --ci --app ${{ matrix.app }} --keep-up
+
+      - name: make cover
+        run: |
+          docker exec -e PROFILE="$PROFILE" -t erlang make cover
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coverdata-${{ matrix.profile }}-${{ matrix.prefix }}-${{ matrix.suitegroup }}
+          path: _build/${{ matrix.profile }}-test/cover/*.coverdata
+          compression-level: 0
+          retention-days: 1
+
+      - name: compress logs
+        if: failure()
+        run: tar -czf logs.tar.gz _build/${{ matrix.profile }}-test/logs
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        if: failure()
+        with:
+          name: logs-${{ matrix.profile }}-${{ matrix.prefix }}-sg${{ matrix.suitegroup }}
+          path: logs.tar.gz
+          compression-level: 0
+          retention-days: 7
+
+  ct:
+    if: inputs.ct-host != '[]'
+    runs-on: ${{ github.repository_owner == 'emqx' && 'aws-ubuntu22.04-amd64' || 'ubuntu-22.04' }}
+    name: "${{ matrix.app }}-${{ matrix.suitegroup }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(inputs.ct-host) }}
+
+    container: ${{ inputs.builder }}
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      PROFILE: ${{ matrix.profile }}
+      SUITEGROUP: ${{ matrix.suitegroup }}
+      ENABLE_COVER_COMPILE: 1
+      CT_COVER_EXPORT_PREFIX: ${{ matrix.profile }}-sg${{ matrix.suitegroup }}
+
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: ${{ matrix.profile }}-test
+      - name: extract artifact
+        run: |
+          unzip -o -q ${{ matrix.profile }}-test.zip
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+        # produces $PROFILE-<app-name>-<otp-vsn>-sg<suitegroup>.coverdata
+      - name: run common tests
+        run: make "${{ matrix.app }}-ct"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coverdata-${{ matrix.profile }}-${{ matrix.prefix }}-${{ matrix.suitegroup }}
+          path: _build/${{ matrix.profile }}-test/cover/*.coverdata
+          compression-level: 0
+          retention-days: 1
+
+      - name: compress logs
+        if: failure()
+        run: tar -czf logs.tar.gz _build/${{ matrix.profile }}-test/logs
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        if: failure()
+        with:
+          name: logs-${{ matrix.profile }}-${{ matrix.prefix }}-sg${{ matrix.suitegroup }}
+          path: logs.tar.gz
+          compression-level: 0
+          retention-days: 7
+
+  ct_plugins:
+    runs-on: ${{ github.repository_owner == 'emqx' && 'aws-ubuntu22.04-amd64' || 'ubuntu-22.04' }}
+    name: "plugins-ct"
+
+    container: ${{ inputs.builder }}
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      PROFILE: emqx-enterprise
+      ENABLE_COVER_COMPILE: 1
+      CT_COVER_EXPORT_PREFIX: emqx-enterprise-plugins
+
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: emqx-enterprise-test
+      - name: extract artifact
+        run: |
+          unzip -o -q emqx-enterprise-test.zip
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: run plugin common tests
+        run: make plugins-ct
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: coverdata-emqx-enterprise-plugins
+          path: _build/emqx-enterprise-test/cover/*.coverdata
+          compression-level: 0
+          retention-days: 1
+
+      - name: compress logs
+        if: failure()
+        run: tar -czf logs.tar.gz _build/emqx-enterprise-test/logs
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        if: failure()
+        with:
+          name: logs-emqx-enterprise-plugins
+          path: logs.tar.gz
+          compression-level: 0
+          retention-days: 7
+
+  pytest_boot_tests:
+    runs-on: ${{ github.repository_owner == 'emqx' && 'aws-ubuntu22.04-amd64' || 'ubuntu-22.04' }}
+    name: "pytest_boot_tests"
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - emqx-enterprise
+
+    container: ${{ inputs.builder }}
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      PROFILE: ${{ matrix.profile }}
+
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: ${{ matrix.profile }}-release
+      - name: extract artifact
+        run: |
+          unzip -o -q ${{ matrix.profile }}-release.zip
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: install pytest
+        run: |
+          apt-get update && apt-get install -y python3-venv
+          python3 -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install pytest
+      - name: run pytest boot tests
+        run: |
+          useradd -m testuser
+          chown -R testuser:testuser .
+          su testuser -c "PROFILE=$PROFILE venv/bin/pytest scripts/test/test_emqx_boot.py -v -s"
+
+  tests_passed:
+    needs:
+      - eunit_and_proper
+      - ct
+      - ct_docker
+      - ct_plugins
+      - pytest_boot_tests
+    runs-on: 'ubuntu-22.04'
+    strategy:
+      fail-fast: false
+    container: ${{ inputs.builder }}
+
+    permissions:
+      pull-requests: write
+
+    steps:
+      # download emqx-enterprise source code
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: emqx-enterprise-test
+      - name: extract artifact
+        run: |
+          unzip -o -q emqx-enterprise-test.zip
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # download coverdata artifacts
+      - name: download coverdata
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: 'coverdata-*'
+      - name: extract coverdata and move to _build/test/cover/
+        shell: bash
+        run: |
+          mkdir -p _build/test/cover/
+          # Find and move coverdata files
+          coverdata_files=$(find . -name "*.coverdata")
+          echo "coverdata_files: $coverdata_files"
+          if [ -n "$coverdata_files" ]; then
+            while IFS= read -r file; do
+              mv "$file" _build/test/cover/
+            done <<< "$coverdata_files"
+          fi
+      - name: convert coverdata to cobertura
+        run: |
+          ./scripts/covertool-2.1.0-emqx-1 -cover _build/test/cover -appname emqx -lookup apps
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}

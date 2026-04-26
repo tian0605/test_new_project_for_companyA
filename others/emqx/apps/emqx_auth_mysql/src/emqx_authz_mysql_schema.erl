@@ -1,0 +1,49 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2020-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+
+-module(emqx_authz_mysql_schema).
+
+-include("emqx_auth_mysql.hrl").
+-include_lib("hocon/include/hoconsc.hrl").
+
+-behaviour(emqx_authz_schema).
+
+-export([
+    namespace/0,
+    type/0,
+    fields/1,
+    desc/1,
+    source_refs/0,
+    select_union_member/2
+]).
+
+namespace() -> "authz".
+
+type() -> ?AUTHZ_TYPE.
+
+fields(mysql) ->
+    [
+        %% We do not need and never used this field for authz
+        {prepare_statement,
+            emqx_connector_schema_lib:prepare_statement_field(#{deprecated => {since, "6.2.0"}})}
+    ] ++
+        query_fields() ++
+        emqx_authz_schema:authz_common_fields(?AUTHZ_TYPE) ++
+        emqx_auth_mysql_connector:config_fields().
+
+desc(mysql) ->
+    ?DESC(mysql);
+desc(_) ->
+    undefined.
+
+source_refs() ->
+    [?R_REF(mysql)].
+
+select_union_member(#{<<"type">> := ?AUTHZ_TYPE_BIN}, _) ->
+    ?R_REF(mysql);
+select_union_member(_Value, _) ->
+    undefined.
+
+query_fields() ->
+    emqx_authn_mysql_schema:query_fields().

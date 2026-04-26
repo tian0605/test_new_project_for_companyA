@@ -1,0 +1,139 @@
+emqx_schema_validation_http_api {
+
+  list_validations.desc:
+  """List validations"""
+
+  lookup_validation.desc:
+  """Lookup a validation"""
+
+  update_validation.desc:
+  """Update a validation"""
+
+  delete_validation.desc:
+  """Delete a validation"""
+
+  append_validation.desc:
+  """Append a new validation to the list of validations"""
+
+  reorder_validations.desc:
+  """Reorder of all validations"""
+
+  enable_disable_validation.desc:
+  """Enable or disable a particular validation"""
+
+  get_validation_metrics.desc:
+  """Get metrics for a particular validation"""
+
+  reset_validation_metrics.desc:
+  """Reset metrics for a particular validation"""
+
+  param_path_name.desc:
+  """Validation name"""
+
+  param_path_enable.desc:
+  """Enable or disable validation"""
+
+  validation_already_exists.desc:
+  """Validation already exists."""
+  validation_already_exists.label:
+  """Validation Already Exists"""
+
+  validation_not_found.desc:
+  """Validation not found."""
+  validation_not_found.label:
+  """Validation Not Found"""
+
+  bad_params.desc:
+  """Bad parameters."""
+  bad_params.label:
+  """Bad Parameters"""
+
+  bad_request.desc:
+  """Bad request."""
+  bad_request.label:
+  """Bad Request"""
+
+  no_content.desc:
+  """No content."""
+  no_content.label:
+  """No Content"""
+
+  validation_deleted.desc:
+  """Validation deleted."""
+  validation_deleted.label:
+  """Validation Deleted"""
+
+  validations_not_found.desc:
+  """Validations not found."""
+  validations_not_found.label:
+  """Validations Not Found"""
+
+  validations_not_referenced.desc:
+  """Validations not referenced in input."""
+  validations_not_referenced.label:
+  """Validations Not Referenced"""
+
+  duplicated_validations.desc:
+  """Duplicate validations in input."""
+  duplicated_validations.label:
+  """Duplicate Validations"""
+
+  example_sql_check.desc:
+  """Example payload using a SQL validation check."""
+  example_sql_check.label:
+  """SQL Check Example"""
+
+  example_avro_check.desc:
+  """Example payload using an Avro schema validation check."""
+  example_avro_check.label:
+  """Avro Check Example"""
+
+  example_update.desc:
+  """Example payload for updating a validation."""
+  example_update.label:
+  """Update Example"""
+
+  example_reorder.desc:
+  """Example payload for reordering validations."""
+  example_reorder.label:
+  """Reorder Example"""
+
+  example_list.desc:
+  """Example response listing validations."""
+  example_list.label:
+  """List Example"""
+
+  example_metrics.desc:
+  """Example response showing validation metrics."""
+  example_metrics.label:
+  """Metrics Example"""
+
+append_validation.label:
+"""Append Validation"""
+
+delete_validation.label:
+"""Delete Validation"""
+
+enable_disable_validation.label:
+"""Enable Disable Validation"""
+
+get_validation_metrics.label:
+"""Get Validation Metrics"""
+
+list_validations.label:
+"""List Validations"""
+
+lookup_validation.label:
+"""Lookup Validation"""
+
+reorder_validations.label:
+"""Reorder Validations"""
+
+reset_validation_metrics.label:
+"""Reset Validation Metrics"""
+
+update_validation.label:
+"""Update Validation"""
+
+
+}

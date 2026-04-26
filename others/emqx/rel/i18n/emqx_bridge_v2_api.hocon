@@ -1,0 +1,383 @@
+emqx_bridge_v2_api {
+
+desc_node_status.desc:
+"""Node status."""
+
+desc_node_status.label:
+"""Node Status"""
+
+desc_status.desc:
+"""The status of the bridge<br/>
+- <code>connecting</code>: the initial state before any health probes were made.<br/>
+- <code>connected</code>: when the bridge passes the health probes.<br/>
+- <code>disconnected</code>: when the bridge can not pass health probes.<br/>
+- <code>stopped</code>: when the bridge resource is requested to be stopped.<br/>
+- <code>inconsistent</code>: When not all the nodes are at the same status."""
+
+desc_status.label:
+"""Bridge Status"""
+
+desc_status_reason.desc:
+"""This is the reason given in case a bridge is failing to connect."""
+
+desc_status_reason.label:
+"""Failure reason"""
+
+desc_actions_list.desc:
+"""List all created actions."""
+
+desc_actions_list.label:
+"""List Actions"""
+
+desc_actions_create.desc:
+"""Create a new action by type and name."""
+
+desc_actions_create.label:
+"""Create Action"""
+
+desc_actions_get.desc:
+"""Get an action by id."""
+
+desc_actions_get.label:
+"""Get Action"""
+
+desc_actions_update.desc:
+"""Update an action by id."""
+
+desc_actions_update.label:
+"""Update Action"""
+
+desc_actions_delete.desc:
+"""Delete an action by id."""
+
+desc_actions_delete.label:
+"""Delete Action"""
+
+desc_actions_metrics_get.desc:
+"""Get action metrics by id."""
+
+desc_actions_metrics_get.label:
+"""Get Action Metrics"""
+
+desc_actions_metrics_reset.desc:
+"""Reset action metrics by id."""
+
+desc_actions_metrics_reset.label:
+"""Reset Action Metrics"""
+
+desc_actions_enable_cluster.desc:
+"""Enable or disable action on all nodes in the cluster."""
+
+desc_actions_enable_cluster.label:
+"""Cluster Action Enable"""
+
+desc_actions_operation_cluster.desc:
+"""Start action on all nodes in the cluster."""
+
+desc_actions_operation_cluster.label:
+"""Cluster Action Operation"""
+
+desc_actions_operation_node.desc:
+"""Start action on a specific node."""
+
+desc_actions_operation_node.label:
+"""Node Action Operation"""
+
+desc_actions_probe.desc:
+"""Test creating a new action."""
+
+desc_actions_probe.label:
+"""Test Action Creation"""
+
+desc_sources_list.desc:
+"""List all created sources."""
+
+desc_sources_list.label:
+"""List Sources"""
+
+desc_sources_create.desc:
+"""Create a new source by type and name."""
+
+desc_sources_create.label:
+"""Create Source"""
+
+desc_sources_get.desc:
+"""Get a source by id."""
+
+desc_sources_get.label:
+"""Get Source"""
+
+desc_sources_update.desc:
+"""Update a source by id."""
+
+desc_sources_update.label:
+"""Update Source"""
+
+desc_sources_delete.desc:
+"""Delete a source by id."""
+
+desc_sources_delete.label:
+"""Delete Source"""
+
+desc_sources_metrics_get.desc:
+"""Get source metrics by id."""
+
+desc_sources_metrics_get.label:
+"""Get Source Metrics"""
+
+desc_sources_metrics_reset.desc:
+"""Reset source metrics by id."""
+
+desc_sources_metrics_reset.label:
+"""Reset Source Metrics"""
+
+desc_sources_enable_cluster.desc:
+"""Enable or disable source on all nodes in the cluster."""
+
+desc_sources_enable_cluster.label:
+"""Cluster Source Enable"""
+
+desc_sources_operation_cluster.desc:
+"""Start source on all nodes in the cluster."""
+
+desc_sources_operation_cluster.label:
+"""Cluster Source Operation"""
+
+desc_sources_operation_node.desc:
+"""Start source on a specific node."""
+
+desc_sources_operation_node.label:
+"""Node Source Operation"""
+
+desc_sources_probe.desc:
+"""Test creating a new source."""
+
+desc_sources_probe.label:
+"""Test Source Creation"""
+
+desc_api10.desc:
+"""Lists the available action types."""
+
+desc_api10.label:
+"""List action types"""
+
+desc_api11.desc:
+"""Lists the available source types."""
+
+desc_api11.label:
+"""List source types"""
+
+actions_summary.desc:
+"""Summarize actions."""
+
+actions_summary.label:
+"""Summarize Actions"""
+
+sources_summary.desc:
+"""Summarize sources."""
+
+sources_summary.label:
+"""Summarize Sources"""
+
+desc_param_path_enable.desc:
+"""Whether to enable this bridge."""
+
+desc_param_path_enable.label:
+"""Enable bridge"""
+
+desc_param_path_id.desc:
+"""The bridge id. Must be of format {type}:{name}."""
+
+desc_param_path_id.label:
+"""Bridge ID"""
+
+desc_qs_also_delete_dep_actions.desc:
+"""Whether to cascade delete dependent actions."""
+
+desc_qs_also_delete_dep_actions.label:
+"""Cascade delete dependent actions?"""
+
+desc_param_path_node.desc:
+"""The node name, e.g. 'emqx@127.0.0.1'."""
+
+desc_param_path_node.label:
+"""The node name"""
+
+desc_param_path_operation_cluster.desc:
+"""Operation can be one of: 'start'."""
+
+desc_param_path_operation_cluster.label:
+"""Cluster Operation"""
+
+desc_param_path_operation_on_node.desc:
+"""Operation can be one of: 'start'."""
+
+desc_param_path_operation_on_node.label:
+"""Node Operation"""
+
+OK.desc = "OK"
+
+source_test_failed.desc:
+"""Failed to test source configuration."""
+
+source_not_found.desc:
+"""Source not found."""
+
+actions_already_exists.desc:
+"""Action already exists."""
+
+update_action_failed.desc:
+"""Failed to update action configuration."""
+
+update_source_failed.desc:
+"""Failed to update source configuration."""
+
+service_unavailable.desc:
+"""Service unavailable."""
+
+dependent_rules_error_msg.desc:
+"""Cannot delete action while active rules are defined for this action."""
+
+dependent_rules_ids.desc:
+"""The IDs of rules that depend on this action."""
+
+action_not_found.desc:
+"""Action not found."""
+
+operation_failed.desc:
+"""Operation failed due to problem with the external resource."""
+
+not_implemented.desc:
+"""This operation is not supported."""
+
+action_test_failed.desc:
+"""Failed to test action configuration."""
+
+source_already_exists.desc:
+"""Source already exists."""
+
+
+action_already_exists.desc:
+"""Action already exists."""
+action_already_exists.label:
+"""Action Already Exists"""
+
+
+desc_metrics.desc:
+"""Bridge metrics on the local node."""
+desc_metrics.label:
+"""Metrics"""
+
+
+desc_node_metrics.desc:
+"""Bridge metrics grouped by node."""
+desc_node_metrics.label:
+"""Node Metrics"""
+
+
+desc_node_name.desc:
+"""Node name."""
+desc_node_name.label:
+"""Node Name"""
+
+
+metric_dropped.desc:
+"""Number of dropped messages."""
+metric_dropped.label:
+"""Dropped Messages"""
+
+
+metric_dropped_other.desc:
+"""Number of messages dropped for other reasons."""
+metric_dropped_other.label:
+"""Dropped Messages (Other)"""
+
+
+metric_dropped_queue_full.desc:
+"""Number of messages dropped because the queue is full."""
+metric_dropped_queue_full.label:
+"""Dropped Messages (Queue Full)"""
+
+
+metric_dropped_resource_not_found.desc:
+"""Number of messages dropped because the resource was not found."""
+metric_dropped_resource_not_found.label:
+"""Dropped Messages (Resource Not Found)"""
+
+
+metric_dropped_resource_stopped.desc:
+"""Number of messages dropped because the resource was stopped."""
+metric_dropped_resource_stopped.label:
+"""Dropped Messages (Resource Stopped)"""
+
+
+metric_inflight.desc:
+"""Number of messages currently in flight."""
+metric_inflight.label:
+"""In-flight Messages"""
+
+
+metric_matched.desc:
+"""Number of matched messages."""
+metric_matched.label:
+"""Matched Messages"""
+
+
+metric_queuing.desc:
+"""Number of messages queued for delivery."""
+metric_queuing.label:
+"""Queued Messages"""
+
+
+metric_rate.desc:
+"""Current message send rate."""
+metric_rate.label:
+"""Send Rate"""
+
+
+metric_rate_last5m.desc:
+"""Average message send rate in the last 5 minutes."""
+metric_rate_last5m.label:
+"""Send Rate (Last 5 Minutes)"""
+
+
+metric_rate_max.desc:
+"""Maximum message send rate since startup."""
+metric_rate_max.label:
+"""Max Send Rate"""
+
+
+metric_received.desc:
+"""Number of received messages."""
+metric_received.label:
+"""Received Messages"""
+
+
+metric_retried.desc:
+"""Number of retried messages."""
+metric_retried.label:
+"""Retried Messages"""
+
+
+metric_sent_failed.desc:
+"""Number of failed message sends."""
+metric_sent_failed.label:
+"""Failed Sends"""
+
+
+metric_sent_success.desc:
+"""Number of successful message sends."""
+metric_sent_success.label:
+"""Successful Sends"""
+
+metric_aggregated_upload_success.desc:
+"""Number of successful aggregated uploads."""
+metric_aggregated_upload_success.label:
+"""Aggregated Upload Success"""
+
+metric_aggregated_upload_failure.desc:
+"""Number of failed aggregated uploads."""
+metric_aggregated_upload_failure.label:
+"""Aggregated Upload Failure"""
+
+}

@@ -1,0 +1,42 @@
+name: Upload helm charts
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.tag }}
+      - name: Detect profile
+        id: profile
+        run: |
+          echo "profile=emqx-enterprise" >> $GITHUB_OUTPUT
+          echo "version=$(./pkg-vsn.sh emqx-enterprise)" >> $GITHUB_OUTPUT
+      - uses: emqx/push-helm-action@5ca37070f42cf874fc843a0e0c7c10ac76de5255 # v1.1
+        if: github.event_name == 'release' && !github.event.release.prerelease
+        with:
+          charts_dir: "${{ github.workspace }}/deploy/charts/${{ steps.profile.outputs.profile }}"
+          version: ${{ steps.profile.outputs.version }}
+          aws_access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws_region: "us-west-2"
+          aws_bucket_name: "repos-emqx-io"

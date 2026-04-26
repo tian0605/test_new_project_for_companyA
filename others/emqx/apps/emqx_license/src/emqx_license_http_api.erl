@@ -1,0 +1,248 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2022-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+
+-module(emqx_license_http_api).
+
+-behaviour(minirest_api).
+
+-include_lib("hocon/include/hoconsc.hrl").
+-include_lib("emqx/include/logger.hrl").
+
+-export([
+    namespace/0,
+    api_spec/0,
+    paths/0,
+    schema/1,
+    fields/1
+]).
+-define(LICENSE_TAGS, [<<"License">>]).
+
+-export([
+    '/license'/2,
+    '/license/setting'/2,
+    '/license/session_hwm_history'/2
+]).
+
+-define(BAD_REQUEST, 'BAD_REQUEST').
+
+namespace() -> "license_http_api".
+
+api_spec() ->
+    emqx_dashboard_swagger:spec(?MODULE, #{
+        check_schema => true
+    }).
+
+paths() ->
+    [
+        "/license",
+        "/license/setting",
+        "/license/session_hwm_history"
+    ].
+
+schema("/license") ->
+    #{
+        'operationId' => '/license',
+        get => #{
+            tags => ?LICENSE_TAGS,
+            description => ?DESC("desc_license_info_api"),
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_examples(
+                    map(),
+                    #{
+                        sample_license_info => #{
+                            value => sample_license_info_response()
+                        }
+                    }
+                )
+            }
+        },
+        post => #{
+            tags => ?LICENSE_TAGS,
+            description => ?DESC("desc_license_key_api"),
+            'requestBody' => emqx_dashboard_swagger:schema_with_examples(
+                hoconsc:ref(?MODULE, key_license),
+                #{
+                    license_key => #{
+                        summary => ?DESC("example_license_key_string"),
+                        value => #{
+                            <<"key">> => <<"xxx">>
+                        }
+                    }
+                }
+            ),
+            responses => #{
+                200 => emqx_dashboard_swagger:schema_with_examples(
+                    map(),
+                    #{
+                        sample_license_info => #{
+                            value => sample_license_info_response()
+                        }
+                    }
+                ),
+                400 => emqx_dashboard_swagger:error_codes([?BAD_REQUEST], ?DESC("bad_license_key"))
+            }
+        }
+    };
+schema("/license/setting") ->
+    #{
+        'operationId' => '/license/setting',
+        get => #{
+            tags => ?LICENSE_TAGS,
+            description => ?DESC("desc_license_setting_api"),
+            responses => #{
+                200 => setting()
+            }
+        },
+        put => #{
+            tags => ?LICENSE_TAGS,
+            description => ?DESC("desc_license_setting_api"),
+            'requestBody' => setting(),
+            responses => #{
+                200 => setting(),
+                400 => emqx_dashboard_swagger:error_codes(
+                    [?BAD_REQUEST], ?DESC("bad_setting_value")
+                )
+            }
+        }
+    };
+schema("/license/session_hwm_history") ->
+    #{
+        'operationId' => '/license/session_hwm_history',
+        get => #{
+            tags => ?LICENSE_TAGS,
+            description => ?DESC("desc_session_hwm_history_api"),
+            parameters => [
+                {period,
+                    hoconsc:mk(hoconsc:enum([daily, monthly]), #{
+                        in => query,
+                        required => false,
+                        default => daily,
+                        desc => ?DESC("param_history_period")
+                    })},
+                {limit,
+                    hoconsc:mk(pos_integer(), #{
+                        in => query,
+                        required => false,
+                        default => 30,
+                        desc => ?DESC("param_history_limit")
+                    })}
+            ],
+            responses => #{
+                200 => hoconsc:mk(hoconsc:ref(?MODULE, session_hwm_history), #{})
+            }
+        }
+    }.
+
+sample_license_info_response() ->
+    #{
+        customer => "Foo",
+        customer_type => 10,
+        deployment => "bar-deployment",
+        email => "contact@foo.com",
+        expiry => false,
+        expiry_at => "2295-10-27",
+        max_sessions => 10,
+        start_at => "2022-01-11",
+        type => "trial"
+    }.
+
+error_msg(Code, Msg) ->
+    #{code => Code, message => emqx_utils:readable_error_msg(Msg)}.
+
+%% read license info
+'/license'(get, _Params) ->
+    {200, license_info()};
+%% set/update license
+'/license'(post, #{body := #{<<"key">> := Key}}) ->
+    case emqx_license:update_key(Key) of
+        {error, Error} ->
+            ?SLOG(
+                error,
+                #{
+                    msg => "bad_license_key",
+                    reason => Error
+                },
+                #{tag => "LICENSE"}
+            ),
+            Msg =
+                case is_atom(Error) of
+                    true -> atom_to_binary(Error);
+                    false -> <<"Bad license key, see logs for more details">>
+                end,
+            {400, error_msg(?BAD_REQUEST, Msg)};
+        {ok, _} ->
+            ?SLOG(info, #{msg => "updated_license_key"}, #{tag => "LICENSE"}),
+            {200, license_info()}
+    end;
+'/license'(post, _Params) ->
+    {400, error_msg(?BAD_REQUEST, <<"Invalid request params">>)}.
+
+'/license/session_hwm_history'(get, #{query_string := QS}) ->
+    Period = maps:get(period, QS, daily),
+    Limit = maps:get(limit, QS, 30),
+    Rows = emqx_license_session_hwm:list_history(Period, Limit),
+    Data = [maps:remove(observed_at_ms, Row) || Row <- Rows],
+    {200, #{period => Period, count => length(Data), data => Data}}.
+
+'/license/setting'(get, _Params) ->
+    {200, get_setting()};
+'/license/setting'(put, #{body := Setting}) ->
+    case update_setting(Setting) of
+        {error, Error} ->
+            ?SLOG(
+                error,
+                #{
+                    msg => "bad_license_setting",
+                    reason => Error
+                },
+                #{tag => "LICENSE"}
+            ),
+            {400, error_msg(?BAD_REQUEST, <<"Bad license setting">>)};
+        {ok, _} ->
+            ?SLOG(info, #{msg => "updated_license_setting"}, #{tag => "LICENSE"}),
+            '/license/setting'(get, undefined)
+    end.
+
+update_setting(Setting) when is_map(Setting) ->
+    emqx_license:update_setting(Setting);
+update_setting(_Setting) ->
+    %% TODO: EMQX-12401 content-type enforcement by framework
+    {error, "bad content-type"}.
+
+fields(key_license) ->
+    [lists:keyfind(key, 1, emqx_license_schema:fields(key_license))];
+fields(session_hwm_history) ->
+    [
+        {period, hoconsc:mk(hoconsc:enum([daily, monthly]), #{desc => ?DESC("resp_period")})},
+        {count, hoconsc:mk(non_neg_integer(), #{desc => ?DESC("resp_count")})},
+        {data,
+            hoconsc:mk(hoconsc:array(hoconsc:ref(?MODULE, session_hwm_row)), #{
+                desc => ?DESC("resp_data")
+            })}
+    ];
+fields(session_hwm_row) ->
+    [
+        {period, hoconsc:mk(binary(), #{desc => ?DESC("resp_row_period")})},
+        {high_watermark, hoconsc:mk(non_neg_integer(), #{desc => ?DESC("resp_row_hwm")})},
+        {observed_at, hoconsc:mk(binary(), #{desc => ?DESC("resp_row_observed_at")})}
+    ].
+
+setting() ->
+    lists:keydelete(key, 1, emqx_license_schema:fields(key_license)).
+
+%% Drop dynamic_max_connections unless it's a BUSINESS_CRITICAL license.
+get_setting() ->
+    #{<<"key">> := Key} = Raw = emqx_config:get_raw([license]),
+    Result = maps:remove(<<"key">>, Raw),
+    case emqx_license_parser:is_business_critical(Key) of
+        true ->
+            Result;
+        false ->
+            maps:remove(<<"dynamic_max_connections">>, Result)
+    end.
+
+license_info() ->
+    #{max_sessions := Max} = Dump = maps:from_list(emqx_license_checker:dump()),
+    %% For API backward compatibility
+    Dump#{max_connections => Max}.

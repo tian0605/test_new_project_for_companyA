@@ -1,0 +1,65 @@
+emqx_prometheus_api {
+
+get_prom_conf_info.desc:
+"""Get Prometheus config info"""
+get_prom_conf_info.label:
+"""Get Prometheus config info"""
+
+update_prom_conf_info.desc:
+"""Update Prometheus config"""
+update_prom_conf_info.label:
+"""Update Prometheus config"""
+
+get_prom_data.desc:
+"""Get Prometheus Metrics"""
+get_prom_data.label:
+"""Prometheus Metrics"""
+
+ns_stats.desc:
+"""Get Prometheus Namespaced Metrics"""
+ns_stats.label:
+"""Namespaced Prometheus Metrics"""
+
+get_prom_auth_data.desc:
+"""Get Prometheus Metrics for AuthN, AuthZ and Banned"""
+get_prom_auth_data.label:
+"""Prometheus Metrics for Auth"""
+
+get_prom_data_integration_data.desc:
+"""Get Prometheus Metrics for Data Integration"""
+get_prom_data_integration_data.label:
+"""Prometheus Metrics for Data Integration"""
+
+get_prom_schema_validation.desc:
+"""Get Prometheus Metrics for Schema Validation"""
+get_prom_schema_validation.label:
+"""Prometheus Metrics for Schema Validation"""
+
+get_prom_message_transformation.desc:
+"""Get Prometheus Metrics for Message Validation"""
+get_prom_message_transformation.label:
+"""Prometheus Metrics for Message Validation"""
+
+mode_parameter.desc:
+"""Metrics format mode.
+
+`node`:
+Return metrics from local node. And it is the default behaviour if `mode` not specified.
+
+`all_nodes_aggregated`:
+Return metrics for all nodes.
+And if possible, calculate the arithmetic sum or logical sum of the indicators of all nodes.
+
+`all_nodes_unaggregated`:
+Return metrics from all nodes, and the metrics are not aggregated.
+The node name will be included in the returned results to
+indicate that certain metrics were returned on a certain node."""
+mode_parameter.label:
+"""Mode Parameter"""
+
+qp_namespace.desc:
+"""Query parameter to filter metrics by namespace."""
+qp_namespace.label:
+"""Namespace filter"""
+
+}

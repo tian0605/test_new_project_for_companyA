@@ -1,0 +1,1426 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2017-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+
+-module(emqx_plugins).
+
+-feature(maybe_expr, enable).
+
+-include("emqx_plugins.hrl").
+-include_lib("emqx/include/logger.hrl").
+-include_lib("snabbkaffe/include/trace.hrl").
+
+-ifdef(TEST).
+-include_lib("eunit/include/eunit.hrl").
+-endif.
+
+-export([
+    describe/1,
+    describe/2,
+    plugin_schema/1,
+    plugin_i18n/1,
+    handle_api_call/3
+]).
+
+%% Package operations
+-export([
+    allow_installation/1,
+    forget_allowed_installation/1,
+    is_allowed_installation/1,
+
+    ensure_installed/0,
+    ensure_installed/1,
+    ensure_installed/2,
+
+    get_package_from_node/2,
+    get_config_from_node/2,
+
+    ensure_uninstalled/1,
+    ensure_enabled/1,
+    ensure_enabled/2,
+    ensure_enabled/3,
+    ensure_disabled/1,
+    delete_state/1,
+    purge/1,
+    write_package/2,
+    is_package_present/1,
+    purge_other_versions/1,
+    delete_package/1,
+    safe_delete_package/1
+]).
+
+%% Plugin runtime management
+-export([
+    ensure_started/0,
+    ensure_started/1,
+    ensure_stopped/0,
+    ensure_stopped/1,
+    restart/1,
+    list/0,
+    list/1,
+    list/2,
+    list_active/0
+]).
+
+%% Plugin config APIs
+-export([
+    get_config/1,
+    get_config/2,
+    update_config/2
+]).
+
+%% Package utils
+-export([
+    decode_plugin_config_map/2
+]).
+
+%% `emqx_config_handler' API
+-export([
+    post_config_update/5
+]).
+
+%% internal RPC targets
+-export([
+    get_tar/1,
+    get_config/3
+]).
+
+%% for test cases
+-export([put_config_internal/2]).
+
+-ifdef(TEST).
+-compile(export_all).
+-compile(nowarn_export_all).
+-endif.
+
+%% Defines
+-define(PLUGIN_CONFIG_PT_KEY(NameVsn), {?MODULE, NameVsn}).
+
+-define(CATCH(BODY), catch_errors(atom_to_list(?FUNCTION_NAME), fun() -> BODY end)).
+
+-define(APP, emqx_plugins).
+
+-define(allowed_installations, allowed_installations).
+
+%%--------------------------------------------------------------------
+%% APIs
+%%--------------------------------------------------------------------
+
+%% @doc Describe a plugin.
+-spec describe(name_vsn()) -> {ok, emqx_plugins_info:t()} | {error, any()}.
+describe(NameVsn) ->
+    describe(NameVsn, #{fill_readme => true, health_check => true}).
+
+-spec describe(name_vsn(), emqx_plugins_info:read_options()) ->
+    {ok, emqx_plugins_info:t()} | {error, any()}.
+describe(NameVsn, Options) ->
+    read_plugin_info(NameVsn, Options).
+
+-spec plugin_schema(name_vsn()) -> {ok, schema_json_map()} | {error, any()}.
+plugin_schema(NameVsn) ->
+    ?CATCH(emqx_plugins_fs:read_avsc_map(NameVsn)).
+
+-spec plugin_i18n(name_vsn()) -> {ok, i18n_json_map()} | {error, any()}.
+plugin_i18n(NameVsn) ->
+    ?CATCH(emqx_plugins_fs:read_i18n(NameVsn)).
+
+-spec handle_api_call(binary() | string() | atom(), map(), timeout()) ->
+    {integer(), map() | term()} | {integer(), map(), term()}.
+handle_api_call(Plugin0, Request, Timeout) ->
+    Plugin = bin(Plugin0),
+    case resolve_active_name_vsn(Plugin) of
+        {ok, NameVsn} ->
+            try
+                Result = emqx_utils:nolink_apply(
+                    fun() -> emqx_plugins_apps:on_handle_api_call(NameVsn, Request) end,
+                    Timeout
+                ),
+                map_plugin_api_result(Result)
+            catch
+                exit:{timeout, _} ->
+                    {503, #{code => <<"PLUGIN_API_TIMEOUT">>, message => <<"Plugin API Timeout">>}};
+                Class:Reason:Stacktrace ->
+                    ?SLOG(error, #{
+                        msg => "plugin_api_callback_crash",
+                        plugin => Plugin,
+                        class => Class,
+                        reason => Reason,
+                        stacktrace => Stacktrace
+                    }),
+                    {500, #{
+                        code => <<"INTERNAL_ERROR">>, message => <<"Plugin API Callback Crash">>
+                    }}
+            end;
+        {error, not_found} ->
+            {404, #{code => <<"NOT_FOUND">>, message => <<"Plugin API Not Found">>}}
+    end.
+
+%% Note: this is only used for the HTTP API.
+%% We could use `application:set_env', but the typespec for it makes dialyzer sad when it
+%% seems a non-atom key...
+-spec allow_installation(binary() | string()) -> ok.
+allow_installation(NameVsn0) ->
+    NameVsn = bin(NameVsn0),
+    Allowed0 = application:get_env(?APP, ?allowed_installations, #{}),
+    Allowed = Allowed0#{NameVsn => true},
+    application:set_env(?APP, ?allowed_installations, Allowed),
+    ok.
+
+%% Note: this is only used for the HTTP API.
+-spec is_allowed_installation(binary() | string()) -> boolean().
+is_allowed_installation(NameVsn0) ->
+    NameVsn = bin(NameVsn0),
+    Allowed = application:get_env(?APP, ?allowed_installations, #{}),
+    maps:get(NameVsn, Allowed, false).
+
+%% Note: this is only used for the HTTP API.
+-spec forget_allowed_installation(binary() | string()) -> ok.
+forget_allowed_installation(NameVsn0) ->
+    NameVsn = bin(NameVsn0),
+    Allowed0 = application:get_env(?APP, ?allowed_installations, #{}),
+    Allowed = maps:remove(NameVsn, Allowed0),
+    application:set_env(?APP, ?allowed_installations, Allowed),
+    ok.
+
+%%--------------------------------------------------------------------
+%% Package operations
+
+%% @doc Start all configured plugins are started.
+-spec ensure_installed() -> ok.
+ensure_installed() ->
+    Fun = fun(#{name_vsn := NameVsn}) ->
+        case ensure_installed(NameVsn) of
+            ok -> [];
+            {error, Reason} -> [{NameVsn, Reason}]
+        end
+    end,
+    ok = for_plugins(Fun).
+
+%% @doc
+%% * Install a .tar.gz package placed in install_dir
+%% * Configure the plugin
+-spec ensure_installed(name_vsn()) -> ok | {error, map()}.
+ensure_installed(NameVsn) ->
+    case read_plugin_info(NameVsn, #{}) of
+        {ok, #{running_status := RunningSt}} ->
+            configure(NameVsn, ?normal, RunningSt);
+        {error, _} ->
+            ok = purge(NameVsn),
+            install_and_configure(NameVsn, ?normal, stopped)
+    end.
+
+ensure_installed(NameVsn, ?fresh_install = Mode) ->
+    %% TODO
+    %% Additionally check if the plugin is actually stopped/uninstalled.
+    %% Currently, external layers (API, CLI) are responsible for
+    %% not allowing to install a plugin that is already installed.
+    install_and_configure(NameVsn, Mode, stopped).
+
+%% @doc Ensure files and directories for the given plugin are being deleted.
+%% If a plugin is running, or enabled, an error is returned.
+-spec ensure_uninstalled(name_vsn()) -> ok | {error, any()}.
+ensure_uninstalled(NameVsn) ->
+    case read_plugin_info(NameVsn, #{}) of
+        {ok, #{running_status := running}} ->
+            {error, #{
+                msg => "bad_plugin_running_status",
+                hint => "stop_the_plugin_first"
+            }};
+        {ok, #{config_status := enabled}} ->
+            {error, #{
+                msg => "bad_plugin_config_status",
+                hint => "disable_the_plugin_first"
+            }};
+        {ok, Plugin} ->
+            ok = emqx_plugins_apps:unload(Plugin),
+            ok = purge(NameVsn),
+            ensure_delete_state(NameVsn);
+        {error, _Reason} ->
+            ensure_delete_state(NameVsn)
+    end.
+
+%% @doc Ensure a plugin is enabled to the end of the plugins list.
+-spec ensure_enabled(name_vsn()) -> ok | {error, any()}.
+ensure_enabled(NameVsn) ->
+    ensure_enabled(NameVsn, no_move).
+
+%% @doc Ensure a plugin is enabled at the given position of the plugin list.
+-spec ensure_enabled(name_vsn(), position()) -> ok | {error, any()}.
+ensure_enabled(NameVsn, Position) ->
+    ensure_state(NameVsn, Position, _Enabled = true, _ConfLocation = local).
+
+-spec ensure_enabled(name_vsn(), position(), local | global) -> ok | {error, any()}.
+ensure_enabled(NameVsn, Position, ConfLocation) when
+    ConfLocation =:= local; ConfLocation =:= global
+->
+    ensure_state(NameVsn, Position, _Enabled = true, ConfLocation).
+
+%% @doc Ensure a plugin is disabled.
+-spec ensure_disabled(name_vsn()) -> ok | {error, any()}.
+ensure_disabled(NameVsn) ->
+    ensure_state(NameVsn, no_move, false, _ConfLocation = local).
+
+%% @doc Delete extracted dir
+%% In case one lib is shared by multiple plugins.
+%% it might be the case that purging one plugin's install dir
+%% will cause deletion of loaded beams.
+%% It should not be a problem, because shared lib should
+%% reside in all the plugin install dirs.
+-spec purge(name_vsn()) -> ok.
+purge(NameVsn) ->
+    ?SLOG(debug, #{msg => "purge_plugin", name_vsn => NameVsn}),
+    ok = delete_cached_config(NameVsn),
+    emqx_plugins_fs:purge_installed(NameVsn).
+
+-spec delete_state(name_vsn()) -> ok.
+delete_state(NameVsn) ->
+    ensure_delete_state(NameVsn).
+
+%% @doc Write the package file.
+-spec write_package(name_vsn(), binary()) -> ok.
+write_package(NameVsn, Bin) ->
+    emqx_plugins_fs:write_tar(NameVsn, Bin).
+
+%% @doc Check if the package file is present.
+-spec is_package_present(name_vsn()) -> false | {true, [file:filename()]}.
+is_package_present(NameVsn) ->
+    emqx_plugins_fs:is_tar_present(NameVsn).
+
+-spec purge_other_versions(name_vsn()) -> ok.
+purge_other_versions(NameVsn) ->
+    {AppName, AppVsn} = emqx_plugins_utils:parse_name_vsn(NameVsn),
+    AppNameBin = bin(AppName),
+    ?SLOG(debug, #{
+        msg => "purge_plugin_other_versions",
+        keep_plugin => NameVsn,
+        reason => "cluster_sync"
+    }),
+    lists:foreach(
+        fun
+            (#{name := Name, rel_vsn := RelVsn}) when
+                AppNameBin =:= Name, AppVsn =:= RelVsn
+            ->
+                ok;
+            (#{name := Name, rel_vsn := RelVsn}) ->
+                case AppNameBin =:= Name of
+                    true ->
+                        NameVsn1 = emqx_plugins_utils:make_name_vsn_string(Name, RelVsn),
+                        maybe
+                            ok ?= ensure_stopped(NameVsn1),
+                            ok ?= ensure_uninstalled(NameVsn1)
+                        else
+                            {error, Reason} ->
+                                ?SLOG(error, #{
+                                    msg => "failed_to_purge_plugin",
+                                    name_vsn => NameVsn1,
+                                    reason => Reason
+                                })
+                        end;
+                    false ->
+                        ok
+                end
+        end,
+        emqx_plugins:list()
+    ).
+
+%% @doc Delete the package file.
+-spec delete_package(name_vsn()) -> ok.
+delete_package(NameVsn) ->
+    _ = emqx_plugins_serde:delete_schema(NameVsn),
+    emqx_plugins_fs:delete_tar(NameVsn).
+
+%% @doc Safely delete a plugin package.
+%% If another version of the same plugin is currently active,
+%% only clean up this version's state and files without stopping the active one.
+%% Otherwise, stop and uninstall the plugin before deleting.
+-spec safe_delete_package(name_vsn()) -> ok | {error, any()}.
+safe_delete_package(NameVsn) ->
+    _ = forget_allowed_installation(NameVsn),
+    case has_other_active_version(NameVsn) of
+        true ->
+            ok = delete_state(NameVsn),
+            ok = purge(NameVsn),
+            _ = delete_package(NameVsn),
+            ok;
+        false ->
+            case maybe_stop_plugin(NameVsn) of
+                ok ->
+                    ok = maybe_disable_plugin(NameVsn),
+                    ok = maybe_uninstall_plugin(NameVsn),
+                    _ = delete_package(NameVsn),
+                    ok;
+                Error ->
+                    Error
+            end
+    end.
+
+%%--------------------------------------------------------------------
+%% Plugin runtime management
+
+%% @doc Start all configured plugins are started.
+-spec ensure_started() -> ok.
+ensure_started() ->
+    Configured0 = configured(),
+    Configured = normalize_enabled_versions(Configured0),
+    maybe_persist_normalized_config(Configured0, Configured),
+    Fun = fun
+        (#{name_vsn := NameVsn, enable := true}) ->
+            case ?CATCH(do_ensure_started(NameVsn)) of
+                ok -> [];
+                {error, Reason} -> [{NameVsn, Reason}]
+            end;
+        (#{name_vsn := NameVsn, enable := false}) ->
+            ?SLOG(debug, #{msg => "plugin_disabled", name_vsn => NameVsn}),
+            []
+    end,
+    ok = for_plugins(Configured, Fun).
+
+%% @doc Start a plugin from Management API or CLI.
+%% the input is a <name>-<vsn> string.
+-spec ensure_started(name_vsn()) -> ok | {error, term()}.
+ensure_started(NameVsn) ->
+    case ?CATCH(do_ensure_started(NameVsn)) of
+        ok ->
+            ok;
+        {error, Reason} when is_map(Reason) ->
+            log_start_error(Reason),
+            {error, Reason};
+        {error, Reason} ->
+            log_start_error(Reason),
+            {error, Reason}
+    end.
+
+%% @doc Stop all plugins before broker stops.
+-spec ensure_stopped() -> ok.
+ensure_stopped() ->
+    Fun = fun
+        (#{name_vsn := NameVsn, enable := true}) ->
+            case ensure_stopped(NameVsn) of
+                ok ->
+                    [];
+                {error, Reason} ->
+                    [{NameVsn, Reason}]
+            end;
+        (#{name_vsn := NameVsn, enable := false}) ->
+            ?SLOG(debug, #{msg => "plugin_disabled", action => stop_plugin, name_vsn => NameVsn}),
+            []
+    end,
+    ok = for_plugins(Fun).
+
+%% @doc Stop a plugin from Management API or CLI.
+-spec ensure_stopped(name_vsn()) -> ok | {error, term()}.
+ensure_stopped(NameVsn) ->
+    ?CATCH(do_ensure_stopped(NameVsn)).
+
+do_ensure_stopped(NameVsn) ->
+    case emqx_plugins_info:read(NameVsn) of
+        {ok, Plugin} ->
+            emqx_plugins_apps:stop(Plugin);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+-spec get_config(name_vsn()) -> plugin_config_map().
+get_config(NameVsn) ->
+    get_config(NameVsn, #{}).
+
+-spec get_config(name_vsn(), term()) -> plugin_config_map() | term().
+get_config(NameVsn, Default) ->
+    get_cached_config(NameVsn, Default).
+
+%% @doc Update plugin's config.
+%% RPC call from Management API or CLI.
+%% NOTE
+%% This function assumes that the config is already validated
+%% by avro schema in case of its presence.
+update_config(NameVsn, Config) ->
+    maybe
+        {ok, Plugin} ?= emqx_plugins_info:read(NameVsn, #{}),
+        ok ?= request_config_change(NameVsn, Plugin, Config),
+        ok = emqx_plugins_local_config:backup_and_update(NameVsn, Config),
+        ok = put_cached_config(NameVsn, Config)
+    end.
+
+%% @doc Stop and then start the plugin.
+restart(NameVsn) ->
+    case ensure_stopped(NameVsn) of
+        ok -> ensure_started(NameVsn);
+        {error, Reason} -> {error, Reason}
+    end.
+
+%% @doc Return Name-Vsn list of currently running plugins.
+-spec list_active() -> [binary()].
+list_active() ->
+    lists:sort(
+        lists:foldl(
+            fun
+                (#{running_status := running} = Plugin, Acc) ->
+                    #{name := Name, rel_vsn := Vsn} = Plugin,
+                    [name_vsn(Name, Vsn) | Acc];
+                (_, Acc) ->
+                    Acc
+            end,
+            [],
+            list()
+        )
+    ).
+
+%% @doc List all installed plugins.
+%% Including the ones that are installed, but not enabled in config.
+-spec list() -> [emqx_plugins_info:t()].
+list() ->
+    list(normal).
+
+-spec list(all | normal | hidden) -> [emqx_plugins_info:t()].
+list(Type) ->
+    list(Type, #{}).
+
+-spec list(all | normal | hidden, emqx_plugins_info:read_options()) -> [emqx_plugins_info:t()].
+list(Type, Options) ->
+    All = lists:filtermap(
+        fun(NameVsn) ->
+            case read_plugin_info(NameVsn, Options) of
+                {ok, Info} ->
+                    filter_plugin_of_type(Type, Info);
+                {error, Reason} ->
+                    ?SLOG(warning, Reason#{msg => "failed_to_read_plugin_info"}),
+                    false
+            end
+        end,
+        emqx_plugins_fs:list_name_vsn()
+    ),
+    do_list(configured(), All).
+
+filter_plugin_of_type(all, Info) ->
+    {true, Info};
+filter_plugin_of_type(normal, #{hidden := true}) ->
+    false;
+filter_plugin_of_type(normal, Info) ->
+    {true, Info};
+filter_plugin_of_type(hidden, #{hidden := true} = Info) ->
+    {true, Info};
+filter_plugin_of_type(hidden, _Info) ->
+    false.
+
+resolve_active_name_vsn(Plugin) ->
+    resolve_active_name_vsn(Plugin, list_active()).
+
+resolve_active_name_vsn(Plugin0, ActiveNameVsns) ->
+    Plugin = bin(Plugin0),
+    case lists:member(Plugin, ActiveNameVsns) of
+        true ->
+            {ok, Plugin};
+        false ->
+            Matches = lists:filter(
+                fun(NameVsn) -> emqx_plugins_utils:plugin_name(NameVsn) =:= Plugin end,
+                ActiveNameVsns
+            ),
+            case Matches of
+                [NameVsn | _] -> {ok, NameVsn};
+                [] -> {error, not_found}
+            end
+    end.
+
+map_plugin_api_result({ok, Status, Headers, Body}) when is_integer(Status) ->
+    {Status, normalize_headers(Headers), Body};
+map_plugin_api_result({error, Code, Msg}) ->
+    {400, #{code => to_bin(Code), message => to_bin(Msg)}};
+map_plugin_api_result({error, Status, Headers, Body}) when is_integer(Status) ->
+    {Status, normalize_headers(Headers), Body};
+map_plugin_api_result({error, not_found}) ->
+    {404, #{code => <<"NOT_FOUND">>, message => <<"Plugin API Not Found">>}};
+map_plugin_api_result(_Other) ->
+    {500, #{code => <<"INTERNAL_ERROR">>, message => <<"Invalid Plugin API Response">>}}.
+
+normalize_headers(Headers) when is_map(Headers) ->
+    maps:from_list([{to_bin(K), iolist_to_binary(V)} || {K, V} <- maps:to_list(Headers)]);
+normalize_headers(Headers) when is_list(Headers) ->
+    maps:from_list([{to_bin(K), iolist_to_binary(V)} || {K, V} <- Headers]);
+normalize_headers(_) ->
+    #{}.
+
+%%--------------------------------------------------------------------
+%% Package utils
+
+-spec decode_plugin_config_map(name_vsn(), map() | binary()) ->
+    {ok, map() | ?plugin_without_config_schema}
+    | {error, term()}.
+decode_plugin_config_map(NameVsn, AvroJsonMap) ->
+    case has_avsc(NameVsn) of
+        true ->
+            case emqx_plugins_serde:decode(NameVsn, ensure_config_bin(AvroJsonMap)) of
+                {ok, Config} ->
+                    {ok, Config};
+                {error, #{reason := plugin_serde_not_found}} ->
+                    Reason = "plugin_config_schema_serde_not_found",
+                    ?SLOG(error, #{
+                        msg => Reason, name_vsn => NameVsn, plugin_with_avro_schema => true
+                    }),
+                    {error, Reason};
+                {error, _} = Error ->
+                    Error
+            end;
+        false ->
+            ?SLOG(debug, #{
+                msg => "plugin_without_config_schema",
+                name_vsn => NameVsn
+            }),
+            {ok, ?plugin_without_config_schema}
+    end.
+
+-spec has_avsc(name_vsn()) -> boolean().
+has_avsc(NameVsn) ->
+    case read_plugin_info(NameVsn, #{fill_readme => false}) of
+        {ok, #{with_config_schema := WithAvsc}} when is_boolean(WithAvsc) ->
+            WithAvsc;
+        _ ->
+            false
+    end.
+
+get_config_internal(Key, Default) when is_atom(Key) ->
+    get_config_internal([Key], Default);
+get_config_internal(Path, Default) ->
+    emqx_conf:get([?CONF_ROOT | Path], Default).
+
+put_config_internal(Key, Value) ->
+    do_put_config_internal(Key, Value, _ConfLocation = local).
+
+%%--------------------------------------------------------------------
+%% Internal
+%%--------------------------------------------------------------------
+
+ensure_delete_state(NameVsn0) ->
+    NameVsn = bin(NameVsn0),
+    List = configured(),
+    put_configured(lists:filter(fun(#{name_vsn := N1}) -> bin(N1) =/= NameVsn end, List)),
+    ok.
+
+ensure_state(NameVsn, Position, State, ConfLocation) when is_binary(NameVsn) ->
+    ensure_state(binary_to_list(NameVsn), Position, State, ConfLocation);
+ensure_state(NameVsn, Position, State, ConfLocation) ->
+    case read_plugin_info(NameVsn, #{}) of
+        {ok, _} ->
+            Item = #{
+                name_vsn => NameVsn,
+                enable => State
+            },
+            ?CATCH(ensure_configured(Item, Position, ConfLocation));
+        {error, Reason} ->
+            ?SLOG(error, #{msg => "ensure_plugin_states_failed", reason => Reason}),
+            {error, Reason}
+    end.
+
+ensure_configured(#{name_vsn := NameVsn} = Item, Position, ConfLocation) ->
+    Configured = configured(),
+    SplitFun = fun(#{name_vsn := NV}) -> bin(NV) =/= bin(NameVsn) end,
+    {Front, Rear} = lists:splitwith(SplitFun, Configured),
+    try
+        NewConfigured =
+            case Rear of
+                [_ | More] when Position =:= no_move ->
+                    Front ++ [Item | More];
+                [_ | More] ->
+                    add_new_configured(Front ++ More, Position, Item);
+                [] ->
+                    add_new_configured(Configured, Position, Item)
+            end,
+        NormalizedConfigured = maybe_disable_other_versions(NewConfigured, Item),
+        ok = put_configured(NormalizedConfigured, ConfLocation)
+    catch
+        throw:Reason ->
+            {error, Reason}
+    end.
+
+add_new_configured(Configured, no_move, Item) ->
+    %% default to rear
+    add_new_configured(Configured, rear, Item);
+add_new_configured(Configured, front, Item) ->
+    [Item | Configured];
+add_new_configured(Configured, rear, Item) ->
+    Configured ++ [Item];
+add_new_configured(Configured, {Action, NameVsn}, Item) ->
+    SplitFun = fun(#{name_vsn := NV}) -> bin(NV) =/= bin(NameVsn) end,
+    {Front, Rear} = lists:splitwith(SplitFun, Configured),
+    Rear =:= [] andalso
+        throw(#{
+            msg => "position_anchor_plugin_not_configured",
+            hint => "maybe_install_and_configure",
+            name_vsn => NameVsn
+        }),
+    case Action of
+        before ->
+            Front ++ [Item | Rear];
+        behind ->
+            [Anchor | Rear0] = Rear,
+            Front ++ [Anchor, Item | Rear0]
+    end.
+
+%% Make sure configured ones are ordered in front.
+do_list([], All) ->
+    All;
+do_list([#{name_vsn := NameVsn} | Rest], All) ->
+    SplitF = fun(#{name := Name, rel_vsn := Vsn}) ->
+        name_vsn(Name, Vsn) =/= bin(NameVsn)
+    end,
+    case lists:splitwith(SplitF, All) of
+        {_, []} ->
+            do_list(Rest, All);
+        {Front, [I | Rear]} ->
+            [I | do_list(Rest, Front ++ Rear)]
+    end.
+
+do_ensure_started(NameVsn) ->
+    maybe
+        ok ?= ensure_no_other_version_active(NameVsn),
+        ok ?= install(NameVsn, ?normal),
+        ok ?= load_config_schema(NameVsn),
+        ok ?= maybe_initialize_cached_config(NameVsn),
+        {ok, Plugin} ?= emqx_plugins_info:read(NameVsn),
+        ok ?= emqx_plugins_apps:start(Plugin)
+    else
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+log_start_error(Reason) ->
+    ?SLOG(error, #{
+        msg => "failed_to_start_plugin",
+        reason => Reason
+    }).
+
+maybe_initialize_cached_config(NameVsn) ->
+    case get_cached_config(NameVsn, ?plugin_conf_not_found) of
+        ?plugin_conf_not_found ->
+            case ensure_local_config(NameVsn, ?normal) of
+                ok ->
+                    configure_from_local_config(NameVsn, stopped);
+                {error, no_source_file} ->
+                    %% Some plugins intentionally do not ship a default config file.
+                    %% Keep start behavior backward compatible for them.
+                    ok;
+                {error, _} = Error ->
+                    Error
+            end;
+        _ ->
+            ok
+    end.
+
+%%--------------------------------------------------------------------
+%% RPC targets
+%%--------------------------------------------------------------------
+
+%% Redundant arguments are kept for backward compatibility.
+-spec get_config(name_vsn(), ?CONFIG_FORMAT_MAP, any()) ->
+    {ok, plugin_config_map() | term()}.
+get_config(NameVsn, ?CONFIG_FORMAT_MAP, Default) ->
+    {ok, get_config(NameVsn, Default)}.
+
+get_tar(NameVsn) ->
+    emqx_plugins_fs:get_tar(NameVsn).
+
+%%--------------------------------------------------------------------
+%% Internal functions
+%%--------------------------------------------------------------------
+
+%% @doc Converts exception errors into `{error, Reason}` return values
+catch_errors(Label, F) ->
+    try
+        F()
+    catch
+        error:Reason:Stacktrace ->
+            %% unexpected errors, log stacktrace
+            ?SLOG(warning, #{
+                msg => "plugin_op_failed",
+                which_op => Label,
+                exception => Reason,
+                stacktrace => Stacktrace
+            }),
+            {error, #{
+                which_op => Label,
+                exception => Reason,
+                stacktrace => Stacktrace
+            }}
+    end.
+
+%% read plugin info from the JSON file
+%% returns {ok, Info} or {error, Reason}
+read_plugin_info(NameVsn, Options) ->
+    emqx_plugins_info:read(NameVsn, Options).
+
+ensure_installed_locally(NameVsn) ->
+    maybe
+        ok ?=
+            emqx_plugins_fs:ensure_installed_from_tar(NameVsn, fun() ->
+                validate_installation(NameVsn)
+            end),
+        {ok, Plugin} ?= emqx_plugins_info:read(NameVsn),
+        emqx_plugins_apps:load(Plugin, emqx_plugins_fs:lib_dir(NameVsn))
+    end.
+
+validate_installation(NameVsn) ->
+    case emqx_plugins_info:read(NameVsn) of
+        {ok, _Plugin} ->
+            ok;
+        {error, _} = Error ->
+            Error
+    end.
+
+install_and_configure(NameVsn, Mode, RunningSt) ->
+    maybe
+        ok ?= install(NameVsn, Mode),
+        configure(NameVsn, Mode, RunningSt)
+    end.
+
+configure(NameVsn, Mode, RunningSt) ->
+    ok = load_config_schema(NameVsn),
+    maybe
+        ok ?= ensure_local_config(NameVsn, Mode),
+        configure_from_local_config(NameVsn, RunningSt)
+    end,
+    ensure_state(NameVsn).
+
+%% Install from local tarball or get tarball from cluster
+install(NameVsn, Mode) ->
+    case {ensure_installed_locally(NameVsn), Mode} of
+        {ok, _} ->
+            ok;
+        {{error, #{reason := plugin_tarball_not_found}}, ?normal} ->
+            case get_from_cluster(NameVsn) of
+                ok ->
+                    ensure_installed_locally(NameVsn);
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {{error, Reason}, _} ->
+            {error, Reason}
+    end.
+
+get_from_cluster(NameVsn) ->
+    Nodes = peer_nodes(),
+    case get_package_from_any_node(Nodes, NameVsn, []) of
+        {ok, TarContent} ->
+            emqx_plugins_fs:write_tar(NameVsn, TarContent);
+        {error, NodeErrors} when Nodes =/= [] ->
+            ErrMeta = #{
+                msg => "failed_to_copy_plugin_from_other_nodes",
+                node_errors => NodeErrors,
+                reason => plugin_not_found
+            },
+            ?SLOG(error, ErrMeta#{name_vsn => NameVsn}),
+            {error, ErrMeta};
+        {error, _} ->
+            ErrMeta = #{
+                msg => "no_nodes_to_copy_plugin_from",
+                reason => plugin_not_found
+            },
+            ?SLOG(error, ErrMeta#{name_vsn => NameVsn}),
+            {error, ErrMeta}
+    end.
+
+get_package_from_node(Node, NameVsn) ->
+    get_package_from_any_node([Node], NameVsn, []).
+
+get_package_from_any_node([], _NameVsn, Errors) ->
+    {error, Errors};
+get_package_from_any_node([Node | T], NameVsn, Errors) ->
+    case emqx_plugins_proto_v2:get_tar(Node, NameVsn, infinity) of
+        {ok, _} = Res ->
+            ?SLOG(debug, #{
+                msg => "get_plugin_tar_from_cluster_successfully",
+                node => Node,
+                name_vsn => NameVsn
+            }),
+            Res;
+        Err ->
+            get_package_from_any_node(T, NameVsn, [{Node, Err} | Errors])
+    end.
+
+get_config_from_node(Node, NameVsn) ->
+    get_config_from_any_node([Node], NameVsn, []).
+
+get_config_from_any_node([], _NameVsn, Errors) ->
+    {error, Errors};
+get_config_from_any_node([Node | RestNodes], NameVsn, Errors) ->
+    case
+        emqx_plugins_proto_v2:get_config(
+            Node, NameVsn, ?CONFIG_FORMAT_MAP, ?plugin_conf_not_found, 5_000
+        )
+    of
+        {ok, ?plugin_conf_not_found} ->
+            get_config_from_any_node(RestNodes, NameVsn, [{Node, config_not_found} | Errors]);
+        {ok, _} = Res ->
+            ?SLOG(debug, #{
+                msg => "get_plugin_config_from_cluster_successfully",
+                node => Node,
+                name_vsn => NameVsn
+            }),
+            Res;
+        Err ->
+            get_config_from_any_node(RestNodes, NameVsn, [{Node, Err} | Errors])
+    end.
+
+do_put_config_internal(Key, Value, ConfLocation) when is_atom(Key) ->
+    do_put_config_internal([Key], Value, ConfLocation);
+do_put_config_internal(Path, Values, _ConfLocation = local) when is_list(Path) ->
+    Opts = #{rawconf_with_defaults => true, override_to => cluster},
+    %% Already in cluster_rpc, don't use emqx_conf:update, dead calls
+    case emqx:update_config([?CONF_ROOT | Path], bin_key(Values), Opts) of
+        {ok, _} -> ok;
+        Error -> Error
+    end;
+do_put_config_internal(Path, Values, _ConfLocation = global) when is_list(Path) ->
+    Opts = #{rawconf_with_defaults => true, override_to => cluster},
+    case emqx_conf:update([?CONF_ROOT | Path], bin_key(Values), Opts) of
+        {ok, _} -> ok;
+        Error -> Error
+    end.
+
+%%--------------------------------------------------------------------
+%% `emqx_config_handler' API
+%%--------------------------------------------------------------------
+
+post_config_update([?CONF_ROOT], _Req, #{states := NewStates}, #{states := OldStates}, _Envs) ->
+    NewStatesIndex = maps:from_list([{NV, S} || S = #{name_vsn := NV} <- NewStates]),
+    OldStatesIndex = maps:from_list([{NV, S} || S = #{name_vsn := NV} <- OldStates]),
+    #{changed := Changed} = emqx_utils_maps:diff_maps(NewStatesIndex, OldStatesIndex),
+    maps:foreach(fun enable_disable_plugin/2, Changed),
+    ok;
+post_config_update(_Path, _Req, _NewConf, _OldConf, _Envs) ->
+    ok.
+
+enable_disable_plugin(NameVsn, {#{enable := true}, #{enable := false}}) ->
+    %% errors are already logged in this fn
+    _ = ensure_stopped(NameVsn),
+    ok;
+enable_disable_plugin(NameVsn, {#{enable := false}, #{enable := true}}) ->
+    %% errors are already logged in this fn
+    _ = ensure_started(NameVsn),
+    ok;
+enable_disable_plugin(_NameVsn, _Diff) ->
+    ok.
+
+%%--------------------------------------------------------------------
+%% Helper functions
+%%--------------------------------------------------------------------
+
+put_configured(Configured) ->
+    put_configured(Configured, _ConfLocation = local).
+
+put_configured(Configured, ConfLocation) ->
+    ok = do_put_config_internal(states, bin_key(Configured), ConfLocation).
+
+configured() ->
+    lists:map(fun emqx_plugins_utils:normalize_state_item/1, get_config_internal(states, [])).
+
+for_plugins(ActionFun) ->
+    for_plugins(configured(), ActionFun).
+
+for_plugins(Plugins, ActionFun) ->
+    case lists:flatmap(ActionFun, Plugins) of
+        [] ->
+            ok;
+        Errors ->
+            ErrMeta = #{function => ActionFun, errors => Errors},
+            ?tp(
+                for_plugins_action_error_occurred,
+                ErrMeta
+            ),
+            ?SLOG(error, ErrMeta#{msg => "for_plugins_action_error_occurred"}),
+            ok
+    end.
+
+maybe_persist_normalized_config(Configured, Configured) ->
+    ok;
+maybe_persist_normalized_config(_Configured0, Configured) ->
+    ok = put_configured(Configured, global).
+
+maybe_disable_other_versions(Configured, #{name_vsn := NameVsn, enable := true}) ->
+    disable_other_versions(Configured, NameVsn);
+maybe_disable_other_versions(Configured, _Item) ->
+    Configured.
+
+disable_other_versions(Configured, NameVsn0) ->
+    NameVsn = bin(NameVsn0),
+    Name = emqx_plugins_utils:plugin_name(NameVsn),
+    lists:map(
+        fun(#{name_vsn := NV} = Item) ->
+            case bin(NV) =/= NameVsn andalso emqx_plugins_utils:plugin_name(NV) =:= Name of
+                true -> Item#{enable => false};
+                false -> Item
+            end
+        end,
+        Configured
+    ).
+
+normalize_enabled_versions(Configured) ->
+    Latest = latest_enabled_versions(Configured),
+    lists:map(
+        fun
+            (#{name_vsn := NameVsn, enable := true} = Item) ->
+                Name = emqx_plugins_utils:plugin_name(NameVsn),
+                case maps:get(Name, Latest, bin(NameVsn)) =:= bin(NameVsn) of
+                    true -> Item;
+                    false -> Item#{enable => false}
+                end;
+            (Item) ->
+                Item
+        end,
+        Configured
+    ).
+
+latest_enabled_versions(Configured) ->
+    lists:foldl(
+        fun
+            (#{name_vsn := NameVsn, enable := true}, Acc) ->
+                Name = emqx_plugins_utils:plugin_name(NameVsn),
+                NameVsnBin = bin(NameVsn),
+                case maps:get(Name, Acc, undefined) of
+                    undefined ->
+                        Acc#{Name => NameVsnBin};
+                    Existing ->
+                        case emqx_plugins_utils:latest_name_vsn(Existing, NameVsnBin) of
+                            NameVsnBin -> Acc#{Name => NameVsnBin};
+                            _ -> Acc
+                        end
+                end;
+            (_Item, Acc) ->
+                Acc
+        end,
+        #{},
+        Configured
+    ).
+
+ensure_no_other_version_active(NameVsn0) ->
+    ensure_no_other_version_active(conflicting_versions(NameVsn0), NameVsn0).
+
+conflicting_versions(NameVsn0) ->
+    NameVsn = bin(NameVsn0),
+    Name = emqx_plugins_utils:plugin_name(NameVsn),
+    lists:filtermap(
+        fun(OtherNameVsn) ->
+            case
+                emqx_plugins_utils:plugin_name(OtherNameVsn) =:= Name andalso
+                    bin(OtherNameVsn) =/= NameVsn
+            of
+                true ->
+                    case emqx_plugins_fs:read_info(OtherNameVsn) of
+                        {ok, Info0} ->
+                            Info = emqx_utils_maps:safe_atom_key_map(Info0),
+                            {true, Info#{running_status => emqx_plugins_apps:running_status(Info)}};
+                        {error, _} ->
+                            false
+                    end;
+                false ->
+                    false
+            end
+        end,
+        emqx_plugins_fs:list_name_vsn()
+    ).
+
+ensure_no_other_version_active(Plugins, NameVsn0) ->
+    NameVsn = bin(NameVsn0),
+    Name = emqx_plugins_utils:plugin_name(NameVsn),
+    {RunningOtherVersions, LoadedOtherVersions} = lists:foldl(
+        fun(
+            #{name := PluginName, rel_vsn := Vsn, running_status := RunningStatus},
+            {Running, Loaded}
+        ) ->
+            OtherNameVsn = name_vsn(PluginName, Vsn),
+            case PluginName =:= Name andalso OtherNameVsn =/= NameVsn of
+                true when RunningStatus =:= running ->
+                    {[OtherNameVsn | Running], Loaded};
+                true when RunningStatus =:= loaded ->
+                    {Running, [OtherNameVsn | Loaded]};
+                true ->
+                    {Running, Loaded};
+                false ->
+                    {Running, Loaded}
+            end
+        end,
+        {[], []},
+        Plugins
+    ),
+    case RunningOtherVersions of
+        [] ->
+            unload_other_versions(LoadedOtherVersions);
+        [_ | _] ->
+            {error, #{
+                msg => "conflicting_plugin_version_running",
+                active_versions => lists:reverse(RunningOtherVersions)
+            }}
+    end.
+
+unload_other_versions([]) ->
+    ok;
+unload_other_versions([NameVsn | Rest]) ->
+    ?SLOG(warning, #{
+        msg => "unloading_conflicting_loaded_plugin_version",
+        name_vsn => NameVsn,
+        reason => "starting_another_version"
+    }),
+    case emqx_plugins_info:read(NameVsn) of
+        {ok, Plugin} ->
+            ok = emqx_plugins_apps:unload(Plugin),
+            unload_other_versions(Rest);
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+ensure_state(NameVsn) ->
+    EnsureStateFun = fun(#{name_vsn := NV, enable := Bool}, AccIn) ->
+        case NV of
+            NameVsn ->
+                %% Configured, using existed cluster config
+                _ = ensure_state(NV, no_move, Bool, global),
+                AccIn#{ensured => true};
+            _ ->
+                AccIn
+        end
+    end,
+    case lists:foldl(EnsureStateFun, #{ensured => false}, configured()) of
+        #{ensured := true} ->
+            ok;
+        #{ensured := false} ->
+            ?SLOG(info, #{msg => "plugin_not_configured", name_vsn => NameVsn}),
+            %% Clean installation, no config, ensure with `Enable = false`
+            _ = ensure_state(NameVsn, no_move, false, global),
+            ok
+    end,
+    ok.
+
+ensure_local_config(NameVsn, Mode) ->
+    case emqx_plugins_fs:ensure_config_dir(NameVsn) of
+        ok ->
+            %% get config from other nodes or get from tarball
+            do_ensure_local_config(NameVsn, Mode);
+        {error, _} = Error ->
+            ?SLOG(warning, #{
+                msg => "failed_to_ensure_config_dir", name_vsn => NameVsn, reason => Error
+            }),
+            Error
+    end.
+
+do_ensure_local_config(NameVsn, ?fresh_install) ->
+    emqx_plugins_local_config:copy_default(NameVsn);
+do_ensure_local_config(NameVsn, ?normal) ->
+    case peer_nodes() of
+        [] ->
+            emqx_plugins_local_config:copy_default(NameVsn);
+        Nodes ->
+            case get_config_from_any_node(Nodes, NameVsn, []) of
+                {ok, Config} when is_map(Config) ->
+                    emqx_plugins_local_config:update(NameVsn, Config);
+                {error, Errors} ->
+                    log_config_not_found(NameVsn, Errors),
+                    emqx_plugins_local_config:copy_default(NameVsn)
+            end
+    end.
+
+peer_nodes() ->
+    [N || N <- mria:running_nodes(), N /= node()].
+
+log_config_not_found(NameVsn, Errors) ->
+    case is_all_config_not_found(Errors) of
+        true ->
+            ?SLOG(debug, #{
+                msg => "plugin_config_not_found_in_cluster",
+                name_vsn => NameVsn,
+                hint =>
+                    "This is expected when this plugin has not been started in the cluster before"
+            });
+        false ->
+            ?SLOG(warning, #{
+                msg => "failed_to_get_plugin_config_from_cluster",
+                name_vsn => NameVsn,
+                reason => Errors
+            })
+    end.
+
+is_all_config_not_found([]) ->
+    true;
+is_all_config_not_found([{_Node, config_not_found} | Rest]) ->
+    is_all_config_not_found(Rest);
+is_all_config_not_found([_ | _]) ->
+    false.
+
+configure_from_local_config(NameVsn, RunningSt) ->
+    case validated_local_config(NameVsn) of
+        {ok, NewConfig} ->
+            OldConfig = get_cached_config(NameVsn),
+            ok = notify_config_change(NameVsn, OldConfig, NewConfig, RunningSt),
+            ok = put_cached_config(NameVsn, NewConfig);
+        {error, Reason} ->
+            ?SLOG(warning, #{
+                msg => "failed_to_validate_plugin_config", name_vsn => NameVsn, reason => Reason
+            }),
+            ok
+    end.
+
+notify_config_change(_NameVsn, _OldConfig, _NewConfig, stopped) ->
+    ok;
+notify_config_change(NameVsn, OldConfig, NewConfig, RunningSt) when
+    RunningSt =:= running orelse RunningSt =:= loaded
+->
+    %% NOTE
+    %% The new config here is the local config, so it is
+    %% * either vendored with the plugin;
+    %% * or fetched from another node where it was validated by the plugin before being updated.
+    %% In both cases, we do not expect the plugin to reject the config.
+    %% Even if it does, there is little that can be done.
+    %% So we ignore the result of the callback.
+    _ = emqx_plugins_apps:on_config_changed(NameVsn, OldConfig, NewConfig),
+    ok.
+
+request_config_change(NameVsn, #{running_status := stopped}, _Config) ->
+    {error, {plugin_apps_not_loaded, NameVsn}};
+request_config_change(NameVsn, #{running_status := RunningSt}, Config) when
+    RunningSt =:= running orelse RunningSt =:= loaded
+->
+    emqx_plugins_apps:on_config_changed(NameVsn, get_cached_config(NameVsn), Config).
+
+load_config_schema(NameVsn) ->
+    case emqx_plugins_fs:read_avsc_bin(NameVsn) of
+        {ok, AvscBin} ->
+            _ = emqx_plugins_serde:add_schema(bin(NameVsn), AvscBin),
+            ok;
+        {error, _} ->
+            ok
+    end.
+
+validated_local_config(NameVsn) ->
+    case emqx_plugins_local_config:read(NameVsn) of
+        {ok, Config} ->
+            case has_avsc(NameVsn) of
+                true ->
+                    case decode_plugin_config_map(NameVsn, Config) of
+                        {ok, _} ->
+                            {ok, Config};
+                        {error, Reason} ->
+                            ?SLOG(error, #{
+                                msg => "plugin_config_validation_failed",
+                                name_vsn => NameVsn,
+                                reason => Reason
+                            }),
+                            {error, Reason}
+                    end;
+                false ->
+                    {ok, Config}
+            end;
+        {error, Reason} ->
+            ?SLOG(warning, #{
+                msg => "failed_to_read_plugin_config_hocon", name_vsn => NameVsn, reason => Reason
+            }),
+            {error, Reason}
+    end.
+
+get_cached_config(NameVsn) ->
+    get_cached_config(NameVsn, #{}).
+
+get_cached_config(NameVsn, Default) ->
+    persistent_term:get(?PLUGIN_CONFIG_PT_KEY(bin(NameVsn)), Default).
+
+put_cached_config(NameVsn, Config) ->
+    persistent_term:put(?PLUGIN_CONFIG_PT_KEY(bin(NameVsn)), Config).
+
+delete_cached_config(NameVsn) ->
+    _ = persistent_term:erase(?PLUGIN_CONFIG_PT_KEY(bin(NameVsn))),
+    ok.
+
+ensure_config_bin(AvroJsonMap) when is_map(AvroJsonMap) ->
+    emqx_utils_json:encode(AvroJsonMap);
+ensure_config_bin(AvroJsonBin) when is_binary(AvroJsonBin) ->
+    AvroJsonBin.
+
+bin_key(Map) when is_map(Map) ->
+    maps:fold(fun(K, V, Acc) -> Acc#{bin(K) => V} end, #{}, Map);
+bin_key(List = [#{} | _]) ->
+    lists:map(fun(M) -> bin_key(M) end, List);
+bin_key(Term) ->
+    Term.
+
+bin(A) when is_atom(A) -> atom_to_binary(A, utf8);
+bin(L) when is_list(L) -> unicode:characters_to_binary(L, utf8);
+bin(B) when is_binary(B) -> B.
+
+has_other_active_version(NameVsn) ->
+    PluginName = emqx_plugins_utils:plugin_name(NameVsn),
+    NameVsnBin = bin(NameVsn),
+    lists:any(
+        fun(ActiveNameVsn) ->
+            emqx_plugins_utils:plugin_name(ActiveNameVsn) =:= PluginName andalso
+                bin(ActiveNameVsn) =/= NameVsnBin
+        end,
+        list_active()
+    ).
+
+maybe_stop_plugin(NameVsn) ->
+    case describe(NameVsn, #{}) of
+        {ok, #{running_status := running}} ->
+            ensure_stopped(NameVsn);
+        {ok, _} ->
+            ok;
+        {error, _} = Error ->
+            Error
+    end.
+
+maybe_disable_plugin(NameVsn) ->
+    case describe(NameVsn, #{}) of
+        {ok, #{config_status := not_configured}} ->
+            ok;
+        {ok, _} ->
+            case ensure_disabled(NameVsn) of
+                ok ->
+                    ok;
+                {error, Reason} ->
+                    ?SLOG(warning, #{
+                        msg => "failed_to_disable_plugin_while_deleting_package",
+                        name_vsn => NameVsn,
+                        reason => Reason
+                    }),
+                    ok
+            end;
+        {error, _} = Error ->
+            Error
+    end.
+
+maybe_uninstall_plugin(NameVsn) ->
+    case ensure_uninstalled(NameVsn) of
+        ok ->
+            ok;
+        {error, Reason} ->
+            ?SLOG(warning, #{
+                msg => "failed_to_uninstall_plugin_while_deleting_package",
+                name_vsn => NameVsn,
+                reason => Reason
+            }),
+            ok
+    end.
+
+to_bin(A) when is_atom(A) -> atom_to_binary(A, utf8);
+to_bin(S) when is_list(S) -> unicode:characters_to_binary(S);
+to_bin(B) when is_binary(B) -> B;
+to_bin(T) -> iolist_to_binary(io_lib:format("~0p", [T])).
+
+name_vsn(Name, Vsn) ->
+    emqx_plugins_utils:make_name_vsn_binary(Name, Vsn).
+
+-ifdef(TEST).
+
+normalize_helpers_test_() ->
+    {setup,
+        fun() ->
+            meck:new(emqx_conf, [passthrough]),
+            ok
+        end,
+        fun(_) ->
+            meck:unload(emqx_conf)
+        end,
+        [
+            fun normalize_state_item_case/0,
+            fun configured_reads_binary_state_items_case/0,
+            fun maybe_persist_normalized_config_case/0,
+            fun version_selection_helpers_case/0,
+            fun ensure_no_other_version_active_unloads_loaded_case/0,
+            fun ensure_no_other_version_active_rejects_running_case/0
+        ]}.
+
+normalize_state_item_case() ->
+    ?assertEqual(
+        #{name_vsn => <<"demo-1.0.0">>, enable => true},
+        emqx_plugins_utils:normalize_state_item(
+            #{<<"name_vsn">> => <<"demo-1.0.0">>, <<"enable">> => true}
+        )
+    ).
+
+configured_reads_binary_state_items_case() ->
+    meck:expect(emqx_conf, get, fun([plugins, states], []) ->
+        [#{<<"name_vsn">> => <<"demo-1.0.0">>, <<"enable">> => true}]
+    end),
+    ?assertEqual(
+        [#{name_vsn => <<"demo-1.0.0">>, enable => true}],
+        configured()
+    ).
+
+maybe_persist_normalized_config_case() ->
+    meck:expect(emqx_conf, update, fun([plugins, states], Config, _Opts) -> {ok, Config} end),
+    ?assertEqual(ok, maybe_persist_normalized_config([], [])),
+    ?assertEqual(
+        ok,
+        maybe_persist_normalized_config(
+            [#{name_vsn => <<"demo-1.0.0">>, enable => true}],
+            [#{name_vsn => <<"demo-1.0.0">>, enable => false}]
+        )
+    ).
+
+version_selection_helpers_case() ->
+    Configured = [
+        #{name_vsn => <<"demo-1.0.0">>, enable => true},
+        #{name_vsn => <<"demo-2.0.0">>, enable => true},
+        #{name_vsn => <<"other-1.0.0">>, enable => true}
+    ],
+    ?assertEqual(
+        [
+            #{name_vsn => <<"demo-1.0.0">>, enable => false},
+            #{name_vsn => <<"demo-2.0.0">>, enable => true},
+            #{name_vsn => <<"other-1.0.0">>, enable => true}
+        ],
+        disable_other_versions(Configured, <<"demo-2.0.0">>)
+    ),
+    ?assertEqual(
+        #{
+            <<"demo">> => <<"demo-2.0.0">>,
+            <<"other">> => <<"other-1.0.0">>
+        },
+        latest_enabled_versions(Configured)
+    ),
+    ?assertEqual(
+        <<"demo-2.0.0">>,
+        emqx_plugins_utils:latest_name_vsn(<<"demo-1.0.0">>, <<"demo-2.0.0">>)
+    ),
+    ?assertEqual(
+        <<"demo-1.0.0">>,
+        emqx_plugins_utils:latest_name_vsn(<<"demo-1.0.0">>, <<"demo-1.0.0">>)
+    ),
+    ?assertEqual(
+        <<"demo-2.0.0">>,
+        emqx_plugins_utils:latest_name_vsn(<<"demo-2.0.0">>, <<"demo-1.0.0">>)
+    ).
+
+ensure_no_other_version_active_unloads_loaded_case() ->
+    meck:new(emqx_plugins_info, [passthrough]),
+    meck:new(emqx_plugins_apps, [passthrough]),
+    meck:expect(
+        emqx_plugins_info,
+        read,
+        fun(<<"demo-1.0.0">>) -> {ok, #{rel_apps => [<<"demo-1.0.0">>]}} end
+    ),
+    meck:expect(
+        emqx_plugins_apps,
+        unload,
+        fun(#{rel_apps := [<<"demo-1.0.0">>]}) -> ok end
+    ),
+    try
+        Plugins = [
+            #{name => <<"demo">>, rel_vsn => <<"1.0.0">>, running_status => loaded},
+            #{name => <<"demo">>, rel_vsn => <<"2.0.0">>, running_status => stopped}
+        ],
+        ?assertEqual(ok, ensure_no_other_version_active(Plugins, <<"demo-2.0.0">>)),
+        ?assert(meck:called(emqx_plugins_apps, unload, [#{rel_apps => [<<"demo-1.0.0">>]}]))
+    after
+        meck:unload(emqx_plugins_info),
+        meck:unload(emqx_plugins_apps)
+    end.
+
+ensure_no_other_version_active_rejects_running_case() ->
+    Plugins = [
+        #{name => <<"demo">>, rel_vsn => <<"1.0.0">>, running_status => running},
+        #{name => <<"demo">>, rel_vsn => <<"2.0.0">>, running_status => stopped}
+    ],
+    ?assertMatch(
+        {error, #{
+            msg := "conflicting_plugin_version_running", active_versions := [<<"demo-1.0.0">>]
+        }},
+        ensure_no_other_version_active(Plugins, <<"demo-2.0.0">>)
+    ).
+
+-endif.

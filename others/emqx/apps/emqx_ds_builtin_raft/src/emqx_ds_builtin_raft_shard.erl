@@ -1,0 +1,815 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2024-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+
+%% @doc Shard represents a collection of servers managing replicas of DS data,
+%% i.e. replica set of the shard. Each server is running an instance of Raft protocol.
+%% This module is responsible for both managing shard membership and local server
+%% lifecycle.
+%% Each DB shard runs a single shard server, if the local node is part of the
+%% current shard replica set.
+-module(emqx_ds_builtin_raft_shard).
+
+-include_lib("snabbkaffe/include/trace.hrl").
+
+%% Server API
+-export([
+    start_link/3,
+    server_info/2,
+    server_metrics/1
+]).
+
+%% Static server configuration
+-export([
+    shard_servers/2,
+    known_shard_servers/2,
+    shard_server/3,
+    local_server/2,
+    %% Caching
+    cache_shard_servers/2,
+    clear_cache/2
+]).
+
+%% Dynamic server location API
+-export([
+    servers/3
+]).
+
+%% Safe Process Command API
+-export([
+    process_command/3,
+    try_servers/3
+]).
+
+%% Membership
+-export([
+    add_local_server/2,
+    drop_local_server/2,
+    remove_server/3,
+    forget_server/3,
+    is_quorum_reachable/2
+]).
+
+%% Lifecycle
+-export([drop/3]).
+
+-behaviour(gen_server).
+-export([
+    init/1,
+    handle_continue/2,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2
+]).
+
+-export_type([server/0]).
+
+-type server() :: ra:server_id().
+
+-type server_error() :: server_error(none()).
+-type server_error(Reason) ::
+    {timeout, server()}
+    | {error, server(), Reason}
+    | {error, servers_unreachable}.
+
+-define(MEMBERSHIP_CHANGE_TIMEOUT, 30_000).
+-define(MIN_BOOSTRAP_RETRY_TIMEOUT, 50).
+-define(MAX_BOOSTRAP_RETRY_TIMEOUT, 1_000).
+
+-ifdef(TEST).
+-undef(MEMBERSHIP_CHANGE_TIMEOUT).
+-define(MEMBERSHIP_CHANGE_TIMEOUT, 2_500).
+-endif.
+
+-define(PTERM(DB, SHARD, KEY), {?MODULE, DB, SHARD, KEY}).
+
+-elvis([{elvis_style, no_catch_expressions, disable}]).
+
+%%
+
+%% @doc Starts a local server, an Erlang process running an instance of Raft
+%% protocol for a single shard on this node. Together with other servers of the shard
+%% it forms a Raft consensus group.
+start_link(DB, Shard, RTConf) ->
+    gen_server:start_link(?MODULE, {DB, Shard, RTConf}, []).
+
+%% @doc Return a list of servers comprising a shard, according to the information
+%% in the DB metadata storage.
+%% Note that this indicates which servers _should_ be members of respective Ra
+%% cluster, but may at times be out-of-sync with the actual Ra cluster membership.
+-spec shard_servers(emqx_ds:db(), emqx_ds:shard()) -> [server()].
+shard_servers(DB, Shard) ->
+    ReplicaSet = emqx_ds_builtin_raft_meta:replica_set(DB, Shard),
+    shard_servers(DB, Shard, ReplicaSet).
+
+shard_servers(DB, Shard, [Site | Rest]) ->
+    case shard_server(DB, Shard, Site) of
+        Server when is_tuple(Server) ->
+            [Server | shard_servers(DB, Shard, Rest)];
+        undefined ->
+            shard_servers(DB, Shard, Rest)
+    end;
+shard_servers(_DB, _Shard, []) ->
+    [].
+
+%% @doc Return a list of servers comprising a shard, according to the information
+%% in the DB metadata storage, but excluding any servers residing on nodes not
+%% considered to be in the cluster.
+known_shard_servers(DB, Shard) ->
+    known_shard_servers(shard_servers(DB, Shard)).
+
+known_shard_servers(ShardServers) ->
+    [Server || Server <- ShardServers, is_server_known(Server)].
+
+%% @doc Return a term identifying a server for the shard located on specified site.
+-spec shard_server(
+    emqx_ds:db(),
+    emqx_ds:shard(),
+    emqx_ds_builtin_raft_meta:site()
+) -> server() | undefined.
+shard_server(DB, Shard, Site) ->
+    case emqx_ds_builtin_raft_meta:node(Site) of
+        Node when Node =/= undefined ->
+            {server_name(DB, Shard, Site), Node};
+        undefined ->
+            undefined
+    end.
+
+%% @doc Return a term identifying a local server for the shard.
+-spec local_server(emqx_ds:db(), emqx_ds:shard()) -> server().
+local_server(DB, Shard) ->
+    {server_name(DB, Shard, local_site()), node()}.
+
+cluster_name(DB, Shard) ->
+    DBBin = atom_to_binary(DB),
+    <<DBBin/binary, "_", Shard/binary>>.
+
+server_name(DB, Shard, Site) ->
+    %% NOTE
+    %% Site is redundant as part of server name, keeping for backward / rolling upgrade
+    %% compatibility.
+    DBBin = atom_to_binary(DB),
+    binary_to_atom(<<"ds_", DBBin/binary, Shard/binary, "_", Site/binary>>).
+
+-spec cache_shard_servers(emqx_ds:db(), emqx_ds:shard()) -> ok.
+cache_shard_servers(DB, Shard) ->
+    Servers = shard_servers(DB, Shard),
+    persistent_term:put(?PTERM(DB, Shard, servers), Servers).
+
+-spec clear_cache(emqx_ds:db(), emqx_ds:shard()) -> boolean().
+clear_cache(DB, Shard) ->
+    persistent_term:erase(?PTERM(DB, Shard, servers)).
+
+%%
+
+%% @doc Return list of servers for the shard, taking into account runtime information
+%% about leadership and cluster connectivity.
+%% * `Order` is `leader_preferred`
+%%    Result will contain the known leader first, then rest of shard servers. If unknown,
+%%    order is unspecified. Use when request is meant to reach the leader, e.g. Ra
+%%    command.
+%% * `Order` is `local_preferred`
+%%    Return list of servers, where the local replica (if exists) is the first element.
+%%    Note: result is _NOT_ shuffled. This can be bad for the load balancing, but it
+%%    makes results more deterministic. Caller that doesn't care about that can shuffle
+%%    the results by itself.
+-spec servers(emqx_ds:db(), emqx_ds:shard(), Order) -> [server()] when
+    Order :: leader_preferred | local_preferred | leader | undefined.
+servers(DB, Shard, leader_preferred) ->
+    get_servers_leader_preferred(DB, Shard);
+servers(DB, Shard, local_preferred) ->
+    get_servers_local_preferred(DB, Shard);
+servers(DB, Shard, leader) ->
+    get_servers_leader_only(DB, Shard);
+servers(DB, Shard, _Order = undefined) ->
+    get_shard_servers(DB, Shard).
+
+get_servers_leader_only(DB, Shard) ->
+    ClusterName = cluster_name(DB, Shard),
+    case ra_leaderboard:lookup_leader(ClusterName) of
+        Leader when Leader /= undefined ->
+            [Leader];
+        undefined ->
+            []
+    end.
+
+get_servers_leader_preferred(DB, Shard) ->
+    ClusterName = cluster_name(DB, Shard),
+    case ra_leaderboard:lookup_leader(ClusterName) of
+        Leader when Leader /= undefined ->
+            Servers = ra_leaderboard:lookup_members(ClusterName),
+            [Leader | lists:delete(Leader, Servers)];
+        undefined ->
+            get_online_servers(DB, Shard)
+    end.
+
+get_servers_local_preferred(DB, Shard) ->
+    ClusterName = cluster_name(DB, Shard),
+    case ra_leaderboard:lookup_members(ClusterName) of
+        undefined ->
+            Servers = get_online_servers(DB, Shard);
+        Servers when is_list(Servers) ->
+            ok
+    end,
+    case lists:keytake(node(), 2, Servers) of
+        false ->
+            Servers;
+        {value, Local, Rest} ->
+            [Local | Rest]
+    end.
+
+lookup_leader(DB, Shard) ->
+    %% NOTE
+    %% Does not block, but the result may be outdated or even unknown when there's
+    %% no servers on the local node.
+    ClusterName = cluster_name(DB, Shard),
+    ra_leaderboard:lookup_leader(ClusterName).
+
+get_online_servers(DB, Shard) ->
+    filter_online(get_shard_servers(DB, Shard)).
+
+filter_online(Servers) ->
+    case lists:filter(fun is_server_online/1, Servers) of
+        [] ->
+            %% NOTE: Must return non-empty list.
+            Servers;
+        Online ->
+            Online
+    end.
+
+is_server_online({_Name, Node}) ->
+    Node == node() orelse lists:member(Node, nodes()).
+
+is_server_known({_Name, Node}) ->
+    mria:is_node_in_cluster(Node).
+
+get_shard_servers(DB, Shard) ->
+    persistent_term:get(?PTERM(DB, Shard, servers), []).
+
+local_site() ->
+    emqx_ds_builtin_raft_meta:this_site().
+
+%%
+
+-spec process_command([server()], _Command, timeout()) ->
+    {ok, _Result, _Leader :: server()} | server_error().
+process_command(Servers, Command, Timeout) ->
+    try_servers(Servers, fun ra:process_command/3, [Command, Timeout]).
+
+-spec try_servers([server()], function(), [_Arg]) ->
+    {ok, _Result, _Leader :: server()} | server_error(_Reason).
+try_servers([Server | Rest], Fun, Args) ->
+    case is_server_online(Server) andalso erlang:apply(Fun, [Server | Args]) of
+        {ok, R, Leader} ->
+            {ok, R, Leader};
+        _Online = false ->
+            ?tp(dsraft_shard_try_next_servers, #{server => Server, reason => offline}),
+            try_servers(Rest, Fun, Args);
+        {error, Reason = noproc} ->
+            ?tp(dsraft_shard_try_next_servers, #{server => Server, reason => Reason}),
+            try_servers(Rest, Fun, Args);
+        {error, Reason} when Reason =:= nodedown orelse Reason =:= shutdown ->
+            %% NOTE
+            %% Conceptually, those error conditions basically mean the same as a plain
+            %% timeout: "it's impossible to tell if operation has succeeded or not".
+            ?tp(dsraft_shard_try_servers_timeout, #{server => Server, reason => Reason}),
+            {timeout, Server};
+        {timeout, _} = Timeout ->
+            ?tp(dsraft_shard_try_servers_timeout, #{server => Server, reason => timeout}),
+            Timeout;
+        {error, Reason} ->
+            {error, Server, Reason}
+    end;
+try_servers([], _Fun, _Args) ->
+    {error, servers_unreachable}.
+
+%%
+
+%% @doc Add a local server to the shard cluster.
+%% It's recommended to have the local server running before calling this function.
+%% This function is idempotent.
+-spec add_local_server(emqx_ds:db(), emqx_ds:shard()) ->
+    ok | emqx_ds:error(_Reason).
+add_local_server(DB, Shard) ->
+    ShardServers = known_shard_servers(DB, Shard),
+    add_local_server(DB, Shard, ShardServers).
+
+add_local_server(DB, Shard, ShardServers = [_ | _]) ->
+    %% NOTE
+    %% Adding local server as "promotable" member to the cluster, which means
+    %% that it won't affect quorum until it is promoted to a voter, which in
+    %% turn happens when the server has caught up sufficiently with the log.
+    %% We also rely on this "membership" to understand when the server's
+    %% ready.
+    LocalServer = local_server(DB, Shard),
+    case server_info(uid, LocalServer) of
+        UID when is_binary(UID) ->
+            ServerRecord = #{
+                id => LocalServer,
+                membership => promotable,
+                uid => UID
+            };
+        unknown ->
+            ServerRecord = #{
+                id => LocalServer,
+                membership => voter
+            }
+    end,
+    Timeout = ?MEMBERSHIP_CHANGE_TIMEOUT,
+    case try_servers(ShardServers, fun ra:add_confirm_member/3, [ServerRecord, Timeout]) of
+        {ok, _, _Leader} ->
+            ok;
+        {error, _Server, already_member} ->
+            ok;
+        Error ->
+            {error, recoverable, Error}
+    end;
+add_local_server(_DB, _Shard, _ShardServers = []) ->
+    %% NOTE
+    %% No active servers to ask to accept us. The most likely situation when this
+    %% happens is when all existing shard servers are owned by "lost" nodes, i.e.
+    %% those nodes that has (abnormally) left the cluster.
+    ok.
+
+%% @doc Remove a local server from the shard cluster and clean up on-disk data.
+%% It's required to have the local server running before calling this function.
+%% This function is idempotent.
+-spec drop_local_server(emqx_ds:db(), emqx_ds:shard()) ->
+    ok | emqx_ds:error(_Reason).
+drop_local_server(DB, Shard) ->
+    %% NOTE: Timeouts are ignored, it's a best effort attempt.
+    _ = prep_stop_server(DB, Shard),
+    LocalServer = local_server(DB, Shard),
+    case remove_server(DB, Shard, LocalServer) of
+        ok ->
+            ra:force_delete_server(DB, LocalServer);
+        {error, _, _Reason} = Error ->
+            Error
+    end.
+
+%% @doc Remove a (remote) server from the shard cluster.
+%% The server might not be running when calling this function, e.g. the node
+%% might be offline. Because of this, on-disk data will not be cleaned up.
+%% This function is idempotent.
+-spec remove_server(emqx_ds:db(), emqx_ds:shard(), server()) ->
+    ok | emqx_ds:error(_Reason).
+remove_server(DB, Shard, Server) ->
+    ShardServers = known_shard_servers(DB, Shard),
+    remove_server(Server, ShardServers).
+
+remove_server(Server, ShardServers = [_ | _]) ->
+    Timeout = ?MEMBERSHIP_CHANGE_TIMEOUT,
+    case try_servers(ShardServers, fun ra:remove_confirm_member/3, [Server, Timeout]) of
+        {ok, _, _Leader} ->
+            ok;
+        {error, _Server, not_member} ->
+            ok;
+        Error ->
+            {error, recoverable, Error}
+    end;
+remove_server(_Server, _ShardServers = []) ->
+    %% NOTE
+    %% No active servers to ask to remove us.
+    ok.
+
+%% @doc Make shard cluster "forget" a remote server residing on a "lost" site.
+%% This is UNSAFE as it works directly with Ra log, and is designed to get out of
+%% situations where quorum is unlikely to ever recover.
+-spec forget_server(emqx_ds:db(), emqx_ds:shard(), server()) ->
+    ok | emqx_ds:error(_Reason).
+forget_server(DB, Shard, Server) ->
+    ShardServers = shard_servers(DB, Shard),
+    KnownShardServers = known_shard_servers(ShardServers),
+    IsKnownMember = lists:member(Server, KnownShardServers),
+    case is_quorum_reachable(ShardServers) of
+        false when not IsKnownMember ->
+            force_forget_server(Server, KnownShardServers);
+        false when IsKnownMember ->
+            {error, unrecoverable, server_known};
+        true ->
+            {error, unrecoverable, quorum_still_reachable}
+    end.
+
+force_forget_server(Server, ShardServers = [_ | _]) ->
+    %% NOTE
+    %% We need to contact all known shard servers to understand which one of them
+    %% has the most recent log entry, meaning it has the best chance to win leader
+    %% election once we make it "forget" the server. Since we're assuming that the
+    %% quorum is currently unreachable, it seems fine to just ask them for their
+    %% current status first: there should be no new log entry between this and the
+    %% subsequent log-write operation.
+    Overviews = [{S, O} || S <- ShardServers, O <- [ra_overview(S)], map_size(O) > 0],
+    UnavailableServers = ShardServers -- [S || {S, _} <- Overviews],
+    case UnavailableServers of
+        %% NOTE
+        %% Proceed only if all known servers respond. We can't risk a "down" replica
+        %% having higher log index, as it may just refuse votes later.
+        [] ->
+            %% Find the highest-index-term server among known servers.
+            {_, _, Candidate} = lists:last(
+                lists:sort([
+                    {ra_last_written_index_term(O), ra_is_leader(O), S}
+                 || {S, O} <- Overviews
+                ])
+            ),
+            Timeout = ?MEMBERSHIP_CHANGE_TIMEOUT,
+            case ra_server_proc:force_forget_member(Candidate, Server, Timeout) of
+                ok ->
+                    ?tp(emqx_ds_replshard_forgot_member, #{
+                        server => Candidate,
+                        forgot => Server
+                    }),
+                    ok;
+                {error, not_member} ->
+                    ok;
+                timeout ->
+                    {error, recoverable, {timeout, Candidate}}
+            end;
+        Unavailable ->
+            {error, recoverable, {member_overview_unavailable, Unavailable}}
+    end;
+force_forget_server(_Server, []) ->
+    %% NOTE
+    %% No active servers to ask to forget it. Shouldn't end up here anyway, this
+    %% situation will likely be handled by `add_local_server/3` first.
+    ok.
+
+ra_last_written_index_term(Overview) ->
+    %% NOTE
+    %% Using `last_written_index_term` from the log overview that is the last entry
+    %% written to the Raft log. This is critical for `force_forget_server/2` safety:
+    %% after `force_forget_member` appends a cluster change entry and initiates a
+    %% pre-vote election, the candidate must have a log at least as up-to-date as any
+    %% other remaining server's log to win the election.
+    maybe
+        #{log := #{last_written_index_term := LWIT}} ?= Overview,
+        {Idx, Term} ?= LWIT,
+        true = is_integer(Idx),
+        true = is_integer(Term),
+        LWIT
+    else
+        _ ->
+            {-1, -1}
+    end.
+
+ra_is_leader(#{id := Server, leader_id := Server}) ->
+    true;
+ra_is_leader(#{}) ->
+    false.
+
+-spec is_quorum_reachable(emqx_ds:db(), emqx_ds:shard()) -> boolean().
+is_quorum_reachable(DB, Shard) ->
+    is_quorum_reachable(shard_servers(DB, Shard)).
+
+is_quorum_reachable(ShardServers) ->
+    KnownShardServers = known_shard_servers(ShardServers),
+    length(KnownShardServers) * 2 > length(ShardServers).
+
+%%
+
+-spec drop(emqx_ds:db(), emqx_ds:shard(), timeout()) -> ok | {error, any()}.
+drop(DB, Shard, Timeout) ->
+    case ra:delete_cluster(shard_servers(DB, Shard), Timeout) of
+        {ok, _Leader} ->
+            ok;
+        Error ->
+            Error
+    end.
+
+-spec server_metrics(server()) ->
+    #{atom() => integer()} | undefined.
+server_metrics(Server) ->
+    %% NOTE:
+    %% Hooking into non-public `ra` APIs. Be careful when upgrading.
+    ra_counters:counters(Server, [
+        commands,
+        msgs_sent,
+        dropped_sends,
+        term,
+        last_applied,
+        commit_index,
+        last_written_index,
+        snapshot_index,
+        snapshots_written,
+        commit_latency
+    ]).
+
+-spec server_info
+    (readiness, server()) -> ready | {unready, _Details} | unknown;
+    (leader, server()) -> server() | unknown;
+    (uid, server()) -> _UID :: binary() | unknown.
+server_info(readiness, Server) ->
+    %% NOTE
+    %% Server is ready if it's either the leader or a follower with voter "membership"
+    %% status (meaning it was promoted after catching up with the log).
+    case ra:members(Server) of
+        {ok, _Servers, Server} ->
+            ready;
+        {ok, _Servers, Leader} ->
+            member_info(readiness, Server, Leader);
+        Error ->
+            {unready, {leader_unavailable, Error}}
+    end;
+server_info(leader, Server) ->
+    current_leader(Server);
+server_info(uid, Server) ->
+    maps:get(uid, ra_overview(Server), unknown);
+server_info(membership, Server) ->
+    maps:keys(maps:get(cluster, ra_overview(Server), #{})).
+
+member_info(readiness, Server, Leader) ->
+    case ra:member_overview(Leader) of
+        {ok, Overview = #{}, _Leader} ->
+            Cluster = maps:get(cluster, Overview, #{}),
+            member_readiness(maps:get(Server, Cluster, #{}));
+        Error ->
+            {unready, {leader_overview_unavailable, Error}}
+    end.
+
+current_leader(Server) ->
+    %% NOTE: This call will block until the leader is known, or until the timeout.
+    case ra:members(Server) of
+        {ok, _Servers, Leader} ->
+            Leader;
+        _Error ->
+            unknown
+    end.
+
+member_readiness(#{status := Status, voter_status := #{membership := Membership}}) ->
+    case Status of
+        normal when Membership =:= voter ->
+            ready;
+        _Other ->
+            {unready, {catching_up, Status, Membership}}
+    end;
+member_readiness(#{}) ->
+    unknown.
+
+ra_overview(Server) ->
+    case ra:member_overview(Server) of
+        {ok, Overview, _Leader} ->
+            Overview;
+        _Error ->
+            #{}
+    end.
+
+%%
+
+-record(st, {
+    db :: emqx_ds:db(),
+    shard :: emqx_ds:shard(),
+    server :: server(),
+    %% Ra server process monitor:
+    mref :: reference() | undefined,
+    bootstrapped :: boolean(),
+    stage :: term()
+}).
+
+init({DB, Shard, RTConf}) ->
+    _ = process_flag(trap_exit, true),
+    case start_server(DB, Shard, RTConf) of
+        {_New = true, Server} ->
+            NextStage = trigger_election;
+        {_New = false, Server} ->
+            NextStage = wait_leader
+    end,
+    {Name, _} = Server,
+    MRef = erlang:monitor(process, Name),
+    St = #st{
+        db = DB,
+        shard = Shard,
+        server = Server,
+        mref = MRef,
+        bootstrapped = false,
+        stage = NextStage
+    },
+    {ok, St, {continue, bootstrap}}.
+
+handle_continue(bootstrap, St = #st{bootstrapped = true}) ->
+    {noreply, St};
+handle_continue(bootstrap, St0 = #st{db = DB, shard = Shard, stage = Stage}) ->
+    ?tp(dsraft_shard_replica_bootstrapping, #{db => DB, shard => Shard, stage => Stage}),
+    case bootstrap(St0) of
+        St = #st{bootstrapped = true} ->
+            ?tp(dsraft_shard_replica_bootstrapped, #{db => DB, shard => Shard}),
+            {noreply, St};
+        St = #st{bootstrapped = false} ->
+            {noreply, St, {continue, bootstrap}};
+        {retry, Timeout, St} ->
+            _TRef = erlang:start_timer(Timeout, self(), bootstrap),
+            {noreply, St}
+    end.
+
+handle_call(_Call, _From, State) ->
+    {reply, ignored, State}.
+
+handle_cast(_Msg, State) ->
+    {noreply, State}.
+
+handle_info({timeout, _TRef, bootstrap}, St) ->
+    {noreply, St, {continue, bootstrap}};
+handle_info({'DOWN', MRef, process, _Pid, Reason}, State = #st{mref = MRef}) ->
+    case Reason of
+        R when R == normal; R == shutdown; element(1, R) == shutdown ->
+            %% Ra server orderly shutdown:
+            {noreply, State};
+        Error ->
+            %% Ra server abnormal terminate:
+            %% Need to terminate too to make sure the rest of the supervision tree
+            %% terminates as well.
+            {stop, {ra_server_terminated, Error}, State}
+    end;
+handle_info(_Info, State) ->
+    {noreply, State}.
+
+terminate(_Reason, #st{db = DB, shard = Shard}) ->
+    %% NOTE: Mark as not ready right away.
+    ok = emqx_ds_builtin_raft:set_replica_ready(DB, Shard, false),
+    %% NOTE: Timeouts are ignored, it's a best effort attempt.
+    catch prep_stop_server(DB, Shard),
+    ok = ra:stop_server(DB, local_server(DB, Shard)).
+
+%%
+
+bootstrap(St = #st{stage = trigger_election, server = Server}) ->
+    ok = trigger_election(Server),
+    St#st{stage = wait_leader};
+bootstrap(St = #st{stage = wait_leader, server = Server}) ->
+    case ra:members(Server) of
+        {ok, _Servers, Leader} ->
+            St#st{stage = {wait_log, Leader}};
+        {error, _} ->
+            {retry, ?MAX_BOOSTRAP_RETRY_TIMEOUT, St};
+        {timeout, _} ->
+            {retry, 0, St}
+    end;
+bootstrap(St = #st{stage = {wait_log, Leader}}) ->
+    case ra:member_overview(Leader) of
+        {ok, #{commit_index := RaftIdx}, _Leader} ->
+            St#st{stage = {wait_log_index, RaftIdx}};
+        {error, _} ->
+            {retry, ?MAX_BOOSTRAP_RETRY_TIMEOUT, St#st{stage = wait_leader}};
+        {timeout, _} ->
+            {retry, 0, St}
+    end;
+bootstrap(St = #st{stage = {wait_log_index, RaftIdx}, db = DB, shard = Shard, server = Server}) ->
+    Overview = ra_overview(Server),
+    case maps:get(last_applied, Overview, 0) of
+        LastApplied when LastApplied >= RaftIdx ->
+            ok = emqx_ds_builtin_raft:set_replica_ready(DB, Shard, true),
+            St#st{bootstrapped = true, stage = undefined};
+        LastApplied ->
+            %% NOTE
+            %% Blunt estimate of time shard needs to catch up. If this proves to be too long in
+            %% practice, it's could be augmented with handling `recover` -> `follower` Ra
+            %% member state transition.
+            Timeout = min(
+                max(?MIN_BOOSTRAP_RETRY_TIMEOUT, RaftIdx - LastApplied),
+                ?MAX_BOOSTRAP_RETRY_TIMEOUT
+            ),
+            {retry, Timeout, St}
+    end.
+
+%%
+
+start_server(DB, Shard, RTConf) ->
+    LocalServer = local_server(DB, Shard),
+    UID = server_uid(DB, Shard),
+    case ra_directory:uid_of(DB, LocalServer) of
+        UID ->
+            %% Server is known, and has the expected UID, restart it.
+            restart_server(DB, Shard, LocalServer);
+        undefined ->
+            %% Server is unknown, start a fresh one:
+            create_start_server(DB, Shard, LocalServer, UID, RTConf);
+        ExistingUID ->
+            %% Server has unexpected UID, might have been part of the previous cluster.
+            %% Start a fresh server, effectively abandoning existing one:
+            ?tp(notice, "Recreating existing DS shard server", #{
+                db => DB,
+                shard => Shard,
+                server_uid => UID,
+                existing_server_uid => ExistingUID
+            }),
+            create_start_server(DB, Shard, LocalServer, UID, RTConf)
+    end.
+
+restart_server(DB, _Shard, LocalServer) ->
+    MutableConfig = #{},
+    case ra:restart_server(DB, LocalServer, MutableConfig) of
+        ok ->
+            {_NewServer = false, LocalServer};
+        {error, {already_started, _}} ->
+            {_NewServer = false, LocalServer}
+    end.
+
+create_start_server(DB, Shard, LocalServer, UID, RTConf) ->
+    #{replication_options := ReplicationOpts} = RTConf,
+    ClusterName = cluster_name(DB, Shard),
+    Servers = known_shard_servers(DB, Shard),
+    Machine =
+        {module, emqx_ds_builtin_raft_machine, #{
+            db => DB, shard => Shard
+        }},
+    LogOpts = maps:with(
+        [
+            snapshot_interval,
+            resend_window
+        ],
+        ReplicationOpts
+    ),
+    ok = ra:start_server(DB, #{
+        id => LocalServer,
+        uid => UID,
+        cluster_name => ClusterName,
+        initial_members => Servers,
+        machine => Machine,
+        %% TODO
+        %% Uncomment once upgrades from v0 are no longer expected, probably 6.3.0?
+        %% initial_machine_version => emqx_ds_builtin_raft_machine:version(),
+        log_init_args => LogOpts#{uid => UID}
+    }),
+    {_NewServer = true, LocalServer}.
+
+trigger_election(Server) ->
+    %% NOTE
+    %% Triggering election is necessary when a new consensus group is being brought up.
+    %% TODO
+    %% It's probably a good idea to rebalance leaders across the cluster from time to
+    %% time. There's `ra:transfer_leadership/2` for that.
+    try ra:trigger_election(Server) of
+        ok -> ok
+    catch
+        %% NOTE
+        %% Tolerating exceptions because server might be occupied with log replay for
+        %% a while.
+        exit:{timeout, _} ->
+            ?tp(dsraft_shard_trigger_election, #{server => Server, error => timeout}),
+            ok
+    end.
+
+server_uid(DB, Shard) ->
+    %% NOTE
+    %% Each new "instance" of a server should have a unique identifier. Otherwise,
+    %% if some server migrates to another node during rebalancing, and then comes
+    %% back, `ra` will be very confused by it having the same UID as before.
+    ClusterID = emqx_ds_builtin_raft_meta:this_cluster(),
+    iolist_to_binary([atom_to_binary(DB), Shard, $_, ClusterID]).
+
+%%
+
+prep_stop_server(DB, Shard) ->
+    prep_stop_server(DB, Shard, 5_000).
+
+prep_stop_server(DB, Shard, Timeout) ->
+    LocalServer = local_server(DB, Shard),
+    Servers = shard_servers(DB, Shard),
+    Candidates = [S || S <- Servers, S =/= LocalServer, is_server_known(S), is_server_online(S)],
+    HasQuorum = length(Candidates) >= length(Servers) div 2,
+    case lookup_leader(DB, Shard) of
+        LocalServer when HasQuorum andalso Candidates =/= [] ->
+            %% NOTE
+            %% Trigger leadership transfer *and* force to wait until the new leader
+            %% is elected and updated in the local server's state. This should help
+            %% to avoid edge cases where entries appended right before removal are
+            %% duplicated due to client retries.
+            [Candidate | _] = Candidates,
+            case ra:transfer_leadership(LocalServer, Candidate) of
+                ok ->
+                    case ra:members(LocalServer, Timeout) of
+                        {ok, _, Server} when Server =/= LocalServer ->
+                            ?tp(info, "Shard leadership transferred", #{
+                                db => DB,
+                                shard => Shard,
+                                to => Server
+                            });
+                        {ok, _, LocalServer} ->
+                            ?tp(warning, "Shard leadership transfer incomplete", #{
+                                db => DB,
+                                shard => Shard,
+                                leader => LocalServer
+                            })
+                    end;
+                already_leader ->
+                    ok;
+                Error ->
+                    ?tp(warning, "Shard leadership transfer failed", #{
+                        db => DB,
+                        shard => Shard,
+                        candidate => Candidate,
+                        error => Error
+                    })
+            end;
+        LocalServer ->
+            %% Liekly no quorum, no risk of occasional duplicates anyway.
+            ?tp(info, "Shard leadership transfer skipped", #{
+                db => DB,
+                shard => Shard,
+                quorum => HasQuorum,
+                candidates => Candidates
+            });
+        _ ->
+            %% Not a leader
+            ok
+    end.

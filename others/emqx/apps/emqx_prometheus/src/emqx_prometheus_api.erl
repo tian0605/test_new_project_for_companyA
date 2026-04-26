@@ -1,0 +1,407 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2020-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+
+-module(emqx_prometheus_api).
+
+-behaviour(minirest_api).
+
+-include("emqx_prometheus.hrl").
+-include_lib("hocon/include/hoconsc.hrl").
+-include_lib("emqx/include/logger.hrl").
+
+-ifdef(TEST).
+-compile(export_all).
+-compile(nowarn_export_all).
+-endif.
+
+-import(
+    hoconsc,
+    [
+        mk/2,
+        ref/1
+    ]
+).
+
+-export([
+    api_spec/0,
+    paths/0,
+    schema/1,
+    fields/1,
+    namespace/0
+]).
+
+%% handlers
+-export([
+    setting/2,
+    stats/2,
+    ns_stats/2,
+    auth/2,
+    data_integration/2,
+    schema_validation/2,
+    message_transformation/2
+]).
+
+-export([lookup_from_local_nodes/3]).
+
+-export([namespaced_stats_filter/2]).
+
+-define(TAGS, [<<"Monitor">>]).
+
+namespace() -> undefined.
+
+api_spec() ->
+    emqx_dashboard_swagger:spec(?MODULE, #{check_schema => true}).
+
+paths() ->
+    [
+        "/prometheus",
+        "/prometheus/namespaced_stats",
+        "/prometheus/auth",
+        "/prometheus/stats",
+        "/prometheus/data_integration",
+        "/prometheus/schema_validation",
+        "/prometheus/message_transformation"
+    ].
+
+schema("/prometheus") ->
+    #{
+        'operationId' => setting,
+        get =>
+            #{
+                description => ?DESC(get_prom_conf_info),
+                tags => ?TAGS,
+                responses =>
+                    #{200 => prometheus_setting_response()}
+            },
+        put =>
+            #{
+                description => ?DESC(update_prom_conf_info),
+                tags => ?TAGS,
+                'requestBody' => prometheus_setting_request(),
+                responses =>
+                    #{200 => prometheus_setting_response()}
+            }
+    };
+schema("/prometheus/namespaced_stats") ->
+    #{
+        'operationId' => ns_stats,
+        filter => fun ?MODULE:namespaced_stats_filter/2,
+        get =>
+            #{
+                description => ?DESC("ns_stats"),
+                tags => ?TAGS,
+                parameters => [ref(mode), ref(ns)],
+                security => security(),
+                responses =>
+                    #{200 => prometheus_data_schema()}
+            }
+    };
+schema("/prometheus/auth") ->
+    #{
+        'operationId' => auth,
+        get =>
+            #{
+                description => ?DESC(get_prom_auth_data),
+                tags => ?TAGS,
+                parameters => [ref(mode)],
+                security => security(),
+                responses =>
+                    #{200 => prometheus_data_schema()}
+            }
+    };
+schema("/prometheus/stats") ->
+    #{
+        'operationId' => stats,
+        get =>
+            #{
+                description => ?DESC(get_prom_data),
+                tags => ?TAGS,
+                parameters => [ref(mode)],
+                security => security(),
+                responses =>
+                    #{200 => prometheus_data_schema()}
+            }
+    };
+schema("/prometheus/data_integration") ->
+    #{
+        'operationId' => data_integration,
+        get =>
+            #{
+                description => ?DESC(get_prom_data_integration_data),
+                tags => ?TAGS,
+                parameters => [ref(mode)],
+                security => security(),
+                responses =>
+                    #{200 => prometheus_data_schema()}
+            }
+    };
+schema("/prometheus/schema_validation") ->
+    #{
+        'operationId' => schema_validation,
+        get =>
+            #{
+                description => ?DESC(get_prom_schema_validation),
+                tags => ?TAGS,
+                parameters => [ref(mode)],
+                security => security(),
+                responses =>
+                    #{200 => prometheus_data_schema()}
+            }
+    };
+schema("/prometheus/message_transformation") ->
+    #{
+        'operationId' => message_transformation,
+        get =>
+            #{
+                description => ?DESC(get_prom_message_transformation),
+                tags => ?TAGS,
+                parameters => [ref(mode)],
+                security => security(),
+                responses =>
+                    #{200 => prometheus_data_schema()}
+            }
+    }.
+
+security() ->
+    case emqx_config:get([prometheus, enable_basic_auth], false) of
+        true -> [#{'basicAuth' => []}, #{'bearerAuth' => []}];
+        false -> []
+    end.
+
+fields(mode) ->
+    [
+        {mode,
+            mk(
+                hoconsc:enum(?PROM_DATA_MODES),
+                #{
+                    default => node,
+                    desc => ?DESC(mode_parameter),
+                    in => query,
+                    required => false,
+                    example => node
+                }
+            )}
+    ];
+fields(ns) ->
+    [
+        {ns,
+            mk(
+                binary(),
+                #{
+                    required => false,
+                    desc => ?DESC("qp_namespace"),
+                    in => query,
+                    example => <<"some_ns">>
+                }
+            )}
+    ].
+
+%% bpapi
+lookup_from_local_nodes(M, F, A) ->
+    erlang:apply(M, F, A).
+
+%%--------------------------------------------------------------------
+%% API Handler funcs
+%%--------------------------------------------------------------------
+
+setting(get, _Params) ->
+    Raw = emqx:get_raw_config([<<"prometheus">>], #{}),
+    Conf =
+        case emqx_prometheus_schema:is_recommend_type(Raw) of
+            true -> Raw;
+            false -> emqx_prometheus_config:to_recommend_type(Raw)
+        end,
+    {200, Conf};
+setting(put, #{body := Body}) ->
+    case emqx_prometheus_config:update(Body) of
+        {ok, NewConfig} ->
+            {200, NewConfig};
+        {error, Reason} ->
+            Message = list_to_binary(io_lib:format("Update config failed ~p", [Reason])),
+            {500, 'INTERNAL_ERROR', Message}
+    end.
+
+stats(get, #{headers := Headers, query_string := Qs}) ->
+    collect(emqx_prometheus, collect_opts(Headers, Qs)).
+
+ns_stats(get, #{headers := Headers, query_string := Qs}) ->
+    case response_type(Headers) of
+        <<"json">> ->
+            {400, <<"only prometheus format is supported">>};
+        <<"prometheus">> ->
+            collect_ns_stats(collect_opts_ns(Qs))
+    end.
+
+auth(get, #{headers := Headers, query_string := Qs}) ->
+    collect(emqx_prometheus_auth, collect_opts(Headers, Qs)).
+
+data_integration(get, #{headers := Headers, query_string := Qs}) ->
+    collect(emqx_prometheus_data_integration, collect_opts(Headers, Qs)).
+
+schema_validation(get, #{headers := Headers, query_string := Qs}) ->
+    collect(emqx_prometheus_schema_validation, collect_opts(Headers, Qs)).
+
+message_transformation(get, #{headers := Headers, query_string := Qs}) ->
+    collect(emqx_prometheus_message_transformation, collect_opts(Headers, Qs)).
+
+%%--------------------------------------------------------------------
+%% Internal funcs
+%%--------------------------------------------------------------------
+
+collect(Module, #{type := Type, mode := Mode}) ->
+    put_prom_data_mode(Mode),
+    Data =
+        case erlang:function_exported(Module, collect, 1) of
+            true ->
+                erlang:apply(Module, collect, [Type]);
+            false ->
+                ?SLOG(error, #{
+                    msg => "prometheus callback module not found, empty data responded",
+                    module_name => Module
+                }),
+                <<>>
+        end,
+    gen_response(Type, Data).
+
+collect_ns_stats(#{mode := Mode, namespace := Namespace}) ->
+    Type = <<"prometheus">>,
+    Data = emqx_prometheus:collect_ns(Namespace, Mode),
+    gen_response(Type, Data).
+
+collect_opts(Headers, Qs) ->
+    #{type => response_type(Headers), mode => mode(Qs)}.
+
+collect_opts_ns(Qs) ->
+    #{namespace => namespace(Qs), mode => mode(Qs)}.
+
+response_type(#{<<"accept">> := <<"application/json">>}) ->
+    <<"json">>;
+response_type(_) ->
+    <<"prometheus">>.
+
+put_prom_data_mode(Mode) ->
+    %% `Mode` is used to control the format of the returned data
+    %% It will used in callback `Module:collect_mf/1` to fetch data from node or cluster
+    %% And use this mode parameter to determine the formatting method of the returned information.
+    %% Since the arity of the callback function has been fixed.
+    %% so it is placed in the process dictionary of the current process.
+    ?PUT_PROM_DATA_MODE(Mode).
+
+mode(#{<<"mode">> := Mode}) ->
+    case lists:member(Mode, ?PROM_DATA_MODES) of
+        true -> Mode;
+        false -> ?PROM_DATA_MODE__NODE
+    end;
+mode(_) ->
+    ?PROM_DATA_MODE__NODE.
+
+namespace(#{<<"ns">> := Namespace}) ->
+    Namespace;
+namespace(_) ->
+    all.
+
+gen_response(<<"json">>, Data) ->
+    {200, Data};
+gen_response(<<"prometheus">>, Data) ->
+    {200, #{<<"content-type">> => <<"text/plain">>}, Data}.
+
+prometheus_setting_request() ->
+    [{prometheus, #{type := Setting}}] = emqx_prometheus_schema:roots(),
+    emqx_dashboard_swagger:schema_with_examples(
+        Setting,
+        [
+            recommend_setting_example(),
+            legacy_setting_example()
+        ]
+    ).
+
+%% Always return recommend setting
+prometheus_setting_response() ->
+    {_, #{value := Example}} = recommend_setting_example(),
+    emqx_dashboard_swagger:schema_with_example(
+        ?R_REF(emqx_prometheus_schema, recommend_setting),
+        Example
+    ).
+
+legacy_setting_example() ->
+    Summary = <<"legacy_deprecated_setting">>,
+    {Summary, #{
+        summary => Summary,
+        value => #{
+            enable => true,
+            interval => <<"15s">>,
+            push_gateway_server => <<"http://127.0.0.1:9091">>,
+            headers => #{<<"Authorization">> => <<"Basic YWRtaW46Y2JraG55eWd5QDE=">>},
+            job_name => <<"${name}/instance/${name}~${host}">>,
+            vm_dist_collector => <<"disabled">>,
+            vm_memory_collector => <<"disabled">>,
+            vm_msacc_collector => <<"disabled">>,
+            mnesia_collector => <<"disabled">>,
+            vm_statistics_collector => <<"disabled">>,
+            vm_system_info_collector => <<"disabled">>
+        }
+    }}.
+
+recommend_setting_example() ->
+    Summary = <<"recommend_setting">>,
+    {Summary, #{
+        summary => Summary,
+        value => #{
+            enable_basic_auth => false,
+            push_gateway => #{
+                interval => <<"15s">>,
+                method => put,
+                url => <<"http://127.0.0.1:9091">>,
+                headers => #{<<"Authorization">> => <<"Basic YWRtaW46Y2JraG55eWd5QDE=">>},
+                job_name => <<"${name}/instance/${name}~${host}">>
+            },
+            collectors => #{
+                vm_dist => <<"disabled">>,
+                vm_memory => <<"disabled">>,
+                vm_msacc => <<"disabled">>,
+                mnesia => <<"disabled">>,
+                vm_statistics => <<"disabled">>,
+                vm_system_info => <<"disabled">>
+            }
+        }
+    }}.
+
+prometheus_data_schema() ->
+    #{
+        content =>
+            [
+                {'text/plain', #{schema => #{type => string}}},
+                {'application/json', #{schema => #{type => object}}}
+            ]
+    }.
+
+validate_not_json(#{headers := Headers} = Req, _Meta) ->
+    case response_type(Headers) of
+        <<"json">> ->
+            {400, <<"only prometheus format is supported">>};
+        <<"prometheus">> ->
+            {ok, Req}
+    end.
+
+parse_collect_opt_ns(#{query_string := Qs} = Req, _Meta) ->
+    Opts = collect_opts_ns(Qs),
+    {ok, Req#{collect_opts => Opts}}.
+
+rate_limit_all_ns_stats(#{collect_opts := #{namespace := all}} = Req, _Meta) ->
+    Client = emqx_prometheus_limiter:connect_api(),
+    case emqx_limiter_client:try_consume(Client, 1) of
+        {true, _NewClient} ->
+            {ok, Req};
+        {false, _NewClient, _Reason} ->
+            {429, <<"Too many requests">>}
+    end;
+rate_limit_all_ns_stats(Req, _Meta) ->
+    {ok, Req}.
+
+namespaced_stats_filter(Req0, Meta) ->
+    maybe
+        {ok, Req1} ?= validate_not_json(Req0, Meta),
+        {ok, Req2} ?= parse_collect_opt_ns(Req1, Meta),
+        rate_limit_all_ns_stats(Req2, Meta)
+    end.

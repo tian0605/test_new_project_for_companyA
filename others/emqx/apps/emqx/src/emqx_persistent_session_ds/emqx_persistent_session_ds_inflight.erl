@@ -1,0 +1,404 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2023-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+-module(emqx_persistent_session_ds_inflight).
+
+%% API:
+-export([
+    new/3,
+    push/2,
+    pop/1,
+    n_buffered/2,
+    n_inflight/1,
+    puback/2,
+    pubrec/2,
+    pubcomp/2,
+    receive_maximum/1,
+
+    on_release/4
+]).
+
+%% internal exports:
+-export([]).
+
+-export_type([t/0]).
+
+-include("emqx.hrl").
+-include("emqx_mqtt.hrl").
+-include("session_internals.hrl").
+
+-ifdef(TEST).
+-include_lib("proper/include/proper.hrl").
+-include_lib("eunit/include/eunit.hrl").
+-endif.
+
+%%================================================================================
+%% Type declarations
+%%================================================================================
+
+-type payload() ::
+    {emqx_persistent_session_ds:seqno() | undefined, emqx_types:message()}
+    | {pubrel, emqx_persistent_session_ds:seqno()}
+    | {other, term()}.
+
+-record(ds_inflight, {
+    receive_maximum :: pos_integer(),
+    %% Main queue:
+    queue :: queue:queue(payload()),
+    %% Queues that are used to track sequence numbers of ack tracks:
+    puback_queue :: iqueue(),
+    pubrec_queue :: iqueue(),
+    pubcomp_queue :: iqueue(),
+    %% Tally counters:
+    n_inflight_qos1 = 0 :: non_neg_integer(),
+    n_inflight_qos2 = 0 :: non_neg_integer(),
+    n_qos0 = 0 :: non_neg_integer(),
+    n_qos1 = 0 :: non_neg_integer(),
+    n_qos2 = 0 :: non_neg_integer(),
+    %% Queue of actions that happen when certain sequence numbers are
+    %% released:
+    rel_queue :: emqx_sessds_seqno_rel_q:t()
+}).
+
+-type t() :: #ds_inflight{}.
+
+%%================================================================================
+%% API functions
+%%================================================================================
+
+-spec new(
+    non_neg_integer(), emqx_persistent_session_ds:seqno(), emqx_persistent_session_ds:seqno()
+) -> t().
+new(ReceiveMaximum, QoS1Released, QoS2Released) when ReceiveMaximum > 0 ->
+    #ds_inflight{
+        receive_maximum = ReceiveMaximum,
+        queue = queue:new(),
+        puback_queue = iqueue_new(),
+        pubrec_queue = iqueue_new(),
+        pubcomp_queue = iqueue_new(),
+        rel_queue = emqx_sessds_seqno_rel_q:new(QoS1Released, QoS2Released)
+    }.
+
+-spec receive_maximum(t()) -> pos_integer().
+receive_maximum(#ds_inflight{receive_maximum = ReceiveMaximum}) ->
+    ReceiveMaximum.
+
+-spec push(payload(), t()) -> t().
+push(Payload = {other, _}, Rec = #ds_inflight{queue = Q}) ->
+    Rec#ds_inflight{queue = queue:in(Payload, Q)};
+push(Payload = {pubrel, _SeqNo}, Rec = #ds_inflight{queue = Q}) ->
+    Rec#ds_inflight{queue = queue:in(Payload, Q)};
+push(Payload = {_, Msg}, Rec) ->
+    #ds_inflight{queue = Q0, n_qos0 = NQos0, n_qos1 = NQos1, n_qos2 = NQos2} = Rec,
+    Q = queue:in(Payload, Q0),
+    case Msg#message.qos of
+        ?QOS_0 ->
+            Rec#ds_inflight{queue = Q, n_qos0 = NQos0 + 1};
+        ?QOS_1 ->
+            Rec#ds_inflight{queue = Q, n_qos1 = NQos1 + 1};
+        ?QOS_2 ->
+            Rec#ds_inflight{queue = Q, n_qos2 = NQos2 + 1}
+    end.
+
+-doc """
+Add an action that will be returned when the specified sequence
+numbers are released via `puback/2` or `pubcomp/2`.
+
+WARNING: it's an error to add actions with decreasing sequence
+numbers.
+""".
+-spec on_release(SeqNo, SeqNo, Action, t()) -> {[Action], t()} when
+    SeqNo :: emqx_persistent_session_ds:seqno() | undefined.
+on_release(SN1, SN2, Action, Rec = #ds_inflight{rel_queue = RelQ0}) ->
+    {Actions, RelQ} = emqx_sessds_seqno_rel_q:pop(
+        emqx_sessds_seqno_rel_q:push(SN1, SN2, Action, RelQ0)
+    ),
+    {Actions, Rec#ds_inflight{rel_queue = RelQ}}.
+
+-spec pop(t()) -> {payload(), t()} | undefined.
+pop(Rec0) ->
+    #ds_inflight{
+        receive_maximum = ReceiveMaximum,
+        n_inflight_qos1 = NInflightQoS1,
+        n_inflight_qos2 = NInflightQoS2,
+        queue = Q0,
+        puback_queue = QAck,
+        pubrec_queue = QRec,
+        pubcomp_queue = QComp,
+        n_qos0 = NQos0,
+        n_qos1 = NQos1,
+        n_qos2 = NQos2
+    } = Rec0,
+    case queue:out(Q0) of
+        {{value, Payload}, Q} ->
+            %% Flow control: when we pop an MQTT message with QoS >= 1
+            %% we need to make sure number of inflight messages in the
+            %% track is less than the epoch size (see theorem
+            %% `seqno_reconstruct' in emqx_sessds_proofs.v).
+            %%
+            %% Note 1: NInflightQosX are numbers of messages _before_
+            %% the new one is added. We substract 1 to make sure the
+            %% inequality holds _after_ we add a message to the
+            %% inflight.
+            %%
+            %% Note 2: QoS1 track skips over sequence numbers
+            %% producing PacketId = 0, we account for that by reducing
+            %% the allowed number of inflight messages in this track
+            %% by 1:
+            case Payload of
+                {other, _} ->
+                    Rec = Rec0#ds_inflight{
+                        queue = Q
+                    },
+                    {Payload, Rec};
+                {pubrel, SeqNo} ->
+                    Rec = Rec0#ds_inflight{
+                        queue = Q,
+                        pubcomp_queue = ipush(SeqNo, QComp)
+                    },
+                    {Payload, Rec};
+                {_SeqNo, #message{qos = ?QOS_0}} ->
+                    Rec = Rec0#ds_inflight{
+                        queue = Q,
+                        n_qos0 = NQos0 - 1
+                    },
+                    {Payload, Rec};
+                {SeqNo, #message{qos = ?QOS_1}} when
+                    (NInflightQoS1 + NInflightQoS2) < ReceiveMaximum andalso
+                        NInflightQoS1 < ?EPOCH_SIZE - 2
+                ->
+                    Rec = Rec0#ds_inflight{
+                        queue = Q,
+                        n_qos1 = NQos1 - 1,
+                        n_inflight_qos1 = NInflightQoS1 + 1,
+                        puback_queue = ipush(SeqNo, QAck)
+                    },
+                    {Payload, Rec};
+                {SeqNo, #message{qos = ?QOS_2}} when
+                    (NInflightQoS1 + NInflightQoS2) < ReceiveMaximum andalso
+                        NInflightQoS2 < ?EPOCH_SIZE - 1
+                ->
+                    Rec = Rec0#ds_inflight{
+                        queue = Q,
+                        n_qos2 = NQos2 - 1,
+                        n_inflight_qos2 = NInflightQoS2 + 1,
+                        pubrec_queue = ipush(SeqNo, QRec),
+                        pubcomp_queue = ipush(SeqNo, QComp)
+                    },
+                    {Payload, Rec};
+                {_SeqNo, #message{}} ->
+                    undefined
+            end;
+        _ ->
+            undefined
+    end.
+
+-spec n_buffered(?QOS_0..?QOS_2 | all, t()) -> non_neg_integer().
+n_buffered(?QOS_0, #ds_inflight{n_qos0 = NQos0}) ->
+    NQos0;
+n_buffered(?QOS_1, #ds_inflight{n_qos1 = NQos1}) ->
+    NQos1;
+n_buffered(?QOS_2, #ds_inflight{n_qos2 = NQos2}) ->
+    NQos2;
+n_buffered(all, #ds_inflight{n_qos0 = NQos0, n_qos1 = NQos1, n_qos2 = NQos2}) ->
+    NQos0 + NQos1 + NQos2.
+
+-spec n_inflight(t()) -> non_neg_integer().
+n_inflight(#ds_inflight{n_inflight_qos1 = N1, n_inflight_qos2 = N2}) ->
+    N1 + N2.
+
+-spec puback(emqx_persistent_session_ds:seqno(), t()) ->
+    {ok, [_Action], t()} | {error, Expected}
+when
+    Expected :: emqx_persistent_session_ds:seqno() | undefined.
+puback(SeqNo, Rec = #ds_inflight{puback_queue = Q0, n_inflight_qos1 = N, rel_queue = RelQ0}) ->
+    case ipop(Q0) of
+        {{value, SeqNo}, Q} ->
+            {Actions, RelQ} = emqx_sessds_seqno_rel_q:pop(?QOS_1, SeqNo, RelQ0),
+            {ok, Actions, Rec#ds_inflight{
+                puback_queue = Q,
+                n_inflight_qos1 = max(0, N - 1),
+                rel_queue = RelQ
+            }};
+        {{value, Expected}, _} ->
+            {error, Expected};
+        _ ->
+            {error, undefined}
+    end.
+
+-spec pubcomp(emqx_persistent_session_ds:seqno(), t()) ->
+    {ok, [_Action], t()} | {error, Expected}
+when
+    Expected :: emqx_persistent_session_ds:seqno() | undefined.
+pubcomp(SeqNo, Rec = #ds_inflight{pubcomp_queue = Q0, n_inflight_qos2 = N, rel_queue = RelQ0}) ->
+    case ipop(Q0) of
+        {{value, SeqNo}, Q} ->
+            {Actions, RelQ} = emqx_sessds_seqno_rel_q:pop(?QOS_2, SeqNo, RelQ0),
+            {ok, Actions, Rec#ds_inflight{
+                pubcomp_queue = Q,
+                n_inflight_qos2 = max(0, N - 1),
+                rel_queue = RelQ
+            }};
+        {{value, Expected}, _} ->
+            {error, Expected};
+        _ ->
+            {error, undefined}
+    end.
+
+%% PUBREC doesn't affect inflight window:
+%% https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html#_Flow_Control
+-spec pubrec(emqx_persistent_session_ds:seqno(), t()) -> {ok, t()} | {error, Expected} when
+    Expected :: emqx_persistent_session_ds:seqno() | undefined.
+pubrec(SeqNo, Rec = #ds_inflight{pubrec_queue = Q0}) ->
+    case ipop(Q0) of
+        {{value, SeqNo}, Q} ->
+            {ok, Rec#ds_inflight{
+                pubrec_queue = Q
+            }};
+        {{value, Expected}, _} ->
+            {error, Expected};
+        _ ->
+            {error, undefined}
+    end.
+
+%%================================================================================
+%% Internal functions
+%%================================================================================
+
+%%%% Interval queue:
+
+%% "Interval queue": a data structure that represents a queue of
+%% monotonically increasing non-negative integers in a compact manner.
+%% It is functionally equivalent to a `queue:queue(integer())'.
+-record(iqueue, {
+    %% Head interval:
+    head = 0 :: integer(),
+    head_end = 0 :: integer(),
+    %% Intermediate ranges:
+    queue :: queue:queue({integer(), integer()}),
+    %% End interval:
+    tail = 0 :: integer(),
+    tail_end = 0 :: integer()
+}).
+
+-type iqueue() :: #iqueue{}.
+
+iqueue_new() ->
+    #iqueue{
+        queue = queue:new()
+    }.
+
+%% @doc Push a value into the interval queue:
+-spec ipush(integer(), iqueue()) -> iqueue().
+ipush(Val, Q = #iqueue{tail_end = Val, head_end = Val}) ->
+    %% Optimization: head and tail intervals overlap, and the newly
+    %% inserted value extends both. Attach it to both intervals, to
+    %% avoid `queue:out' in `ipop':
+    Q#iqueue{
+        tail_end = Val + 1,
+        head_end = Val + 1
+    };
+ipush(Val, Q = #iqueue{tail_end = Val}) ->
+    %% Extend tail interval:
+    Q#iqueue{
+        tail_end = Val + 1
+    };
+ipush(Val, Q = #iqueue{tail = Tl, tail_end = End, queue = IQ0}) when is_number(Val), Val > End ->
+    IQ = queue:in({Tl, End}, IQ0),
+    %% Begin a new interval:
+    Q#iqueue{
+        queue = IQ,
+        tail = Val,
+        tail_end = Val + 1
+    }.
+
+-spec ipop(iqueue()) -> {{value, integer()}, iqueue()} | {empty, iqueue()}.
+ipop(Q = #iqueue{head = Hd, head_end = HdEnd}) when Hd < HdEnd ->
+    %% Head interval is not empty. Consume a value from it:
+    {{value, Hd}, Q#iqueue{head = Hd + 1}};
+ipop(Q = #iqueue{head_end = End, tail_end = End}) ->
+    %% Head interval is fully consumed, and it overlaps with the tail
+    %% interval. It means the queue is empty:
+    {empty, Q};
+ipop(Q = #iqueue{head = Hd0, tail = Tl, tail_end = TlEnd, queue = IQ0}) ->
+    %% Head interval is fully consumed, and it doesn't overlap with
+    %% the tail interval. Replace the head interval with the next
+    %% interval from the queue or with the tail interval:
+    case queue:out(IQ0) of
+        {{value, {Hd, HdEnd}}, IQ} ->
+            ipop(Q#iqueue{head = max(Hd0, Hd), head_end = HdEnd, queue = IQ});
+        {empty, _} ->
+            ipop(Q#iqueue{head = max(Hd0, Tl), head_end = TlEnd})
+    end.
+
+-ifdef(TEST).
+
+%% Test that behavior of iqueue is identical to that of a regular queue of integers:
+iqueue_compat_test_() ->
+    Props = [iqueue_compat()],
+    Opts = [{numtests, 1000}, {to_file, user}, {max_size, 100}],
+    {timeout, 30, [?_assert(proper:quickcheck(Prop, Opts)) || Prop <- Props]}.
+
+%% Generate a sequence of pops and pushes with monotonically
+%% increasing arguments, and verify replaying produces equivalent
+%% results for the optimized and the reference implementation:
+iqueue_compat() ->
+    ?FORALL(
+        Cmds,
+        iqueue_commands(),
+        begin
+            lists:foldl(
+                fun
+                    ({push, N}, {IQ, Q, Acc}) ->
+                        {ipush(N, IQ), queue:in(N, Q), [N | Acc]};
+                    (pop, {IQ0, Q0, Acc}) ->
+                        {Ret, IQ} = ipop(IQ0),
+                        {Expected, Q} = queue:out(Q0),
+                        ?assertEqual(
+                            Expected,
+                            Ret,
+                            #{
+                                sequence => lists:reverse(Acc),
+                                q => queue:to_list(Q0),
+                                iq0 => iqueue_print(IQ0),
+                                iq => iqueue_print(IQ)
+                            }
+                        ),
+                        {IQ, Q, [pop | Acc]}
+                end,
+                {iqueue_new(), queue:new(), []},
+                Cmds
+            ),
+            true
+        end
+    ).
+
+iqueue_cmd() ->
+    oneof([
+        pop,
+        {push, range(1, 3)}
+    ]).
+
+iqueue_commands() ->
+    ?LET(
+        Cmds,
+        list(iqueue_cmd()),
+        process_test_cmds(Cmds, 0)
+    ).
+
+process_test_cmds([], _) ->
+    [];
+process_test_cmds([pop | Tl], Cnt) ->
+    [pop | process_test_cmds(Tl, Cnt)];
+process_test_cmds([{push, N} | Tl], Cnt0) ->
+    Cnt = Cnt0 + N,
+    [{push, Cnt} | process_test_cmds(Tl, Cnt)].
+
+iqueue_print(#iqueue{head = Hd, head_end = HdEnd, queue = Q, tail = Tl, tail_end = TlEnd}) ->
+    #{
+        hd => {Hd, HdEnd},
+        tl => {Tl, TlEnd},
+        q => queue:to_list(Q)
+    }.
+
+-endif.
