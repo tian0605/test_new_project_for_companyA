@@ -39,6 +39,7 @@ import mysql.connector
 import redis
 import simplejson as json
 import config
+import excelexporters.spaceproduction
 from core import utilities
 from core.useractivity import access_control, api_key_control, get_request_context_value, get_user_permission_context
 
@@ -782,6 +783,19 @@ class Reporting:
         result['base_result_values'] = base_result_values
         result['base_total_production'] = base_period_total_production
         result['product'] = product_dict
+
+        result['excel_bytes_base64'] = None
+        if not is_quick_mode:
+            result['excel_bytes_base64'] = excelexporters.spaceproduction.export(
+                result,
+                space_name,
+                base_period_start_datetime_local,
+                base_period_end_datetime_local,
+                reporting_period_start_datetime_local,
+                reporting_period_end_datetime_local,
+                period_type,
+                language,
+            )
 
         resp_text = json.dumps(result)
         resp.text = resp_text

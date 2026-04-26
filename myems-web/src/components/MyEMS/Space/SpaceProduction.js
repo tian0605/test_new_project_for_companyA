@@ -178,10 +178,10 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
     return Number.isFinite(convertedValue) ? convertedValue : null;
   };
 
-  const finalizeLoadState = hasResultData => {
+  const finalizeLoadState = (hasResultData, hasExportData = false) => {
     setSubmitButtonDisabled(false);
     setSpinnerHidden(true);
-    setExportButtonHidden(true);
+    setExportButtonHidden(!hasExportData);
     setResultDataHidden(!hasResultData);
   };
 
@@ -457,6 +457,7 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
     // Reinitialize tables
     setDetailedDataTableData([]);
     setChildSpacesTableData([]);
+    setExcelBytesBase64(undefined);
 
     let isResponseOK = false;
     fetch(
@@ -825,10 +826,10 @@ const SpaceProduction = ({ setRedirect, setRedirectUrl, t }) => {
               }, 0);
             }
           }
-          // setExcelBytesBase64(json['excel_bytes_base64']);
+          setExcelBytesBase64(json['excel_bytes_base64']);
 
           // enable submit button
-          finalizeLoadState(true);
+          finalizeLoadState(true, Boolean(json['excel_bytes_base64']));
         } else {
           handleAPIError(json, setRedirect, setRedirectUrl, t, toast)
           finalizeLoadState(false);
