@@ -14,8 +14,9 @@ if (-not $mysqlBaseDir) {
 $mysqlExe = Join-Path (Join-Path $mysqlBaseDir 'bin') 'mysql.exe'
 $dbPort = 3306
 $dbPassword = '!MyEMS1'
+$tempSqlFile = Join-Path ([System.IO.Path]::GetTempPath()) ('myems-mqtt-setup-' + [System.Guid]::NewGuid().ToString() + '.sql')
 
-$sql = @"
+$sql = @'
 INSERT INTO myems_system_db.tbl_data_sources (id, name, uuid, gateway_id, protocol, connection)
 VALUES (
   10001,
@@ -48,14 +49,52 @@ ON DUPLICATE KEY UPDATE
   is_virtual = VALUES(is_virtual),
   address = VALUES(address),
   description = VALUES(description);
-"@
 
-& $mysqlExe --protocol=tcp --host=127.0.0.1 --port=$dbPort --default-character-set=utf8mb4 -u root --password=$dbPassword -e $sql
+INSERT INTO myems_system_db.tbl_sensors_points (sensor_id, point_id)
+SELECT 1, 10001
+FROM DUAL
+WHERE EXISTS (
+    SELECT 1 FROM myems_system_db.tbl_sensors WHERE id = 1
+)
+  AND NOT EXISTS (
+    SELECT 1
+    FROM myems_system_db.tbl_sensors_points
+    WHERE sensor_id = 1 AND point_id = 10001
+  );
+
+INSERT INTO myems_system_db.tbl_spaces_sensors (space_id, sensor_id)
+SELECT 1, 1
+FROM DUAL
+WHERE EXISTS (
+    SELECT 1 FROM myems_system_db.tbl_spaces WHERE id = 1
+)
+  AND EXISTS (
+    SELECT 1 FROM myems_system_db.tbl_sensors WHERE id = 1
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM myems_system_db.tbl_spaces_sensors
+    WHERE space_id = 1 AND sensor_id = 1
+  );
+'@
+
+Set-Content -Path $tempSqlFile -Value $sql -Encoding UTF8
+
+try {
+  $normalizedSqlPath = $tempSqlFile.Replace('\', '/')
+  & $mysqlExe --protocol=tcp --host=127.0.0.1 --port=$dbPort --default-character-set=utf8mb4 -u root --password=$dbPassword --execute="source $normalizedSqlPath"
+}
+finally {
+  if (Test-Path $tempSqlFile) {
+    Remove-Item $tempSqlFile -Force
+  }
+}
 
 if ($LASTEXITCODE -ne 0) {
   throw 'Failed to provision local MQTT datasource and point.'
 }
 
 Write-Host 'Provisioned local MQTT datasource 10001 and point 10001.'
+Write-Host 'Ensured demo UI binding through Space 1 -> Sensor 1 -> Point 10001 when the demo records exist.'
 Write-Host 'Topic: testtopic'
 Write-Host 'Payload: {"data_source_id":10001,"point_id":10001,"utc_date_time":"2026-04-26T12:00:00","value":42.5}'

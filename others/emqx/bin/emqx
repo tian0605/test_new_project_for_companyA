@@ -1016,6 +1016,24 @@ fi
 export ESCRIPT_NAME="$SHORT_NAME"
 
 PIPE_DIR="${PIPE_DIR:-/$DATA_DIR/${WHOAMI}_erl_pipes/$NAME/}"
+PIPE_DIR_FALLBACK=0
+
+ensure_pipe_dir_support() {
+    if [ -n "${PIPE_DIR:-}" ]; then
+        mkdir -p "$PIPE_DIR"
+        local fifo_probe="$PIPE_DIR/.emqx_fifo_probe"
+        if mkfifo "$fifo_probe" >/dev/null 2>&1; then
+            rm -f "$fifo_probe"
+            return 0
+        fi
+    fi
+
+    PIPE_DIR="/tmp/${REL_NAME}_${WHOAMI}_erl_pipes/$NAME/"
+    PIPE_DIR_FALLBACK=1
+    mkdir -p "$PIPE_DIR"
+}
+
+ensure_pipe_dir_support
 
 COOKIE="${EMQX_NODE__COOKIE:-}"
 COOKIE_IN_USE="$(get_boot_config 'node.cookie')"
@@ -1113,7 +1131,12 @@ case "${COMMAND}" in
         case "$COMMAND" in
             start)
                 shift
-                START_OPTION="console"
+                if [ "$PIPE_DIR_FALLBACK" -eq 1 ]; then
+                    logwarn "FIFO pipes are unsupported in the data directory; daemon mode will launch foreground under run_erl using $PIPE_DIR"
+                    START_OPTION="foreground"
+                else
+                    START_OPTION="console"
+                fi
                 HEART_OPTION="start"
                 ;;
         esac
@@ -1136,8 +1159,12 @@ case "${COMMAND}" in
 
         mkdir -p "$PIPE_DIR"
 
-        "$BINDIR/run_erl" -daemon "$PIPE_DIR" "$EMQX_LOG_DIR" \
-                          "$(relx_start_command)"
+        if [ "$PIPE_DIR_FALLBACK" -eq 1 ]; then
+            nohup "$RUNNER_SCRIPT" foreground >>"$EMQX_LOG_DIR/foreground-daemon.log" 2>&1 &
+        else
+            "$BINDIR/run_erl" -daemon "$PIPE_DIR" "$EMQX_LOG_DIR" \
+                              "$(relx_start_command)"
+        fi
 
         WAIT_TIME=${EMQX_WAIT_FOR_START:-120}
         if wait_until_return_val "true" "$WAIT_TIME" 'relx_nodetool' \

@@ -1,11 +1,16 @@
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$pythonExe = 'C:\Users\zhizh\AppData\Local\Programs\Python\Python310\python.exe'
+$pythonExe = Join-Path $repoRoot '.venv\Scripts\python.exe'
+$waitressExe = Join-Path $repoRoot '.venv\Scripts\waitress-serve.exe'
 
 if (-not (Test-Path $pythonExe)) {
-  throw 'Python 3.10 was not found at the expected path.'
+  throw 'Workspace Python environment was not found at .venv\Scripts\python.exe.'
+}
+
+if (-not (Test-Path $waitressExe)) {
+  throw 'Waitress was not found at .venv\Scripts\waitress-serve.exe.'
 }
 
 Set-Location (Join-Path $repoRoot 'myems-api')
-& (Join-Path $repoRoot '.venv\Scripts\waitress-serve.exe') --listen=0.0.0.0:8000 app:api
+& $waitressExe --listen=0.0.0.0:8000 app:api

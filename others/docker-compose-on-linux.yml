@@ -1,6 +1,17 @@
 version: '3.8'
 services:
+  emqx:
+    image: ${MYEMS_EMQX_IMAGE:-emqx/emqx:latest}
+    restart: always
+    ports:
+      - "1883:1883"
+      - "18083:18083"
+    volumes:
+      - /myems-emqx/data:/opt/emqx/data
+      - /myems-emqx/log:/opt/emqx/log
+
   api:
+    image: ${MYEMS_API_IMAGE:-myems/api:latest}
     build: ../myems-api
     command: gunicorn app:api -b 0.0.0.0:8000 --timeout 600 --workers=4
     volumes:
@@ -10,26 +21,41 @@ services:
       - "8000:8000"
 
   aggregation:
+    image: ${MYEMS_AGGREGATION_IMAGE:-myems/aggregation:latest}
     build: ../myems-aggregation
     command: python main.py
     restart: always
 
   cleaning:
+    image: ${MYEMS_CLEANING_IMAGE:-myems/cleaning:latest}
     build: ../myems-cleaning
     command: python main.py
     restart: always
 
   modbus_tcp:
+    image: ${MYEMS_MODBUS_TCP_IMAGE:-myems/modbus-tcp:latest}
     build: ../myems-modbus-tcp
     command: python main.py
     restart: always
 
+  myems_mqtt:
+    image: ${MYEMS_MQTT_IMAGE:-myems/mqtt:latest}
+    build: ../myems-mqtt
+    command: python main.py
+    env_file:
+      - ../myems-mqtt/.env
+    depends_on:
+      - emqx
+    restart: always
+
   normalization:
+    image: ${MYEMS_NORMALIZATION_IMAGE:-myems/normalization:latest}
     build: ../myems-normalization
     command: python main.py
     restart: always
 
   admin:
+    image: ${MYEMS_ADMIN_IMAGE:-myems/admin:latest}
     build: ../myems-admin
     command: nginx -c /etc/nginx/nginx.conf -g "daemon off;"
     healthcheck:
@@ -39,7 +65,9 @@ services:
     restart: always
     ports:
       - "8001:8001"
+
   web:
+    image: ${MYEMS_WEB_IMAGE:-myems/web:latest}
     build: ../myems-web
     command: nginx -c /etc/nginx/nginx.conf -g "daemon off;"
     healthcheck:
