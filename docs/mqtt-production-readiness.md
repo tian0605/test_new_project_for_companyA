@@ -40,6 +40,8 @@ Before release, freeze these values explicitly instead of keeping local defaults
 - Run `myems-mqtt` under a service manager with restart policy and dedicated logs.
 - Confirm MySQL connectivity from the `myems-mqtt` host to both `myems_system_db` and `myems_historical_db`.
 - Open only the required firewall ports.
+- Prebuild all custom MyEMS service images outside production: `api`, `aggregation`, `cleaning`, `modbus_tcp`, `myems-mqtt`, `normalization`, `admin`, and `web`.
+- Freeze the EMQX image tag as an approved official image or a prebuilt internal mirror image before the release window starts.
 
 Recommended minimum:
 
@@ -107,8 +109,11 @@ Run these after deploying to the target environment:
 
 Keep these in the deployment package before go-live:
 
+- image-only compose template `others/docker-compose-on-linux.image.yml`
+- image tag file `others/docker-images.env`
 - EMQX deployment manifest or service unit
 - `myems-mqtt` `.env` file managed by ops
 - datasource and point import SQL or API automation
 - smoke-test payload and verification commands
 - rollback steps owned by the release operator
+- registry pull credentials or an offline `docker save` image bundle for air-gapped environments
