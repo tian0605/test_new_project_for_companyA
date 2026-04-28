@@ -84,8 +84,7 @@ const SpacePlan = ({ setRedirect, setRedirectUrl, t }) => {
   const [reportingPeriodDateRange, setReportingPeriodDateRange] = useState([
     current_moment
       .clone()
-      .subtract(7, 'days')
-      .startOf('day')
+      .startOf('month')
       .toDate(),
     current_moment.toDate()
   ]);
