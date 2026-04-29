@@ -230,7 +230,8 @@ $serviceEnvTargets = @(
   'myems-aggregation/.env',
   'myems-cleaning/.env',
   'myems-normalization/.env',
-  'myems-modbus-tcp/.env'
+  'myems-modbus-tcp/.env',
+  'myems-mqtt/.env'
 )
 
 foreach ($relativeEnvTarget in $serviceEnvTargets) {

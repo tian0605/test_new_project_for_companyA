@@ -1,0 +1,50 @@
+emqx_coap_api {
+
+content_type.desc:
+"""Payload type"""
+
+message_id.desc:
+"""Message ID"""
+
+method.desc:
+"""Request method type"""
+
+payload.desc:
+"""The content of the payload"""
+
+response_code.desc:
+"""Response code"""
+
+send_coap_request.desc:
+"""Send a CoAP request message to the client"""
+
+timeout.desc:
+"""Timespan for response"""
+
+token.desc:
+"""Message token, can be empty"""
+
+client_not_found.desc:
+"""Client not found error"""
+client_not_found.label:
+"""Client Not Found"""
+
+client_bad_response.desc:
+"""Client returned an invalid CoAP reply"""
+client_bad_response.label:
+"""Client Invalid Response"""
+
+missing_required_parameter.desc:
+"""missing required parameter"""
+
+
+client_not_response_timeout.desc:
+"""Waiting for client response timeout"""
+client_not_response_timeout.label:
+"""Client Not Response Timeout"""
+
+send_coap_request.label:
+"""Send COAP Request"""
+
+
+}

@@ -1,0 +1,95 @@
+emqx_dashboard_sso_oidc {
+
+issuer.desc:
+"""The URL of the OIDC issuer."""
+
+clientid.desc:
+"""The clientId for this backend."""
+
+secret.desc:
+"""The client secret."""
+
+scopes.desc:
+"""The scopes, its default value is `["openid"]`."""
+
+name_var.desc:
+"""A template to map OIDC user information to a Dashboard name, its default value is `${sub}`."""
+
+name_var_source.desc: """~
+  From which source to extract information to construct the Dashboard username.  Defaults to `userinfo`.
+
+  - `userinfo`: Utilizes the response from the `/userinfo` endpoint.
+  - `id_token`: Utilizes the claims contained in the access token.~"""
+
+role_source.desc: """~
+  From which source to extract information to construct the Dashboard user role.  Defaults to `userinfo`.
+
+  - `userinfo`: Utilizes the response from the `/userinfo` endpoint.
+  - `id_token`: Utilizes the claims contained in the access token.
+
+  Note: Config changes will not immediately reflect the user's role in EMQX DB, the user's role is mapped to EMQX record *after* a successful login.~"""
+
+namespace_source.desc: """~
+  From which source to extract information to construct the Dashboard user namespace.  Defaults to `userinfo`.
+
+  - `userinfo`: Utilizes the response from the `/userinfo` endpoint.
+  - `id_token`: Utilizes the claims contained in the access token.
+
+  Note: Config changes will not immediately reflect the user's namespace in EMQX DB, the user's namespace is mapped to EMQX record *after* a successful login.~"""
+
+role_expr.desc: """~
+  A [`jq`](https://jqlang.org/manual/) program to construct the Dashboard user role.
+
+  This expression must return exactly one string, which must be a valid role.  Current valid roles are:
+  - `"viewer"`
+  - `"administrator"`
+
+  Any result that is not a single value out of the above will forbid the user from being created.
+
+  If not set, will create a viewer user, or retain the existing role, if the user exists.~"""
+
+namespace_expr.desc: """~
+  A [`jq`](https://jqlang.org/manual/) program to construct the Dashboard user namespace.
+
+  This expression must return exactly one string, which must be either a string with the name of an existing namespace, or a `null` value, which represents the global namespace.
+
+  Any result other than the described above will forbid the user from being created.
+
+  If not set, will create a user in the global namespace or retain existing namespace, if the user exists.~"""
+
+dashboard_addr.desc:
+"""The address of the EMQX Dashboard."""
+
+session_expiry.desc:
+"""The valid time span for an OIDC `state`, the default is `30s`, if the code response returned by the authorization server exceeds this time span, it will be treated as invalid."""
+
+require_pkce.desc:
+"""Whether to require PKCE when getting the token."""
+
+client_jwks.desc:
+"""Set JWK or JWKS here to enable the `private_key_jwt` authorization or the `DPoP` extension."""
+
+client_file_jwks_type.desc:
+"""The JWKS source type."""
+
+client_file_jwks.desc:
+"""Set JWKS from file."""
+
+client_file_jwks_file.desc:
+"""The content of the JWKS."""
+
+preferred_auth_methods.desc:
+"""Set the valid authentication methods and their priority."""
+
+provider.desc:
+"""The OIDC provider."""
+
+fallback_methods.desc:
+"""Some providers do not provide all the method items in the provider configuration, set this value as a fallback for those items."""
+
+
+OIDC.desc:
+"""OpenID Connect (OIDC) is an identity layer built on top of the OAuth 2.0 protocol. It allows clients to verify the identity of end-users based on the authentication performed by an authorization server."""
+OIDC.label: "OIDC"
+
+}

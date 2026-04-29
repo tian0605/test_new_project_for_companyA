@@ -1,0 +1,16 @@
+services:
+  emqx:
+    image: ${_EMQX_DOCKER_IMAGE_TAG:-emqx/emqx:latest}
+    hostname: emqx
+    environment:
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: admin
+
+  selenium:
+    shm_size: '2gb'
+    image: selenium/standalone-chromium:141.0
+    volumes:
+      - ./:/app
+    depends_on:
+      emqx:
+        condition: service_started
+    command: "bash -c 'pip install selenium==4.28.0 pytest==8.3.5 requests==2.32.3 && cd app && pytest'"

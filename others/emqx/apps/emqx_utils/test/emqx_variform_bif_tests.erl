@@ -1,0 +1,381 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2024-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%%     http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%%--------------------------------------------------------------------
+
+%% Most of the functions are tested as rule-engine string funcs
+-module(emqx_variform_bif_tests).
+
+-compile(export_all).
+-compile(nowarn_export_all).
+
+-include_lib("eunit/include/eunit.hrl").
+
+regex_extract_test_() ->
+    [
+        ?_assertEqual([<<"12345">>], regex_extract("Order number: 12345", "(\\d+)")),
+        ?_assertEqual(
+            [<<"Hello">>, <<"world">>], regex_extract("Hello, world!", "(\\w+).*\s(\\w+)")
+        ),
+        ?_assertEqual([], regex_extract("No numbers here!", "(\\d+)")),
+        ?_assertEqual(
+            [<<"2021">>, <<"05">>, <<"20">>],
+            regex_extract("Date: 2021-05-20", "(\\d{4})-(\\d{2})-(\\d{2})")
+        ),
+        ?_assertEqual([<<"Hello">>], regex_extract("Hello, world!", "(Hello)")),
+        ?_assertEqual(
+            [<<"12">>, <<"34">>], regex_extract("Items: 12, Price: 34", "(\\d+).*\s(\\d+)")
+        ),
+        ?_assertEqual(
+            [<<"john.doe@example.com">>],
+            regex_extract("Contact: john.doe@example.com", "([\\w\\.]+@[\\w\\.]+)")
+        ),
+        ?_assertEqual([], regex_extract("Just some text, nothing more.", "([A-Z]\\d{3})")),
+        ?_assertEqual(
+            [<<"admin">>, <<"1234">>],
+            regex_extract("User: admin, Pass: 1234", "User: (\\w+), Pass: (\\d+)")
+        ),
+        ?_assertEqual([], regex_extract("", "(\\d+)")),
+        ?_assertEqual([], regex_extract("$$$###!!!", "(\\d+)")),
+        ?_assertEqual([<<"23.1">>], regex_extract("Erlang 23.1 version", "(\\d+\\.\\d+)")),
+        ?_assertEqual(
+            [<<"192.168.1.1">>],
+            regex_extract("Server IP: 192.168.1.1 at port 8080", "(\\d+\\.\\d+\\.\\d+\\.\\d+)")
+        )
+    ].
+
+regex_extract(Str, RegEx) ->
+    emqx_variform_bif:regex_extract(Str, RegEx).
+
+rand_str_test() ->
+    ?assertEqual(3, size(emqx_variform_bif:rand_str(3))),
+    ?assertThrow(#{reason := badarg}, size(emqx_variform_bif:rand_str(0))).
+
+rand_int_test() ->
+    N = emqx_variform_bif:rand_int(10),
+    ?assert(N =< 10 andalso N >= 1),
+    ?assertThrow(#{reason := badarg}, emqx_variform_bif:rand_int(0)),
+    ?assertThrow(#{reason := badarg}, emqx_variform_bif:rand_int(-1)).
+
+base64_encode_decode_test() ->
+    RandBytes = crypto:strong_rand_bytes(100),
+    Encoded = emqx_variform_bif:base64_encode(RandBytes),
+    ?assertEqual(RandBytes, emqx_variform_bif:base64_decode(Encoded)).
+
+system_test() ->
+    EnvName = erlang:atom_to_list(?MODULE),
+    EnvVal = erlang:atom_to_list(?FUNCTION_NAME),
+    EnvNameBin = erlang:list_to_binary(EnvName),
+    os:putenv("EMQXVAR_" ++ EnvName, EnvVal),
+    try
+        ?assertEqual(erlang:list_to_binary(EnvVal), emqx_variform_bif:getenv(EnvNameBin)),
+        %% read from persistent_term
+        ?assertEqual(erlang:list_to_binary(EnvVal), emqx_variform_bif:getenv(EnvNameBin)),
+        ?assertEqual(<<"">>, emqx_variform_bif:getenv(<<"EMQXVAR_NOT_EXIST">>)),
+        ?assert(is_integer(emqx_variform_bif:timestamp_s())),
+        ?assert(is_integer(emqx_variform_bif:timestamp_ms()))
+    after
+        os:unsetenv("EMQXVAR_" ++ EnvName)
+    end.
+
+empty_val_test_() ->
+    F = fun(X) -> emqx_variform_bif:is_empty_val(X) end,
+    [
+        ?_assert(F(undefined)),
+        ?_assert(F(null)),
+        ?_assert(F(<<>>)),
+        ?_assert(F([])),
+        ?_assertNot(F(true)),
+        ?_assertNot(F(false)),
+        ?_assertNot(F(<<"a">>))
+    ].
+
+bool_not_test_() ->
+    Not = fun(X) -> emqx_variform_bif:'not'(X) end,
+    [
+        ?_assertEqual(<<"false">>, Not(<<"true">>)),
+        ?_assertEqual(<<"true">>, Not(<<"false">>)),
+        ?_assertEqual(true, Not(false)),
+        ?_assertEqual(false, Not(true))
+    ].
+
+-define(ASSERT_BADARG(EXPR), ?_assertThrow(#{reason := badarg}, EXPR)).
+null_badarg_test_() ->
+    [
+        ?ASSERT_BADARG(emqx_variform_bif:lower(undefined)),
+        ?ASSERT_BADARG(emqx_variform_bif:lower(null)),
+        ?ASSERT_BADARG(emqx_variform_bif:ltrim(undefined)),
+        ?ASSERT_BADARG(emqx_variform_bif:ltrim(null)),
+        ?ASSERT_BADARG(emqx_variform_bif:ltrim(undefined, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:ltrim(null, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:reverse(undefined)),
+        ?ASSERT_BADARG(emqx_variform_bif:reverse(null)),
+        ?ASSERT_BADARG(emqx_variform_bif:rtrim(undefined)),
+        ?ASSERT_BADARG(emqx_variform_bif:rtrim(null)),
+        ?ASSERT_BADARG(emqx_variform_bif:rtrim(undefined, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:rtrim(null, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:rm_prefix(undefined, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:rm_prefix(null, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:strlen(undefined)),
+        ?ASSERT_BADARG(emqx_variform_bif:strlen(null)),
+        ?ASSERT_BADARG(emqx_variform_bif:substr(undefined, 1)),
+        ?ASSERT_BADARG(emqx_variform_bif:substr(null, 1)),
+        ?ASSERT_BADARG(emqx_variform_bif:substr(undefined, 1, 2)),
+        ?ASSERT_BADARG(emqx_variform_bif:substr(null, 1, 2)),
+        ?ASSERT_BADARG(emqx_variform_bif:trim(undefined)),
+        ?ASSERT_BADARG(emqx_variform_bif:trim(null)),
+        ?ASSERT_BADARG(emqx_variform_bif:trim(undefined, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:trim(null, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:upper(undefined)),
+        ?ASSERT_BADARG(emqx_variform_bif:upper(null)),
+        ?ASSERT_BADARG(emqx_variform_bif:split(undefined, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:split(null, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:split(undefined, <<"a">>, <<"notrim">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:split(null, <<"a">>, <<"notrim">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:tokens(undefined, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:tokens(null, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:tokens(undefined, <<"a">>, <<"nocrlf">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:tokens(null, <<"a">>, <<"nocrlf">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:pad(undefined, 1)),
+        ?ASSERT_BADARG(emqx_variform_bif:pad(null, 1)),
+        ?ASSERT_BADARG(emqx_variform_bif:pad(undefined, 1, <<"trailing">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:pad(null, 1, <<"trailing">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:pad(undefined, 1, <<"trailing">>, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:pad(null, 1, <<"trailing">>, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:replace(undefined, <<"a">>, <<"b">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:replace(null, <<"a">>, <<"b">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:replace(undefined, <<"a">>, <<"b">>, <<"all">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:replace(null, <<"a">>, <<"b">>, <<"all">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:regex_match(undefined, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:regex_match(null, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:regex_replace(undefined, <<"a">>, <<"b">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:regex_replace(null, <<"a">>, <<"b">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:regex_extract(undefined, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:regex_extract(null, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:ascii(undefined)),
+        ?ASSERT_BADARG(emqx_variform_bif:ascii(null)),
+        ?ASSERT_BADARG(emqx_variform_bif:find(undefined, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:find(null, <<"a">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:find(undefined, <<"a">>, <<"trailing">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:find(null, <<"a">>, <<"trailing">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:unescape(undefined)),
+        ?ASSERT_BADARG(emqx_variform_bif:unescape(null)),
+        ?ASSERT_BADARG(emqx_variform_bif:hash_to_range(undefined, 1, 2)),
+        ?ASSERT_BADARG(emqx_variform_bif:hash_to_range(null, 1, 2)),
+        ?ASSERT_BADARG(emqx_variform_bif:map_to_range(undefined, 1, 10)),
+        ?ASSERT_BADARG(emqx_variform_bif:map_to_range(null, 1, 10)),
+        ?ASSERT_BADARG(emqx_variform_bif:hash(<<"sha1">>, null)),
+        ?ASSERT_BADARG(emqx_variform_bif:jwt_value(undefined, <<"sub">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:jwt_value(null, <<"sub">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:jwt_value(<<"token">>, <<"">>))
+    ].
+
+invalid_hash_algorithm_test() ->
+    ?assertThrow(
+        #{reason := unknown_hash_algorithm, algorithm := <<"unknown_algorithm">>},
+        emqx_variform_bif:hash(<<"unknown_algorithm">>, <<"a">>)
+    ).
+
+int2hexstr_test_() ->
+    [
+        ?_assertEqual(<<"0">>, emqx_variform_bif:int2hexstr(0)),
+        ?_assertEqual(<<"1">>, emqx_variform_bif:int2hexstr(1)),
+        ?_assertEqual(<<"A">>, emqx_variform_bif:int2hexstr(10)),
+        ?_assertEqual(<<"F">>, emqx_variform_bif:int2hexstr(15)),
+        ?_assertEqual(<<"10">>, emqx_variform_bif:int2hexstr(16)),
+        ?_assertEqual(<<"1A">>, emqx_variform_bif:int2hexstr(26))
+    ].
+
+atom_input_test_() ->
+    [
+        ?_assertEqual(<<"ATOM">>, emqx_variform_bif:upper('atom')),
+        ?_assertEqual(<<"atom">>, emqx_variform_bif:lower('ATOM')),
+        ?_assertEqual(<<"atom">>, emqx_variform_bif:ltrim('atom')),
+        ?_assertEqual(<<"tom">>, emqx_variform_bif:ltrim('atom', <<"a">>)),
+        ?_assertEqual(<<"mota">>, emqx_variform_bif:reverse('atom')),
+        ?_assertEqual(<<"atom">>, emqx_variform_bif:rtrim('atom')),
+        ?_assertEqual(<<"atom">>, emqx_variform_bif:rtrim('atom', <<"a">>)),
+        ?_assertEqual(<<"tom">>, emqx_variform_bif:rm_prefix('atom', <<"a">>)),
+        ?_assertEqual(<<"atom">>, emqx_variform_bif:rm_prefix('atom', <<"x">>)),
+        ?_assertEqual(4, emqx_variform_bif:strlen('atom')),
+        ?_assertEqual(<<"tom">>, emqx_variform_bif:substr('atom', 1)),
+        ?_assertEqual(<<"to">>, emqx_variform_bif:substr('atom', 1, 2)),
+        ?_assertEqual(<<"atom">>, emqx_variform_bif:trim('atom')),
+        ?_assertEqual(<<"tom">>, emqx_variform_bif:trim('atom', <<"a">>)),
+        ?_assertEqual([<<"tom">>], emqx_variform_bif:split('atom', <<"a">>)),
+        ?_assertEqual([<<>>, <<"tom">>], emqx_variform_bif:split('atom', <<"a">>, <<"notrim">>)),
+        ?_assertEqual([<<"tom">>], emqx_variform_bif:tokens('atom', <<"a">>)),
+        ?_assertEqual([<<"tom">>], emqx_variform_bif:tokens('atom', <<"a">>, <<"nocrlf">>)),
+        ?_assertEqual(<<"atom ">>, emqx_variform_bif:pad('atom', 5, <<"trailing">>)),
+        ?_assertEqual(<<"atomx">>, emqx_variform_bif:pad('atom', 5, <<"trailing">>, <<"x">>)),
+        ?_assertEqual(<<"btom">>, emqx_variform_bif:replace('atom', <<"a">>, <<"b">>)),
+        ?_assertEqual(<<"btom">>, emqx_variform_bif:replace('atom', <<"a">>, <<"b">>, <<"all">>)),
+        ?_assertEqual(true, emqx_variform_bif:regex_match('atom', <<"^atom$">>)),
+        ?_assertEqual(<<"btom">>, emqx_variform_bif:regex_replace('atom', <<"a">>, <<"b">>)),
+        ?_assertEqual([<<"atom">>], emqx_variform_bif:regex_extract('atom', <<"(atom)">>)),
+        ?_assertEqual(97, emqx_variform_bif:ascii(a)),
+        ?_assertEqual(<<"atom">>, emqx_variform_bif:find('atom', <<"a">>)),
+        ?_assertEqual(<<"atom">>, emqx_variform_bif:find('atom', <<"a">>, <<"trailing">>)),
+        ?_assertEqual(<<"atom">>, emqx_variform_bif:unescape('atom')),
+        ?_assert(is_binary(emqx_variform_bif:hash(sha, 'atom'))),
+        ?_assert(is_binary(emqx_variform_bif:hash(<<"sha256">>, 'atom'))),
+        ?_assert(is_integer(emqx_variform_bif:hash_to_range(sha, 1, 10))),
+        ?_assert(is_integer(emqx_variform_bif:map_to_range(sha, 1, 10))),
+        ?_assertEqual(<<"atom ">>, emqx_variform_bif:pad('atom', 5)),
+        ?_assertEqual(<<"atom  ">>, emqx_variform_bif:pad('atom', 6))
+    ].
+
+%% Helper function to create a JWT token from payload
+create_jwt_token(PayloadMap) ->
+    Header = base64url_encode(<<"{\"alg\":\"none\",\"typ\":\"JWT\"}">>),
+    Payload = base64url_encode(emqx_utils_json:encode(PayloadMap)),
+    Signature = <<"signature">>,
+    <<Header/binary, ".", Payload/binary, ".", Signature/binary>>.
+
+base64url_encode(Bin) ->
+    %% Simple base64url encoding (replace + with -, / with _, remove padding)
+    Base64 = base64:encode(Bin),
+    Base64Url = binary:replace(
+        binary:replace(Base64, <<"+">>, <<"-">>, [global]),
+        <<"/">>,
+        <<"_">>,
+        [global]
+    ),
+    %% Remove padding
+    binary:replace(Base64Url, <<"=">>, <<>>, [global]).
+
+jwt_value_test_() ->
+    %% Simple JWT with basic claims
+    SimplePayload = #{
+        <<"sub">> => <<"1234567890">>,
+        <<"name">> => <<"John Doe">>,
+        <<"iat">> => 1516239022
+    },
+    SimpleToken = create_jwt_token(SimplePayload),
+
+    %% Nested JWT with nested objects
+    NestedPayload = #{
+        <<"sub">> => <<"user123">>,
+        <<"user">> => #{
+            <<"name">> => <<"Alice">>,
+            <<"email">> => <<"alice@example.com">>,
+            <<"profile">> => #{
+                <<"age">> => 30,
+                <<"city">> => <<"New York">>
+            }
+        }
+    },
+    NestedToken = create_jwt_token(NestedPayload),
+
+    [
+        %% Simple claim access
+        ?_assertEqual(<<"1234567890">>, emqx_variform_bif:jwt_value(SimpleToken, <<"sub">>)),
+        ?_assertEqual(<<"John Doe">>, emqx_variform_bif:jwt_value(SimpleToken, <<"name">>)),
+        ?_assertEqual(1516239022, emqx_variform_bif:jwt_value(SimpleToken, <<"iat">>)),
+
+        %% Nested claim access
+        ?_assertEqual(<<"user123">>, emqx_variform_bif:jwt_value(NestedToken, <<"sub">>)),
+        ?_assertEqual(<<"Alice">>, emqx_variform_bif:jwt_value(NestedToken, <<"user.name">>)),
+        ?_assertEqual(
+            <<"alice@example.com">>,
+            emqx_variform_bif:jwt_value(NestedToken, <<"user.email">>)
+        ),
+        ?_assertEqual(30, emqx_variform_bif:jwt_value(NestedToken, <<"user.profile.age">>)),
+        ?_assertEqual(
+            <<"New York">>,
+            emqx_variform_bif:jwt_value(NestedToken, <<"user.profile.city">>)
+        ),
+
+        %% Non-existent paths return undefined
+        ?_assertEqual(undefined, emqx_variform_bif:jwt_value(SimpleToken, <<"nonexistent">>)),
+        ?_assertEqual(
+            undefined,
+            emqx_variform_bif:jwt_value(NestedToken, <<"user.nonexistent">>)
+        ),
+        ?_assertEqual(
+            undefined,
+            emqx_variform_bif:jwt_value(NestedToken, <<"user.profile.nonexistent">>)
+        ),
+
+        %% Invalid token format
+        ?_assertThrow(
+            #{reason := invalid_jwt_token},
+            emqx_variform_bif:jwt_value(<<"invalid.token">>, <<"sub">>)
+        ),
+        ?_assertThrow(
+            #{reason := invalid_jwt_token},
+            emqx_variform_bif:jwt_value(<<"not.a.valid.jwt.token">>, <<"sub">>)
+        )
+    ].
+
+json_value_test_() ->
+    %% Simple JSON binary
+    SimpleJson = emqx_utils_json:encode(#{
+        <<"sub">> => <<"1234567890">>,
+        <<"name">> => <<"John Doe">>,
+        <<"iat">> => 1516239022
+    }),
+
+    %% Nested JSON binary
+    NestedJson = emqx_utils_json:encode(#{
+        <<"sub">> => <<"user123">>,
+        <<"user">> => #{
+            <<"name">> => <<"Alice">>,
+            <<"email">> => <<"alice@example.com">>,
+            <<"profile">> => #{
+                <<"age">> => 30,
+                <<"city">> => <<"New York">>
+            }
+        }
+    }),
+
+    [
+        %% Simple value access
+        ?_assertEqual(<<"1234567890">>, emqx_variform_bif:json_value(SimpleJson, <<"sub">>)),
+        ?_assertEqual(<<"John Doe">>, emqx_variform_bif:json_value(SimpleJson, <<"name">>)),
+        ?_assertEqual(1516239022, emqx_variform_bif:json_value(SimpleJson, <<"iat">>)),
+
+        %% Nested value access
+        ?_assertEqual(<<"user123">>, emqx_variform_bif:json_value(NestedJson, <<"sub">>)),
+        ?_assertEqual(<<"Alice">>, emqx_variform_bif:json_value(NestedJson, <<"user.name">>)),
+        ?_assertEqual(
+            <<"alice@example.com">>,
+            emqx_variform_bif:json_value(NestedJson, <<"user.email">>)
+        ),
+        ?_assertEqual(30, emqx_variform_bif:json_value(NestedJson, <<"user.profile.age">>)),
+        ?_assertEqual(
+            <<"New York">>,
+            emqx_variform_bif:json_value(NestedJson, <<"user.profile.city">>)
+        ),
+
+        %% Non-existent paths return undefined
+        ?_assertEqual(undefined, emqx_variform_bif:json_value(SimpleJson, <<"nonexistent">>)),
+        ?_assertEqual(
+            undefined,
+            emqx_variform_bif:json_value(NestedJson, <<"user.nonexistent">>)
+        ),
+        ?_assertEqual(
+            undefined,
+            emqx_variform_bif:json_value(NestedJson, <<"user.profile.nonexistent">>)
+        ),
+
+        %% Null/undefined inputs throw badarg
+        ?ASSERT_BADARG(emqx_variform_bif:json_value(undefined, <<"sub">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:json_value(null, <<"sub">>)),
+        ?ASSERT_BADARG(emqx_variform_bif:json_value(SimpleJson, <<"">>)),
+
+        %% Invalid JSON returns undefined
+        ?_assertEqual(undefined, emqx_variform_bif:json_value(<<"not valid json">>, <<"key">>)),
+        ?_assertEqual(undefined, emqx_variform_bif:json_value(<<"{invalid json}">>, <<"key">>))
+    ].

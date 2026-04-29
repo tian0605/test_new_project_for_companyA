@@ -1,0 +1,51 @@
+emqx_jt808_schema {
+
+jt808_frame_max_length.desc:
+"""The maximum length of the JT/T 808 frame."""
+
+parse_unknown_message.desc:
+"""Whether to process and forward unrecognized Message IDs. <br/>
+- <code>true</code>: Unrecognized Message IDs are processed, and their body is encoded in Base64 and forwarded.<br/>
+- <code>false</code>: An error is reported and logged when an unrecognized Message ID is received.<br/>
+Default is true."""
+
+string_encoding.desc:
+"""Character encoding for STRING type fields on the JT/T 808 wire protocol.<br/>
+- <code>utf8</code>: Strings are treated as UTF-8 encoded (legacy behavior, default).<br/>
+- <code>gbk</code>: Strings are treated as GBK encoded per JT/T 808 specification; converted to/from UTF-8 for MQTT payloads.<br/>
+Note: MQTT payloads always use UTF-8 regardless of this setting. Set to <code>gbk</code> if Chinese text appears garbled (Mojibake)."""
+
+jt808_auth.desc:
+"""Authentication settings of the JT/T 808 Gateway."""
+
+jt808_allow_anonymous.desc:
+"""Allow anonymous access to the JT/T 808 Gateway."""
+
+registry_url.desc:
+"""The JT/T 808 device registry central URL."""
+
+authentication_url.desc:
+"""The JT/T 808 device authentication central URL."""
+
+jt808_up_topic.desc:
+"""The topic of the JT/T 808 protocol upstream message."""
+
+jt808_dn_topic.desc:
+"""The topic of the JT/T 808 protocol downstream message."""
+
+ignore_unsupported_frames.desc:
+"""Whether to ignore unsupported frames. <br/>
+- <code>true</code>, unsupported frames will be logged and ignored. <br/>
+- <code>false</code>, the gateway will disconnect the client when receiving an unsupported frame.<br/>
+The default value is true."""
+
+retry_interval.desc:
+"""Re-send time interval"""
+
+max_retry_times.desc:
+"""Re-send max times"""
+
+message_queue_len.desc:
+"""Max message queue length"""
+
+}

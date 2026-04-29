@@ -11,6 +11,8 @@ logs
 .venv/
 .local/
 .backup/
+__pycache__/
+*.pyc
 #################
 ## JetBrains
 #################

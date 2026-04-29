@@ -1,0 +1,259 @@
+name: Build and push docker images
+
+concurrency:
+  group: docker-build-${{ github.event_name }}-${{ inputs.profile }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_call:
+    inputs:
+      profile:
+        required: true
+        type: string
+      latest:
+        required: false
+        type: string
+        default: false
+      publish:
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      DOCKER_HUB_USER:
+        required: false
+      DOCKER_HUB_TOKEN:
+        required: false
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+      AWS_DEFAULT_REGION:
+        required: false
+      AWS_S3_BUCKET:
+        required: false
+      AWS_CLOUDFRONT_ID:
+        required: false
+  workflow_dispatch:
+    inputs:
+      ref:
+        required: false
+      profile:
+        required: false
+        type: string
+        default: 'emqx-enterprise'
+      latest:
+        required: false
+        type: boolean
+        default: false
+      publish:
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    runs-on: ${{ format('aws-ubuntu22.04-{0}', matrix.arch) }}
+    defaults:
+      run:
+        shell: bash
+
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - "${{ inputs.profile }}"
+        arch:
+          - amd64
+          - arm64
+
+    env:
+      PROFILE: ${{ matrix.profile }}
+      DOCKER_ORG: ${{ github.repository_owner }}
+      DOCKER_LATEST: ${{ inputs.latest }}
+      ARCH: ${{ matrix.arch }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build docker image
+        env:
+          DOCKER_PUSH: false
+          DOCKER_BUILD_NOCACHE: true
+          DOCKER_LOAD: true
+        run: |
+          ./build ${PROFILE} docker
+          echo "Built tags:"
+          echo "==========="
+          cat .emqx_docker_image_tags
+          echo "==========="
+          echo "_EMQX_DOCKER_IMAGE_TAG=$(head -n 1 .emqx_docker_image_tags)" >> $GITHUB_ENV
+
+      - name: Verify that size of docker image is less than 150 MB
+        run: |
+          docker save $_EMQX_DOCKER_IMAGE_TAG | gzip -c | wc -c | xargs -I {} test {} -lt 150000000
+
+      - name: smoke test
+        timeout-minutes: 5
+        run: |
+          CID=$(docker run -d -p 18083:18083 $_EMQX_DOCKER_IMAGE_TAG)
+          HTTP_PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "18083/tcp") 0).HostPort}}' $CID)
+          ./scripts/test/emqx-smoke-test.sh localhost $HTTP_PORT
+          docker rm -f $CID
+          ./scripts/test/cluster-smoke-test.sh $_EMQX_DOCKER_IMAGE_TAG
+
+      - name: dashboard tests
+        working-directory: ./scripts/ui-tests
+        timeout-minutes: 5
+        run: |
+          set -eu
+          docker compose up --abort-on-container-exit --exit-code-from selenium
+          docker compose rm -fsv
+
+      - name: test node_dump
+        run: |
+          CID=$(docker run -d -P $_EMQX_DOCKER_IMAGE_TAG)
+          docker exec -t -u root -w /root $CID bash -c 'apt-get -y update && apt-get -y install net-tools'
+          docker exec -t -u root $CID node_dump
+          docker rm -f $CID
+
+      - name: Export docker image
+        run: |
+          docker save "${_EMQX_DOCKER_IMAGE_TAG}" | gzip > $PROFILE-docker-${{ matrix.arch }}.tar.gz
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: "${{ matrix.profile }}-docker-${{ matrix.arch }}"
+          path: "${{ matrix.profile }}-docker-${{ matrix.arch }}.tar.gz"
+          retention-days: 7
+
+  publish-docker:
+    runs-on: ubuntu-22.04
+    if: inputs.publish
+    needs:
+      - docker
+    defaults:
+      run:
+        shell: bash
+
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+
+    env:
+      PROFILE: ${{ inputs.profile }}
+      DOCKER_LATEST: ${{ inputs.latest }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        with:
+          driver-opts: network=host
+
+      - name: Login to hub.docker.com
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKER_HUB_USER }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Download docker images
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          pattern: "${{ env.PROFILE }}-docker-*"
+          path: images/
+          merge-multiple: true
+
+      - name: Load, push and create multiarch manifest
+        run: |
+          # Load AMD64 image and retag to prevent overwriting
+          AMD64_IMAGE=$(docker load < images/$PROFILE-docker-amd64.tar.gz | grep "Loaded image:" | sed 's/Loaded image: //')
+          echo "Loaded AMD64 image: $AMD64_IMAGE"
+          VERSION=$(echo "$AMD64_IMAGE" | sed 's/.*://')
+          LOCAL_BASE="localhost:5000/${{ github.repository_owner }}/${PROFILE}"
+          docker tag "$AMD64_IMAGE" "${LOCAL_BASE}:${VERSION}-amd64"
+          docker push "${LOCAL_BASE}:${VERSION}-amd64"
+
+          # Load ARM64 image and retag
+          ARM64_IMAGE=$(docker load < images/$PROFILE-docker-arm64.tar.gz | grep "Loaded image:" | sed 's/Loaded image: //')
+          echo "Loaded ARM64 image: $ARM64_IMAGE"
+          docker tag "$ARM64_IMAGE" "${LOCAL_BASE}:${VERSION}-arm64"
+          docker push "${LOCAL_BASE}:${VERSION}-arm64"
+
+          # Assemble the list of destination tags for the multiarch manifest
+          TARGET_TAGS=(
+            "docker.io/${{ github.repository_owner }}/${PROFILE}:${VERSION}"
+            "docker.io/emqx/emqx:${VERSION}"
+          )
+          if [ "${DOCKER_LATEST}" = "true" ]; then
+            TARGET_TAGS+=(
+              "docker.io/${{ github.repository_owner }}/${PROFILE}:latest"
+              "docker.io/emqx/emqx:latest"
+            )
+          fi
+
+          echo "Creating multiarch manifest for docker.io:"
+          TAG_ARGS=()
+          for t in "${TARGET_TAGS[@]}"; do
+            echo "  - $t"
+            TAG_ARGS+=(--tag "$t")
+          done
+          docker buildx imagetools create \
+            "${TAG_ARGS[@]}" \
+            "${LOCAL_BASE}:${VERSION}-amd64" \
+            "${LOCAL_BASE}:${VERSION}-arm64"
+
+  upload:
+    runs-on: ubuntu-22.04
+    if: inputs.publish || github.repository_owner != 'emqx'
+
+    needs:
+      - docker
+
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+          - ${{ inputs.profile }}
+        arch:
+          - amd64
+          - arm64
+    steps:
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: "${{ matrix.profile }}-docker-${{ matrix.arch }}"
+
+      - name: Extract version from docker image
+        run: |
+          FILENAME="${{ matrix.profile }}-docker-${{ matrix.arch }}.tar.gz"
+          IMAGE_TAG=$(tar -xzOf "$FILENAME" manifest.json | grep -o '"[^"]*:[^"]*"' | head -1 | tr -d '"')
+          PKG_VSN=$(echo "$IMAGE_TAG" | sed 's/.*://')
+          echo "PKG_VSN=$PKG_VSN" | tee -a $GITHUB_ENV
+          echo "FILENAME=$FILENAME" | tee -a $GITHUB_ENV
+
+      - uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+
+      - name: upload to aws s3
+        env:
+          AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
+          AWS_CLOUDFRONT_ID: ${{ secrets.AWS_CLOUDFRONT_ID }}
+        run: |
+          set -xeuo pipefail
+
+          export s3dir="emqx-ee/e$PKG_VSN"
+          aws s3 cp "$FILENAME" "s3://$AWS_S3_BUCKET/$s3dir/"
+          aws cloudfront create-invalidation --distribution-id "$AWS_CLOUDFRONT_ID" --paths "/$s3dir/*docker*"

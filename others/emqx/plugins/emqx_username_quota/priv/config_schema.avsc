@@ -1,0 +1,42 @@
+{
+  "type": "record",
+  "name": "UsernameQuotaConfigSchema",
+  "fields": [
+    {
+      "name": "max_sessions_per_username",
+      "type": "int",
+      "default": 100,
+      "$ui": {
+        "component": "input-number",
+        "flex": 12,
+        "required": true,
+        "label": "$max_sessions_per_username_label",
+        "description": "$max_sessions_per_username_desc"
+      }
+    },
+    {
+      "name": "snapshot_min_age_ms",
+      "type": "int",
+      "default": 300000,
+      "$ui": {
+        "component": "input-number",
+        "flex": 12,
+        "required": true,
+        "label": "$snapshot_min_age_ms_label",
+        "description": "$snapshot_min_age_ms_desc"
+      }
+    },
+    {
+      "name": "snapshot_request_timeout_ms",
+      "type": "int",
+      "default": 5000,
+      "$ui": {
+        "component": "input-number",
+        "flex": 12,
+        "required": true,
+        "label": "$snapshot_request_timeout_ms_label",
+        "description": "$snapshot_request_timeout_ms_desc"
+      }
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+emqx_lwm2m_schema {
+
+lwm2m.desc:
+"""LwM2M gateway settings (v1.0.1).
+Start with defaults, then tune lifetime and topic mappings."""
+
+lwm2m_auto_observe.desc:
+"""Auto-create Observe subscriptions from REGISTER object list.
+Supported values:<br/>
+  - false / "off": disable auto observe<br/>
+  - true / "on": observe all paths from REGISTER object list<br/>
+  - "/3/0,/3/0/1" or ["/3/0", "/3/0/1"]: observe only listed paths"""
+
+lwm2m_lifetime_max.desc:
+"""Upper bound of client lifetime accepted by gateway.
+Use it to prevent very long keepalive settings from devices."""
+
+lwm2m_lifetime_min.desc:
+"""Lower bound of client lifetime accepted by gateway.
+Use it to prevent overly frequent update traffic from devices."""
+
+lwm2m_qmode_time_window.desc:
+"""In QMode, this is the 'link still valid' window after an UPDATE.
+Inside window: send messages directly.
+Outside window: buffer messages in memory until client is reachable."""
+
+lwm2m_translators.desc:
+"""MQTT topic mappings between LwM2M events and MQTT commands."""
+
+lwm2m_coap_max_block_size.desc:
+"""Deprecated since 6.1.0. Use `blockwise.max_block_size` instead."""
+
+lwm2m_blockwise.desc:
+"""Settings for large payload transfer.
+Block-wise transfer splits one large payload into smaller CoAP blocks.
+Use defaults unless you see payload-size or packet-loss issues."""
+
+lwm2m_blockwise_enable.desc:
+"""Enable block-wise transfer for large payloads.
+Keep enabled unless all payloads are small and fixed."""
+
+lwm2m_blockwise_max_block_size.desc:
+"""Size of each CoAP block in bytes.
+Larger value: fewer packets, but retransmission cost is higher on loss.
+Smaller value: more packets, but loss impact is smaller."""
+
+lwm2m_blockwise_max_body_size.desc:
+"""Maximum final payload size after reassembly.
+If exceeded, the message is rejected to protect memory."""
+
+lwm2m_blockwise_exchange_lifetime.desc:
+"""How long temporary block-wise state is kept.
+Too short can break slow transfers; too long consumes memory longer."""
+
+lwm2m_translators_command.desc:
+"""MQTT topic for downstream commands to LwM2M clients.
+Direction: MQTT -> LwM2M device."""
+
+lwm2m_translators_notify.desc:
+"""MQTT topic for publishing NOTIFY events from LwM2M clients.
+Direction: LwM2M device -> MQTT."""
+
+lwm2m_translators_register.desc:
+"""MQTT topic for publishing REGISTER events.
+Direction: LwM2M device -> MQTT."""
+
+lwm2m_translators_response.desc:
+"""MQTT topic for publishing command response/ACK events.
+Direction: LwM2M device -> MQTT."""
+
+lwm2m_translators_update.desc:
+"""MQTT topic for publishing UPDATE events.
+Direction: LwM2M device -> MQTT."""
+
+lwm2m_update_msg_publish_condition.desc:
+"""When to publish UPDATE events.<br/>
+  - always: publish every UPDATE request<br/>
+  - contains_object_list: publish only when UPDATE includes Object List<br/>
+Use <code>contains_object_list</code> to reduce noisy updates."""
+
+lwm2m_xml_dir.desc:
+"""Directory of LwM2M resource-definition XML files.
+Set this to your local XML directory (required)."""
+
+translator.desc:
+"""One topic mapping item (topic + qos) for one event type."""
+
+translator_qos.desc:
+"""QoS used when publishing this event topic."""
+
+translator_topic.desc:
+"""MQTT topic name/template."""
+
+}

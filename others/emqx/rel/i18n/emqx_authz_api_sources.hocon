@@ -1,0 +1,138 @@
+emqx_authz_api_sources {
+
+authorization_sources_get.desc:
+"""List all authorization sources"""
+authorization_sources_get.label:
+"""List all authorization sources"""
+
+authorization_sources_post.desc:
+"""Add a new source"""
+authorization_sources_post.label:
+"""Add a new source"""
+
+authorization_sources_type_delete.desc:
+"""Delete source"""
+authorization_sources_type_delete.label:
+"""Delete source"""
+
+authorization_sources_type_get.desc:
+"""Get a authorization source"""
+authorization_sources_type_get.label:
+"""Get a authorization source"""
+
+authorization_sources_type_move_post.desc:
+"""Change the exection order of sources"""
+authorization_sources_type_move_post.label:
+"""Change order of sources"""
+
+authorization_sources_type_put.desc:
+"""Update source"""
+authorization_sources_type_put.label:
+"""Update source"""
+
+authorization_sources_type_status_get.desc:
+"""Get a authorization source"""
+authorization_sources_type_status_get.label:
+"""Get a authorization source"""
+
+authorization_sources_order_put.desc:
+"""Reorder all authorization sources."""
+authorization_sources_order_put.label:
+"""Reorder Authorization Sources"""
+
+source.desc:
+"""Authorization source"""
+source.label:
+"""source"""
+
+source_config.desc:
+"""Source config"""
+source_config.label:
+"""source_config"""
+
+source_type.desc:
+"""Authorization type"""
+source_type.label:
+"""source_type"""
+
+sources.desc:
+"""Authorization sources"""
+sources.label:
+"""sources"""
+
+position.desc:
+"""Position of the source in the execution order. Can be 'front' to place at the beginning, 'rear' to place at the end, 'before:source_name' to place before a specific source, or 'after:source_name' to place after a specific source."""
+position.label:
+"""Position"""
+
+authorization_source_created.desc:
+"""Authorization source created successfully"""
+authorization_source_created.label:
+"""Authorization Source Created"""
+
+authorization_source_updated.desc:
+"""Authorization source updated successfully"""
+authorization_source_updated.label:
+"""Authorization Source Updated"""
+
+deleted_successfully.desc:
+"""Deleted successfully"""
+deleted_successfully.label:
+"""Deleted Successfully"""
+
+ok.desc:
+"""OK"""
+ok.label:
+"""OK"""
+
+authorization_sources_order_updated.desc:
+"""Authorization sources order updated"""
+authorization_sources_order_updated.label:
+"""Authorization Sources Order Updated"""
+
+position_front_example.desc:
+"""Example payload to move an authorization source to the front."""
+position_front_example.label:
+"""Front Example"""
+
+position_rear_example.desc:
+"""Example payload to move an authorization source to the rear."""
+position_rear_example.label:
+"""Rear Example"""
+
+position_relative_before_example.desc:
+"""Example payload to move an authorization source before another source."""
+position_relative_before_example.label:
+"""Relative Before Example"""
+
+position_relative_after_example.desc:
+"""Example payload to move an authorization source after another source."""
+position_relative_after_example.label:
+"""Relative After Example"""
+
+metrics_example.desc:
+"""Example response showing authorization source metrics."""
+metrics_example.label:
+"""Metrics Example"""
+
+bad_request.desc:
+"""Bad Request"""
+bad_request.label:
+"""Bad Request"""
+
+not_found.desc:
+"""Not Found"""
+not_found.label:
+"""Not Found"""
+
+authorization_sources_type_metrics_reset_post.desc:
+"""Reset metrics counters for a specific authorization source."""
+authorization_sources_type_metrics_reset_post.label:
+"""Reset authorization source metrics"""
+
+no_content.desc:
+"""No Content"""
+no_content.label:
+"""No Content"""
+
+}

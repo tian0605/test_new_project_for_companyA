@@ -1,0 +1,316 @@
+%%--------------------------------------------------------------------
+%% Copyright (c) 2017-2026 EMQ Technologies Co., Ltd. All Rights Reserved.
+%%--------------------------------------------------------------------
+-module(emqx_coap_session).
+
+-include("emqx_coap.hrl").
+-include_lib("emqx/include/emqx.hrl").
+-include_lib("emqx/include/emqx_mqtt.hrl").
+-include_lib("emqx/include/logger.hrl").
+
+%% API
+-export([
+    new/0,
+    resume/2,
+    process_subscribe/4
+]).
+
+-export([
+    info/1,
+    info/2,
+    stats/1
+]).
+
+-export([
+    handle_request/2,
+    handle_response/2,
+    handle_out/2,
+    set_reply/2,
+    deliver/3,
+    deliver/5,
+    timeout/2
+]).
+
+-ifdef(TEST).
+-export([map_notify_block2_prepare_result/4]).
+-endif.
+
+-export_type([session/0]).
+
+-record(session, {
+    transport_manager :: emqx_coap_tm:manager(),
+    observe_manager :: emqx_coap_observe_res:manager(),
+    created_at :: pos_integer()
+}).
+
+-type session() :: #session{}.
+
+%% steal from emqx_session
+-define(INFO_KEYS, [
+    subscriptions,
+    upgrade_qos,
+    retry_interval,
+    await_rel_timeout,
+    created_at
+]).
+
+-define(STATS_KEYS, [
+    subscriptions_cnt,
+    subscriptions_max,
+    inflight_cnt,
+    inflight_max,
+    mqueue_len,
+    mqueue_max,
+    mqueue_dropped,
+    next_pkt_id,
+    awaiting_rel_cnt,
+    awaiting_rel_max
+]).
+
+-import(emqx_coap_medium, [iter/3]).
+-import(emqx_coap_channel, [metrics_inc/2]).
+
+%%%-------------------------------------------------------------------
+%%% API
+%%%-------------------------------------------------------------------
+-spec new() -> session().
+new() ->
+    _ = emqx_utils:rand_seed(),
+    #session{
+        transport_manager = emqx_coap_tm:new(),
+        observe_manager = emqx_coap_observe_res:new_manager(),
+        created_at = erlang:system_time(millisecond)
+    }.
+
+-spec resume(emqx_types:clientinfo(), session()) -> session().
+resume(_ClientInfo, Session = #session{}) ->
+    Session.
+
+%%--------------------------------------------------------------------
+%% Info, Stats
+%%--------------------------------------------------------------------
+%% @doc Compatible with emqx_session
+%% do we need use inflight and mqueue in here?
+-spec info(session()) -> emqx_types:infos().
+info(Session) ->
+    maps:from_list(info(?INFO_KEYS, Session)).
+
+info(Keys, Session) when is_list(Keys) ->
+    [{Key, info(Key, Session)} || Key <- Keys];
+info(subscriptions, #session{observe_manager = OM}) ->
+    emqx_coap_observe_res:subscriptions(OM);
+info(subscriptions_cnt, #session{observe_manager = OM}) ->
+    maps:size(emqx_coap_observe_res:subscriptions(OM));
+info(subscriptions_max, _) ->
+    infinity;
+info(upgrade_qos, _) ->
+    ?QOS_0;
+info(inflight, _) ->
+    emqx_inflight:new();
+info(inflight_cnt, _) ->
+    0;
+info(inflight_max, _) ->
+    infinity;
+info(retry_interval, _) ->
+    infinity;
+info(mqueue, _) ->
+    emqx_mqueue:init(#{max_len => 0, store_qos0 => false});
+info(mqueue_len, _) ->
+    0;
+info(mqueue_max, _) ->
+    infinity;
+info(mqueue_dropped, _) ->
+    0;
+info(next_pkt_id, _) ->
+    0;
+info(awaiting_rel, _) ->
+    #{};
+info(awaiting_rel_cnt, _) ->
+    0;
+info(awaiting_rel_max, _) ->
+    infinity;
+info(await_rel_timeout, _) ->
+    infinity;
+info(created_at, #session{created_at = CreatedAt}) ->
+    CreatedAt.
+
+%% @doc Get stats of the session.
+-spec stats(session()) -> emqx_types:stats().
+stats(Session) -> info(?STATS_KEYS, Session).
+
+%%%-------------------------------------------------------------------
+%%% Process Message
+%%%-------------------------------------------------------------------
+handle_request(Msg, Session) ->
+    call_transport_manager(
+        ?FUNCTION_NAME,
+        Msg,
+        Session
+    ).
+
+handle_response(Msg, Session) ->
+    call_transport_manager(?FUNCTION_NAME, Msg, Session).
+
+handle_out(Msg, Session) ->
+    call_transport_manager(?FUNCTION_NAME, Msg, Session).
+
+set_reply(Msg, #session{transport_manager = TM} = Session) ->
+    TM2 = emqx_coap_tm:set_reply(Msg, TM),
+    Session#session{transport_manager = TM2}.
+
+deliver(
+    Delivers,
+    Ctx,
+    #session{} = Session
+) ->
+    do_deliver(Delivers, Ctx, Session, undefined, undefined).
+
+deliver(
+    Delivers,
+    Ctx,
+    #session{} = Session,
+    BW0,
+    PeerKey
+) ->
+    do_deliver(Delivers, Ctx, Session, BW0, PeerKey).
+
+do_deliver(
+    Delivers,
+    Ctx,
+    #session{
+        observe_manager = OM,
+        transport_manager = TM
+    } = Session,
+    BW0,
+    PeerKey
+) ->
+    Fun = fun({_, Topic, Message}, {OutAcc, OMAcc, TMAcc, BWAcc} = Acc) ->
+        case emqx_coap_observe_res:res_changed(Topic, OMAcc) of
+            undefined ->
+                metrics_inc('delivery.dropped', Ctx),
+                metrics_inc('delivery.dropped.no_subid', Ctx),
+                Acc;
+            {Token, SeqId, OM2} ->
+                metrics_inc('messages.delivered', Ctx),
+                Msg0 = mqtt_to_coap(Message, Token, SeqId),
+                {Msg, BW2} = maybe_split_notify_block2(Msg0, PeerKey, BWAcc, Ctx),
+                #{out := Out, tm := TM2} = emqx_coap_tm:handle_out(Msg, TMAcc),
+                {[Out | OutAcc], OM2, TM2, BW2}
+        end
+    end,
+    {Outs, OM2, TM2, BW2} = lists:foldl(Fun, {[], OM, TM, BW0}, lists:reverse(Delivers)),
+
+    BaseResult = #{
+        out => lists:flatten(lists:reverse(Outs)),
+        session => Session#session{
+            observe_manager = OM2,
+            transport_manager = TM2
+        }
+    },
+    maybe_attach_blockwise_result(BaseResult, BW0, BW2).
+
+maybe_attach_blockwise_result(BaseResult, BW0, BW2) when is_map(BW0) ->
+    BaseResult#{blockwise => BW2};
+maybe_attach_blockwise_result(BaseResult, _BW0, _BW2) ->
+    BaseResult.
+
+timeout(Timer, Session) ->
+    call_transport_manager(?FUNCTION_NAME, Timer, Session).
+
+%%%-------------------------------------------------------------------
+%%% Internal functions
+%%%-------------------------------------------------------------------
+call_transport_manager(
+    Fun,
+    Msg,
+    #session{transport_manager = TM} = Session
+) ->
+    Result = emqx_coap_tm:Fun(Msg, TM),
+    iter(
+        [tm, fun process_tm/4, fun process_session/3],
+        Result,
+        Session
+    ).
+
+process_tm(TM, Result, Session, Cursor) ->
+    iter(Cursor, Result, Session#session{transport_manager = TM}).
+
+process_session(_, Result, Session) ->
+    Result#{session => Session}.
+
+process_subscribe(
+    Sub,
+    Msg,
+    Result,
+    #session{observe_manager = OM} = Session
+) ->
+    case Sub of
+        undefined ->
+            Result;
+        #{
+            topic := _Topic
+        } = SubData ->
+            {SeqId, OM2} = emqx_coap_observe_res:insert(SubData, OM),
+            Replay = emqx_coap_message:piggyback({ok, content}, Msg),
+            %% RFC 7641 Section 4.4: Observe option carries 24-bit sequence.
+            Replay2 = Replay#coap_message{
+                options = #{observe => emqx_coap_observe_res:observe_value(SeqId)}
+            },
+            Result#{
+                reply => Replay2,
+                session => Session#session{observe_manager = OM2}
+            };
+        Topic ->
+            OM2 = emqx_coap_observe_res:remove(Topic, OM),
+            Replay = emqx_coap_message:piggyback({ok, nocontent}, Msg),
+            Result#{
+                reply => Replay,
+                session => Session#session{observe_manager = OM2}
+            }
+    end.
+
+mqtt_to_coap(MQTT, Token, SeqId) ->
+    #message{payload = Payload} = MQTT,
+    #coap_message{
+        type = get_notify_type(MQTT),
+        method = {ok, content},
+        token = Token,
+        payload = Payload,
+        %% RFC 7641 Section 4.4: Observe option carries 24-bit sequence.
+        options = #{observe => emqx_coap_observe_res:observe_value(SeqId)}
+    }.
+
+get_notify_type(#message{qos = Qos}) ->
+    case emqx_conf:get([gateway, coap, notify_qos], non) of
+        qos ->
+            case Qos of
+                ?QOS_0 ->
+                    non;
+                _ ->
+                    con
+            end;
+        Other ->
+            Other
+    end.
+
+maybe_split_notify_block2(Msg, _PeerKey, undefined, _Ctx) ->
+    {Msg, undefined};
+maybe_split_notify_block2(Msg, PeerKey, BW0, Ctx) ->
+    map_notify_block2_prepare_result(
+        emqx_coap_blockwise:server_prepare_out_response(undefined, Msg, PeerKey, BW0),
+        Msg,
+        PeerKey,
+        Ctx
+    ).
+
+map_notify_block2_prepare_result({single, Msg1, BW1}, _Msg, _PeerKey, _Ctx) ->
+    {Msg1, BW1};
+map_notify_block2_prepare_result({chunked, Msg1, BW1}, _Msg, _PeerKey, Ctx) ->
+    metrics_inc('blockwise.tx_block2.started', Ctx),
+    {Msg1, BW1};
+map_notify_block2_prepare_result({error, _ErrorReply, BW1}, Msg, PeerKey, _Ctx) ->
+    ?SLOG(warning, #{
+        msg => "coap_notify_block2_prepare_failed",
+        peer_key => PeerKey
+    }),
+    {Msg, BW1}.
