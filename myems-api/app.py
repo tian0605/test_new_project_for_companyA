@@ -9,7 +9,7 @@ from core import advancedreport, apikey, command, controlmode, energyflowdiagram
     costcenter, point, knowledgefile, meter, tariff, user, storetype, timezone, \
     costfile, offlinemeterfile, version, contact, emailserver, combinedequipment, datasource, equipment, tenant, \
     shopfloor, webmessage, distributionsystem, store, emailmessage, tenanttype, wechatmessage, space, gateway, \
-    offlinemeter, rule, energycategory, sensor, energyitem, notification, menu, datarepairfile, workingcalendar, \
+    offlinemeter, product, rule, energycategory, sensor, energyitem, notification, menu, datarepairfile, workingcalendar, \
     microgrid,  virtualpowerplant, energystoragecontainer, energystoragepowerstation, photovoltaicpowerstation, \
     windfarm, energyplanfile, svg, protocol, ticket, iotsimcard, log
 
@@ -276,6 +276,11 @@ api.add_route('/contacts',
               contact.ContactCollection())
 api.add_route('/contacts/{id_}',
               contact.ContactItem())
+
+api.add_route('/products',
+              product.ProductCollection())
+api.add_route('/products/{id_}',
+              product.ProductItem())
 
 api.add_route('/controlmodes',
               controlmode.ControlModeCollection())
@@ -891,6 +896,10 @@ api.add_route('/spaces/{id_}/meters',
               space.SpaceMeterCollection())
 api.add_route('/spaces/{id_}/meters/{mid}',
               space.SpaceMeterItem())
+api.add_route('/spaces/{id_}/products',
+              space.SpaceProductCollection())
+api.add_route('/spaces/{id_}/products/{pid}',
+              space.SpaceProductItem())
 api.add_route('/spaces/{id_}/microgrids',
               space.SpaceMicrogridCollection())
 api.add_route('/spaces/{id_}/microgrids/{mid}',

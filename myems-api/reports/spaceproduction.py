@@ -61,6 +61,16 @@ def ensure_request_space_visible(req, space_id):
         raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                description='API.SPACE_NOT_FOUND')
 
+
+def ensure_space_product_bound(cursor_system, space_id, product_id):
+    cursor_system.execute(" SELECT id "
+                          " FROM tbl_spaces_products "
+                          " WHERE space_id = %s AND product_id = %s ",
+                          (space_id, product_id))
+    if cursor_system.fetchone() is None:
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description='API.PRODUCT_NOT_BOUND_TO_SPACE')
+
 logger = logging.getLogger(__name__)
 
 
@@ -318,6 +328,23 @@ class Reporting:
                 else:
                     product_name = row[0]
 
+                ensure_space_product_bound(cursor_system, space_id, product_id)
+
+                cursor_system.execute(" SELECT m.id, m.energy_category_id "
+                                      " FROM tbl_spaces_meters sm, tbl_meters m "
+                                      " WHERE sm.space_id = %s "
+                                      "   AND sm.meter_id = m.id "
+                                      "   AND m.product_id = %s "
+                                      " ORDER BY m.id ",
+                                      (space_id, product_id))
+                rows_product_meters = cursor_system.fetchall()
+                energy_category_meter_dict = dict()
+                if rows_product_meters is not None and len(rows_product_meters) > 0:
+                    for row_product_meter in rows_product_meters:
+                        if row_product_meter[1] not in energy_category_meter_dict:
+                            energy_category_meter_dict[row_product_meter[1]] = list()
+                        energy_category_meter_dict[row_product_meter[1]].append(row_product_meter[0])
+
                 ################################################################################################
                 # Step 3: query base period production
                 ################################################################################################
@@ -364,30 +391,7 @@ class Reporting:
                 #################################################################################################
                 # Step 4: query energy categories
                 #################################################################################################
-                energy_category_set = set()
-                # query energy categories in base period
-                cursor_energy.execute(" SELECT DISTINCT(energy_category_id) "
-                                      " FROM tbl_space_input_category_hourly "
-                                      " WHERE space_id = %s "
-                                      "     AND start_datetime_utc >= %s "
-                                      "     AND start_datetime_utc < %s ",
-                                      (space_id, base_start_datetime_utc, base_end_datetime_utc))
-                rows_energy_categories = cursor_energy.fetchall()
-                if rows_energy_categories is not None and len(rows_energy_categories) > 0:
-                    for row_energy_category in rows_energy_categories:
-                        energy_category_set.add(row_energy_category[0])
-
-                # query energy categories in reporting period
-                cursor_energy.execute(" SELECT DISTINCT(energy_category_id) "
-                                      " FROM tbl_space_input_category_hourly "
-                                      " WHERE space_id = %s "
-                                      "     AND start_datetime_utc >= %s "
-                                      "     AND start_datetime_utc < %s ",
-                                      (space_id, reporting_start_datetime_utc, reporting_end_datetime_utc))
-                rows_energy_categories = cursor_energy.fetchall()
-                if rows_energy_categories is not None and len(rows_energy_categories) > 0:
-                    for row_energy_category in rows_energy_categories:
-                        energy_category_set.add(row_energy_category[0])
+                energy_category_set = set(energy_category_meter_dict.keys())
 
                 # query all energy categories in base period and reporting period
                 cursor_system.execute(" SELECT id, name, unit_of_measure, kgce, kgco2e "
@@ -517,18 +521,21 @@ class Reporting:
                         base[energy_category_id]['subtotal_in_kgce'] = Decimal(0.0)
                         base[energy_category_id]['subtotal_in_kgco2e'] = Decimal(0.0)
 
-                        cursor_energy.execute(" SELECT start_datetime_utc, actual_value "
-                                              " FROM tbl_space_input_category_hourly "
-                                              " WHERE space_id = %s "
-                                              "     AND energy_category_id = %s "
-                                              "     AND start_datetime_utc >= %s "
-                                              "     AND start_datetime_utc < %s "
-                                              " ORDER BY start_datetime_utc ",
-                                              (space_id,
-                                               energy_category_id,
-                                               base_start_datetime_utc,
-                                               base_end_datetime_utc))
-                        rows_space_hourly = cursor_energy.fetchall()
+                        meter_id_list = energy_category_meter_dict.get(energy_category_id, list())
+                        if len(meter_id_list) == 0:
+                            rows_space_hourly = []
+                        else:
+                            placeholders = ', '.join(['%s'] * len(meter_id_list))
+                            query = (" SELECT start_datetime_utc, SUM(actual_value) "
+                                     " FROM tbl_meter_hourly "
+                                     " WHERE meter_id IN (" + placeholders + ") "
+                                     "   AND start_datetime_utc >= %s "
+                                     "   AND start_datetime_utc < %s "
+                                     " GROUP BY start_datetime_utc "
+                                     " ORDER BY start_datetime_utc ")
+                            cursor_energy.execute(query,
+                                                  tuple(meter_id_list) + (base_start_datetime_utc, base_end_datetime_utc))
+                            rows_space_hourly = cursor_energy.fetchall()
 
                         rows_space_periodically = utilities.aggregate_hourly_data_by_period(rows_space_hourly,
                                                                                             base_start_datetime_utc,
@@ -572,18 +579,22 @@ class Reporting:
                         reporting[energy_category_id]['subtotal_in_kgce'] = Decimal(0.0)
                         reporting[energy_category_id]['subtotal_in_kgco2e'] = Decimal(0.0)
 
-                        cursor_energy.execute(" SELECT start_datetime_utc, actual_value "
-                                              " FROM tbl_space_input_category_hourly "
-                                              " WHERE space_id = %s "
-                                              "     AND energy_category_id = %s "
-                                              "     AND start_datetime_utc >= %s "
-                                              "     AND start_datetime_utc < %s "
-                                              " ORDER BY start_datetime_utc ",
-                                              (space_id,
-                                               energy_category_id,
-                                               reporting_start_datetime_utc,
-                                               reporting_end_datetime_utc))
-                        rows_space_hourly = cursor_energy.fetchall()
+                        meter_id_list = energy_category_meter_dict.get(energy_category_id, list())
+                        if len(meter_id_list) == 0:
+                            rows_space_hourly = []
+                        else:
+                            placeholders = ', '.join(['%s'] * len(meter_id_list))
+                            query = (" SELECT start_datetime_utc, SUM(actual_value) "
+                                     " FROM tbl_meter_hourly "
+                                     " WHERE meter_id IN (" + placeholders + ") "
+                                     "   AND start_datetime_utc >= %s "
+                                     "   AND start_datetime_utc < %s "
+                                     " GROUP BY start_datetime_utc "
+                                     " ORDER BY start_datetime_utc ")
+                            cursor_energy.execute(query,
+                                                  tuple(meter_id_list) +
+                                                  (reporting_start_datetime_utc, reporting_end_datetime_utc))
+                            rows_space_hourly = cursor_energy.fetchall()
 
                         rows_space_periodically = utilities.aggregate_hourly_data_by_period(
                             rows_space_hourly,

@@ -58,6 +58,8 @@ const EnterProduction = ({ setRedirect, setRedirectUrl, t }) => {
   });
   const [selectedSpaceName, setSelectedSpaceName] = useState(undefined);
   const [selectedSpaceID, setSelectedSpaceID] = useState(undefined);
+  const [products, setProducts] = useState([]);
+  const [selectedProductID, setSelectedProductID] = useState(undefined);
   const [productionList, setProductionList] = useState([]);
   const [cascaderOptions, setCascaderOptions] = useState(undefined);
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
@@ -90,7 +92,44 @@ const EnterProduction = ({ setRedirect, setRedirectUrl, t }) => {
 
   let onSpaceCascaderChange = (value, selectedOptions) => {
     setSelectedSpaceName(selectedOptions.map(o => o.label).join('/'));
-    setSelectedSpaceID(value[value.length - 1]);
+    const spaceID = value[value.length - 1];
+    setSelectedSpaceID(spaceID);
+    getProductList(spaceID);
+  };
+
+  const getProductList = async spaceID => {
+    let isResponseOK = false;
+    fetch(APIBaseURL + '/spaces/' + spaceID + '/products', {
+      method: 'GET',
+      headers: {
+        'Content-type': 'application/json',
+        'User-UUID': getCookieValue('user_uuid'),
+        Token: getCookieValue('token')
+      },
+      body: null
+    })
+      .then(response => {
+        if (response.ok) {
+          isResponseOK = true;
+        }
+        return response.json();
+      })
+      .then(json => {
+        if (isResponseOK) {
+          setProducts(json);
+          setSelectedProductID(json.length > 0 ? json[0].id : undefined);
+          if (json.length === 0) {
+            setProductionList([]);
+          }
+        } else {
+          setProducts([]);
+          setSelectedProductID(undefined);
+          handleAPIError(json, setRedirect, setRedirectUrl, t, toast);
+        }
+      })
+      .catch(err => {
+        console.log(err);
+      });
   };
 
   const getSpaceList = async () => {
@@ -124,7 +163,9 @@ const EnterProduction = ({ setRedirect, setRedirectUrl, t }) => {
           );
           setCascaderOptions(json);
           setSelectedSpaceName([json[0]].map(o => o.label));
-          setSelectedSpaceID([json[0]].map(o => o.value)[0]);
+          const rootSpaceID = [json[0]].map(o => o.value)[0];
+          setSelectedSpaceID(rootSpaceID);
+          getProductList(rootSpaceID);
         } else {
           handleAPIError(json, setRedirect, setRedirectUrl, t, toast)
         }
@@ -195,6 +236,10 @@ const EnterProduction = ({ setRedirect, setRedirectUrl, t }) => {
   // Handler
   const handleSubmit = e => {
     e.preventDefault();
+    if (!selectedProductID) {
+      toast.error(t('Please Select Product'));
+      return;
+    }
     // disable submit button
     setSubmitButtonDisabled(false);
     // show spinner
@@ -214,7 +259,8 @@ const EnterProduction = ({ setRedirect, setRedirectUrl, t }) => {
         '/reports/enterproduction?' +
         'spaceid=' +
         selectedSpaceID +
-        '&productid=1' +
+        '&productid=' +
+        selectedProductID +
         '&reportingperiodstartdatetime=' +
         moment(reportingPeriodDateRange[0]).format('YYYY-MM-DDTHH:mm:ss') +
         '&reportingperiodenddatetime=' +
@@ -282,7 +328,7 @@ const EnterProduction = ({ setRedirect, setRedirectUrl, t }) => {
 
     let param = {
       spaceid: selectedSpaceID,
-      productid: 1,
+      productid: selectedProductID,
       value: [[row.monthdate, newValue]]
     };
     await fetch(APIBaseURL + '/reports/enterproduction', {
@@ -370,6 +416,30 @@ const EnterProduction = ({ setRedirect, setRedirectUrl, t }) => {
                   >
                     <Input bsSize="sm" value={selectedSpaceName || ''} readOnly />
                   </Cascader>
+                </FormGroup>
+              </Col>
+              <Col xs="auto">
+                <FormGroup className="form-group">
+                  <Label className={labelClasses} for="product">
+                    {t('Product')}
+                  </Label>
+                  <Input
+                    id="product"
+                    type="select"
+                    bsSize="sm"
+                    value={selectedProductID || ''}
+                    onChange={e => setSelectedProductID(Number(e.target.value) || undefined)}
+                  >
+                    {products.length === 0 ? (
+                      <option value="">{t('No Product Available')}</option>
+                    ) : (
+                      products.map(product => (
+                        <option value={product.id} key={product.id}>
+                          {product.name}
+                        </option>
+                      ))
+                    )}
+                  </Input>
                 </FormGroup>
               </Col>
               <Col xs="auto">

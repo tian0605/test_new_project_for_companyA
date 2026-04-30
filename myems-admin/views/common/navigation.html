@@ -10,13 +10,14 @@
                     {{'MY_EMS_NAME' | translate }}
                 </div>
             </li>
-            <li ng-class="{active: $state.includes('settings')}" ng-if="canAccessAnyAdminRoute(['settings.category','settings.tariff','settings.costcenter','settings.contact','settings.gateway','settings.protocol','settings.datasource','settings.meter','settings.sensor','settings.equipment','settings.combinedequipment','settings.space','settings.tenant','settings.store','settings.shopfloor','settings.energyflowdiagram','settings.svg','settings.distributionsystem','settings.menu','settings.knowledgefile','settings.workingcalendar'])">
+            <li ng-class="{active: $state.includes('settings')}" ng-if="canAccessAnyAdminRoute(['settings.category','settings.tariff','settings.costcenter','settings.contact','settings.product','settings.gateway','settings.protocol','settings.datasource','settings.meter','settings.sensor','settings.equipment','settings.combinedequipment','settings.space','settings.tenant','settings.store','settings.shopfloor','settings.energyflowdiagram','settings.svg','settings.distributionsystem','settings.menu','settings.knowledgefile','settings.workingcalendar'])">
                 <a href=""><i class="fa fa-gears"></i> <span class="nav-label">{{ 'MENU.SETTINGS.SETTINGS' | translate }}</span>  <span class="fa arrow"></span></a>
                 <ul class="nav nav-second-level collapse" ng-class="{in: $state.includes('settings')}">
                     <li ui-sref-active="active" ng-if="canAccessAdminRoute('settings.category')"><a ui-sref="settings.category">{{ 'MENU.SETTINGS.CATEGORY' | translate }}</a></li>
                     <li ui-sref-active="active" ng-if="canAccessAdminRoute('settings.tariff')"><a ui-sref="settings.tariff">{{ 'MENU.SETTINGS.TARIFF' | translate }}</a></li>
                     <li ui-sref-active="active" ng-if="canAccessAdminRoute('settings.costcenter')"><a ui-sref="settings.costcenter">{{ 'MENU.SETTINGS.COSTCENTER' | translate }}</a></li>
                     <li ui-sref-active="active" ng-if="canAccessAdminRoute('settings.contact')"><a ui-sref="settings.contact">{{ 'MENU.SETTINGS.CONTACT' | translate }}</a></li>
+                    <li ui-sref-active="active" ng-if="canAccessAdminRoute('settings.product')"><a ui-sref="settings.product">{{ 'MENU.SETTINGS.PRODUCT' | translate }}</a></li>
                     <li ui-sref-active="active" ng-if="canAccessAdminRoute('settings.gateway')"><a ui-sref="settings.gateway">{{ 'MENU.SETTINGS.GATEWAY' | translate }}</a></li>
                     <li ui-sref-active="active" ng-if="canAccessAdminRoute('settings.protocol')"><a ui-sref="settings.protocol">{{ 'MENU.SETTINGS.PROTOCOL' | translate }}</a></li>
                     <li ui-sref-active="active" ng-if="canAccessAdminRoute('settings.datasource')"><a ui-sref="settings.datasource">{{ 'MENU.SETTINGS.DATASOURCE' | translate }}</a></li>

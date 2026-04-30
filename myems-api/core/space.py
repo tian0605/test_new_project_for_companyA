@@ -2108,6 +2108,226 @@ class SpaceMeterItem:
         resp.status = falcon.HTTP_204
 
 
+class SpaceProductCollection:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_):
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    def on_get(req, resp, id_):
+        if 'API-KEY' not in req.headers or \
+                not isinstance(req.headers['API-KEY'], str) or \
+                len(str.strip(req.headers['API-KEY'])) == 0:
+            access_control(req)
+        else:
+            api_key_control(req)
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_SPACE_ID')
+
+        cnx_system = None
+        cursor_system = None
+        product_ids = []
+        try:
+            cnx_system = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor_system = cnx_system.cursor()
+                cursor_system.execute(" SELECT name FROM tbl_spaces WHERE id = %s ", (id_,))
+                if cursor_system.fetchone() is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.SPACE_NOT_FOUND')
+
+                cursor_system.execute(" SELECT product_id FROM tbl_spaces_products WHERE space_id = %s ORDER BY product_id ",
+                                      (id_,))
+                rows = cursor_system.fetchall()
+                if rows is not None and len(rows) > 0:
+                    product_ids = [row[0] for row in rows]
+            finally:
+                if cursor_system:
+                    cursor_system.close()
+        finally:
+            if cnx_system:
+                cnx_system.close()
+
+        result = []
+        if len(product_ids) > 0:
+            cnx_production = None
+            cursor_production = None
+            try:
+                cnx_production = mysql.connector.connect(**config.myems_production_db)
+                try:
+                    cursor_production = cnx_production.cursor()
+                    placeholders = ','.join(['%s'] * len(product_ids))
+                    cursor_production.execute(
+                        f" SELECT id, name, uuid, unit_of_measure, tag, standard_product_coefficient "
+                        f" FROM tbl_products WHERE id IN ({placeholders}) ORDER BY id ",
+                        tuple(product_ids)
+                    )
+                    rows = cursor_production.fetchall()
+                    if rows is not None and len(rows) > 0:
+                        for row in rows:
+                            result.append({
+                                'id': row[0],
+                                'name': row[1],
+                                'uuid': row[2],
+                                'unit_of_measure': row[3],
+                                'tag': row[4],
+                                'standard_product_coefficient': row[5]
+                            })
+                finally:
+                    if cursor_production:
+                        cursor_production.close()
+            finally:
+                if cnx_production:
+                    cnx_production.close()
+
+        resp.text = json.dumps(result, use_decimal=True)
+
+    @staticmethod
+    @user_logger
+    def on_post(req, resp, id_):
+        admin_control(req)
+        try:
+            raw_json = req.stream.read().decode('utf-8')
+        except UnicodeDecodeError:
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.INVALID_ENCODING')
+        except Exception:
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.FAILED_TO_READ_REQUEST_STREAM')
+
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_SPACE_ID')
+
+        new_values = json.loads(raw_json)
+        if 'product_id' not in new_values['data'].keys() or \
+                not isinstance(new_values['data']['product_id'], int) or \
+                new_values['data']['product_id'] <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_PRODUCT_ID')
+        product_id = new_values['data']['product_id']
+
+        cnx_system = None
+        cursor_system = None
+        try:
+            cnx_system = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor_system = cnx_system.cursor()
+                cursor_system.execute(" SELECT name FROM tbl_spaces WHERE id = %s ", (id_,))
+                if cursor_system.fetchone() is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.SPACE_NOT_FOUND')
+
+                cursor_system.execute(" SELECT id FROM tbl_spaces_products WHERE space_id = %s AND product_id = %s ",
+                                      (id_, product_id))
+                if cursor_system.fetchone() is not None:
+                    raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR',
+                                           description='API.SPACE_PRODUCT_RELATION_EXISTS')
+            finally:
+                if cursor_system:
+                    cursor_system.close()
+        finally:
+            if cnx_system:
+                cnx_system.close()
+
+        cnx_production = None
+        cursor_production = None
+        try:
+            cnx_production = mysql.connector.connect(**config.myems_production_db)
+            try:
+                cursor_production = cnx_production.cursor()
+                cursor_production.execute(" SELECT name FROM tbl_products WHERE id = %s ", (product_id,))
+                if cursor_production.fetchone() is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.PRODUCT_NOT_FOUND')
+            finally:
+                if cursor_production:
+                    cursor_production.close()
+        finally:
+            if cnx_production:
+                cnx_production.close()
+
+        cnx_system = None
+        cursor_system = None
+        try:
+            cnx_system = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor_system = cnx_system.cursor()
+                cursor_system.execute(" INSERT INTO tbl_spaces_products (space_id, product_id) VALUES (%s, %s) ",
+                                      (id_, product_id))
+                cnx_system.commit()
+            finally:
+                if cursor_system:
+                    cursor_system.close()
+        finally:
+            if cnx_system:
+                cnx_system.close()
+
+        resp.status = falcon.HTTP_201
+        resp.location = '/spaces/' + str(id_) + '/products/' + str(product_id)
+
+
+class SpaceProductItem:
+    def __init__(self):
+        pass
+
+    @staticmethod
+    def on_options(req, resp, id_, pid):
+        _ = req
+        resp.status = falcon.HTTP_200
+        _ = id_
+
+    @staticmethod
+    @user_logger
+    def on_delete(req, resp, id_, pid):
+        admin_control(req)
+        if not id_.isdigit() or int(id_) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_SPACE_ID')
+
+        if not pid.isdigit() or int(pid) <= 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                   description='API.INVALID_PRODUCT_ID')
+
+        cnx_system = None
+        cursor_system = None
+        try:
+            cnx_system = mysql.connector.connect(**config.myems_system_db)
+            try:
+                cursor_system = cnx_system.cursor()
+                cursor_system.execute(" SELECT name FROM tbl_spaces WHERE id = %s ", (id_,))
+                if cursor_system.fetchone() is None:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.SPACE_NOT_FOUND')
+
+                cursor_system.execute(" SELECT id FROM tbl_spaces_products WHERE space_id = %s AND product_id = %s ",
+                                      (id_, pid))
+                rows = cursor_system.fetchall()
+                if rows is None or len(rows) == 0:
+                    raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                           description='API.SPACE_PRODUCT_RELATION_NOT_FOUND')
+
+                cursor_system.execute(" DELETE FROM tbl_spaces_products WHERE space_id = %s AND product_id = %s ",
+                                      (id_, pid))
+                cnx_system.commit()
+            finally:
+                if cursor_system:
+                    cursor_system.close()
+        finally:
+            if cnx_system:
+                cnx_system.close()
+
+        resp.status = falcon.HTTP_204
+
+
 class SpaceMicrogridCollection:
     def __init__(self):
         pass

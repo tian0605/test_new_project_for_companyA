@@ -1017,6 +1017,64 @@
 							</div>
 					</uib-tab>
 
+					<uib-tab heading="{{'SETTING.BIND_PRODUCT' | translate}}" index="16" select="handleTabSelect(16)">
+						<div class="panel-body" ng-controller="SpaceProductController">
+							<div class="row">
+								<div class="col-lg-3">
+									<div class="panel panel-info">
+										<div class="panel-heading">
+											{{'SETTING.SELECT_SPACE' | translate}}
+										</div>
+										<div class="panel-body tree-scroll-panel">
+											<div id="spacetreewithproduct"></div>
+										</div>
+									</div>
+								</div>
+								<div class="col-lg-4">
+									<div class="panel panel-primary">
+										<div class="panel-heading">
+											{{'SETTING.N_S_PRODUCT' | translate}}
+										</div>
+										<div class="panel-body maxheight"
+											x-hjc-drop-target="{{isSpaceSelected ? 'true' : 'false'}}"
+											x-on-drop="pairProduct(dragEl,dropEl)"
+											uib-tooltip="{{'SETTING.DRAG_TO_UNBIND' | translate}}">
+											<div class="btn btn-primary btn-rounded btn-block"
+												title="{{spaceproduct.name}}"
+												ng-repeat="spaceproduct in spaceproducts" x-hjc-draggable="{{isSpaceSelected ? 'true' : 'false'}}">
+												{{spaceproduct.name}}
+											</div>
+										</div>
+									</div>
+									<div class="panel panel-danger">
+										<div class="panel-heading">
+											{{'SETTING.TRASH' | translate}}
+										</div>
+										<div class="panel-body trash">
+											<img class="trashcan" src="img/trashcan.png" title="product-trashcan" x-hjc-drop-target="{{isSpaceSelected ? 'true' : 'false'}}"
+												x-on-drop="deleteProductPair(dragEl,dropEl)">
+										</div>
+									</div>
+								</div>
+
+								<div class="col-lg-4">
+									<div class="panel panel-primary">
+										<div class="panel-heading">
+											{{'SETTING.PRODUCT' | translate}}
+										</div>
+										<div class="panel-body" uib-tooltip="{{'SETTING.DRAG_TO_BIND' | translate}}"
+											slim-scroll box-height="765px">
+											<div class="source btn btn-info btn-rounded btn-block"
+												ng-repeat="product in filteredProducts" x-hjc-draggable="{{isSpaceSelected ? 'true' : 'false'}}">
+												{{product.name}}
+											</div>
+										</div>
+									</div>
+								</div>
+							</div>
+						</div>
+					</uib-tab>
+
 				</uib-tabset>
 			</div>
 		</div>
