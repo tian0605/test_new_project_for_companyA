@@ -57,6 +57,16 @@ def ensure_request_space_visible(req, space_id):
                                description='API.SPACE_NOT_FOUND')
 
 
+def ensure_space_product_bound(cursor_system, space_id, product_id):
+    cursor_system.execute(" SELECT id "
+                          " FROM tbl_spaces_products "
+                          " WHERE space_id = %s AND product_id = %s ",
+                          (space_id, product_id))
+    if cursor_system.fetchone() is None:
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description='API.PRODUCT_NOT_BOUND_TO_SPACE')
+
+
 class Reporting:
     def __init__(self):
         pass
@@ -197,6 +207,8 @@ class Reporting:
                                    description='API.PRODUCT_NOT_FOUND')
         else:
             product_name = row[0]
+
+        ensure_space_product_bound(cursor_system, space_id, product_id)
 
         ################################################################################################################
         # Step 2: query reporting period production
@@ -356,6 +368,8 @@ class Reporting:
                 cnx_production.close()
             raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                    description='API.PRODUCT_NOT_FOUND')
+
+        ensure_space_product_bound(cursor_system, production_data['space_id'], production_data['product_id'])
 
         for start_datetime_utc, daily_value in production_data['data'].items():
             end_datetime_utc = (start_datetime_utc + timedelta(hours=24))

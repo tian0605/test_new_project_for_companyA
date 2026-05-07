@@ -1075,12 +1075,14 @@ CREATE TABLE IF NOT EXISTS `myems_system_db`.`tbl_meters` (
   COMMENT 'Inclusive. Maximum energy consumption per hour, Rated total active Power, Rated Flow, etc.',
   `cost_center_id` BIGINT NOT NULL,
   `energy_item_id` BIGINT,
+  `product_id` BIGINT,
   `master_meter_id` BIGINT,
   `description` VARCHAR(255),
   PRIMARY KEY (`id`));
 CREATE INDEX `tbl_meters_index_1` ON `myems_system_db`.`tbl_meters` (`name`);
 CREATE INDEX `tbl_meters_index_2` ON `myems_system_db`.`tbl_meters` (`energy_category_id`);
 CREATE INDEX `tbl_meters_index_3` ON `myems_system_db`.`tbl_meters` (`energy_item_id`);
+CREATE INDEX `tbl_meters_index_4` ON `myems_system_db`.`tbl_meters` (`product_id`);
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Table `myems_system_db`.`tbl_meters_points`
@@ -1454,6 +1456,7 @@ CREATE TABLE IF NOT EXISTS `myems_system_db`.`tbl_offline_meters` (
   `name` VARCHAR(255) NOT NULL,
   `uuid` CHAR(36) NOT NULL,
   `energy_category_id` BIGINT NOT NULL,
+  `product_id` BIGINT,
   `is_counted` BOOL NOT NULL,
   `hourly_low_limit` DECIMAL(21, 6)  NOT NULL COMMENT 'Inclusive. Default is 0.',
   `hourly_high_limit` DECIMAL(21, 6)  NOT NULL COMMENT 'Inclusive. Maximum energy consumption per hour.',
@@ -1464,6 +1467,7 @@ CREATE TABLE IF NOT EXISTS `myems_system_db`.`tbl_offline_meters` (
 CREATE INDEX `tbl_offline_meters_index_1` ON `myems_system_db`.`tbl_offline_meters` (`name`);
 CREATE INDEX `tbl_offline_meters_index_2` ON `myems_system_db`.`tbl_offline_meters` (`energy_category_id`);
 CREATE INDEX `tbl_offline_meters_index_3` ON `myems_system_db`.`tbl_offline_meters` (`energy_item_id`);
+CREATE INDEX `tbl_offline_meters_index_4` ON `myems_system_db`.`tbl_offline_meters` (`product_id`);
 
 
 -- ---------------------------------------------------------------------------------------------------------------------
@@ -2172,6 +2176,19 @@ CREATE TABLE IF NOT EXISTS `myems_system_db`.`tbl_spaces_points` (
   `point_id` BIGINT NOT NULL,
   PRIMARY KEY (`id`));
 CREATE INDEX `tbl_spaces_points_index_1` ON `myems_system_db`.`tbl_spaces_points` (`space_id`);
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Table `myems_system_db`.`tbl_spaces_products`
+-- ---------------------------------------------------------------------------------------------------------------------
+DROP TABLE IF EXISTS `myems_system_db`.`tbl_spaces_products` ;
+
+CREATE TABLE IF NOT EXISTS `myems_system_db`.`tbl_spaces_products` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `space_id` BIGINT NOT NULL,
+  `product_id` BIGINT NOT NULL,
+  PRIMARY KEY (`id`));
+CREATE INDEX `tbl_spaces_products_index_1` ON `myems_system_db`.`tbl_spaces_products` (`space_id`);
+CREATE INDEX `tbl_spaces_products_index_2` ON `myems_system_db`.`tbl_spaces_products` (`product_id`);
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Table `myems_system_db`.`tbl_spaces_sensors`

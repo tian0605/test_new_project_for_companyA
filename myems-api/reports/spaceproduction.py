@@ -42,6 +42,11 @@ import config
 import excelexporters.spaceproduction
 from core import utilities
 from core.useractivity import access_control, api_key_control, get_request_context_value, get_user_permission_context
+from reports.productreporting import (
+    get_dimension_hourly_rows,
+    get_energy_category_ids_for_sources,
+    get_space_product_energy_sources,
+)
 
 
 def ensure_request_space_visible(req, space_id):
@@ -60,6 +65,16 @@ def ensure_request_space_visible(req, space_id):
     if authorized_space_ids is not None and space_id not in authorized_space_ids:
         raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                description='API.SPACE_NOT_FOUND')
+
+
+def ensure_space_product_bound(cursor_system, space_id, product_id):
+    cursor_system.execute(" SELECT id "
+                          " FROM tbl_spaces_products "
+                          " WHERE space_id = %s AND product_id = %s ",
+                          (space_id, product_id))
+    if cursor_system.fetchone() is None:
+        raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                               description='API.PRODUCT_NOT_BOUND_TO_SPACE')
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +333,10 @@ class Reporting:
                 else:
                     product_name = row[0]
 
+                ensure_space_product_bound(cursor_system, space_id, product_id)
+
+                energy_sources = get_space_product_energy_sources(cursor_system, space_id, product_id)
+
                 ################################################################################################
                 # Step 3: query base period production
                 ################################################################################################
@@ -364,30 +383,7 @@ class Reporting:
                 #################################################################################################
                 # Step 4: query energy categories
                 #################################################################################################
-                energy_category_set = set()
-                # query energy categories in base period
-                cursor_energy.execute(" SELECT DISTINCT(energy_category_id) "
-                                      " FROM tbl_space_input_category_hourly "
-                                      " WHERE space_id = %s "
-                                      "     AND start_datetime_utc >= %s "
-                                      "     AND start_datetime_utc < %s ",
-                                      (space_id, base_start_datetime_utc, base_end_datetime_utc))
-                rows_energy_categories = cursor_energy.fetchall()
-                if rows_energy_categories is not None and len(rows_energy_categories) > 0:
-                    for row_energy_category in rows_energy_categories:
-                        energy_category_set.add(row_energy_category[0])
-
-                # query energy categories in reporting period
-                cursor_energy.execute(" SELECT DISTINCT(energy_category_id) "
-                                      " FROM tbl_space_input_category_hourly "
-                                      " WHERE space_id = %s "
-                                      "     AND start_datetime_utc >= %s "
-                                      "     AND start_datetime_utc < %s ",
-                                      (space_id, reporting_start_datetime_utc, reporting_end_datetime_utc))
-                rows_energy_categories = cursor_energy.fetchall()
-                if rows_energy_categories is not None and len(rows_energy_categories) > 0:
-                    for row_energy_category in rows_energy_categories:
-                        energy_category_set.add(row_energy_category[0])
+                energy_category_set = get_energy_category_ids_for_sources(energy_sources)
 
                 # query all energy categories in base period and reporting period
                 cursor_system.execute(" SELECT id, name, unit_of_measure, kgce, kgco2e "
@@ -504,6 +500,13 @@ class Reporting:
                 #####################################################################################################
                 # Step 7: query energy consumption data
                 #####################################################################################################
+                base_rows_by_energy_category = dict()
+                if base_start_datetime_utc is not None and base_end_datetime_utc is not None:
+                    base_rows_by_energy_category = get_dimension_hourly_rows(cursor_energy,
+                                                                            energy_sources,
+                                                                            base_start_datetime_utc,
+                                                                            base_end_datetime_utc)
+
                 base = dict()
                 if energy_category_set is not None and len(energy_category_set) > 0:
                     for energy_category_id in energy_category_set:
@@ -517,18 +520,7 @@ class Reporting:
                         base[energy_category_id]['subtotal_in_kgce'] = Decimal(0.0)
                         base[energy_category_id]['subtotal_in_kgco2e'] = Decimal(0.0)
 
-                        cursor_energy.execute(" SELECT start_datetime_utc, actual_value "
-                                              " FROM tbl_space_input_category_hourly "
-                                              " WHERE space_id = %s "
-                                              "     AND energy_category_id = %s "
-                                              "     AND start_datetime_utc >= %s "
-                                              "     AND start_datetime_utc < %s "
-                                              " ORDER BY start_datetime_utc ",
-                                              (space_id,
-                                               energy_category_id,
-                                               base_start_datetime_utc,
-                                               base_end_datetime_utc))
-                        rows_space_hourly = cursor_energy.fetchall()
+                        rows_space_hourly = base_rows_by_energy_category.get(energy_category_id, [])
 
                         rows_space_periodically = utilities.aggregate_hourly_data_by_period(rows_space_hourly,
                                                                                             base_start_datetime_utc,
@@ -559,6 +551,11 @@ class Reporting:
                 ################################################################################################
                 # Step 8: query reporting period energy consumption
                 ################################################################################################
+                reporting_rows_by_energy_category = get_dimension_hourly_rows(cursor_energy,
+                                                                              energy_sources,
+                                                                              reporting_start_datetime_utc,
+                                                                              reporting_end_datetime_utc)
+
                 reporting = dict()
                 if energy_category_set is not None and len(energy_category_set) > 0:
                     for energy_category_id in energy_category_set:
@@ -572,18 +569,7 @@ class Reporting:
                         reporting[energy_category_id]['subtotal_in_kgce'] = Decimal(0.0)
                         reporting[energy_category_id]['subtotal_in_kgco2e'] = Decimal(0.0)
 
-                        cursor_energy.execute(" SELECT start_datetime_utc, actual_value "
-                                              " FROM tbl_space_input_category_hourly "
-                                              " WHERE space_id = %s "
-                                              "     AND energy_category_id = %s "
-                                              "     AND start_datetime_utc >= %s "
-                                              "     AND start_datetime_utc < %s "
-                                              " ORDER BY start_datetime_utc ",
-                                              (space_id,
-                                               energy_category_id,
-                                               reporting_start_datetime_utc,
-                                               reporting_end_datetime_utc))
-                        rows_space_hourly = cursor_energy.fetchall()
+                        rows_space_hourly = reporting_rows_by_energy_category.get(energy_category_id, [])
 
                         rows_space_periodically = utilities.aggregate_hourly_data_by_period(
                             rows_space_hourly,

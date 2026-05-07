@@ -56,6 +56,68 @@ def clear_meter_cache(meter_id=None):
         pass
 
 
+def get_product_dict(product_ids=None):
+    product_dict = dict()
+
+    cnx = None
+    cursor = None
+    try:
+        cnx = mysql.connector.connect(**config.myems_production_db)
+        try:
+            cursor = cnx.cursor()
+            if product_ids is None:
+                cursor.execute(" SELECT id, name, uuid, unit_of_measure FROM tbl_products ")
+            else:
+                normalized_product_ids = [int(product_id) for product_id in product_ids if product_id is not None]
+                if len(normalized_product_ids) == 0:
+                    return product_dict
+                placeholders = ','.join(['%s'] * len(normalized_product_ids))
+                cursor.execute(
+                    f" SELECT id, name, uuid, unit_of_measure FROM tbl_products WHERE id IN ({placeholders}) ",
+                    tuple(normalized_product_ids)
+                )
+
+            rows_products = cursor.fetchall()
+            if rows_products is not None and len(rows_products) > 0:
+                for row in rows_products:
+                    product_dict[row[0]] = {
+                        "id": row[0],
+                        "name": row[1],
+                        "uuid": row[2],
+                        "unit_of_measure": row[3]
+                    }
+        finally:
+            if cursor:
+                cursor.close()
+    finally:
+        if cnx:
+            cnx.close()
+
+    return product_dict
+
+
+def validate_product_id(product_id):
+    if product_id is None:
+        return
+
+    cnx = None
+    cursor = None
+    try:
+        cnx = mysql.connector.connect(**config.myems_production_db)
+        try:
+            cursor = cnx.cursor()
+            cursor.execute(" SELECT name FROM tbl_products WHERE id = %s ", (product_id,))
+            if cursor.fetchone() is None:
+                raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                       description='API.PRODUCT_NOT_FOUND')
+        finally:
+            if cursor:
+                cursor.close()
+    finally:
+        if cnx:
+            cnx.close()
+
+
 class MeterCollection:
     """
     Meter Collection Resource
@@ -179,7 +241,7 @@ class MeterCollection:
 
                 query_base = (" SELECT id, name, uuid, energy_category_id, "
                               "        is_counted, hourly_low_limit, hourly_high_limit, "
-                              "        cost_center_id, energy_item_id, master_meter_id, description "
+                              "        cost_center_id, energy_item_id, product_id, master_meter_id, description "
                               " FROM tbl_meters ")
                 params = []
                 if search_query:
@@ -196,6 +258,8 @@ class MeterCollection:
             if cnx:
                 cnx.close()
 
+        product_dict = get_product_dict({row[9] for row in rows_meters})
+
         result = list()
         if rows_meters is not None and len(rows_meters) > 0:
             for row in rows_meters:
@@ -208,8 +272,9 @@ class MeterCollection:
                                "hourly_high_limit": row[6],
                                "cost_center": cost_center_dict.get(row[7], None),
                                "energy_item": energy_item_dict.get(row[8], None),
-                               "master_meter": master_meter_dict.get(row[9], None),
-                               "description": row[10],
+                               "product": product_dict.get(row[9], None),
+                               "master_meter": master_meter_dict.get(row[10], None),
+                               "description": row[11],
                                "qrcode": "meter:" + row[2]}
                 result.append(meta_result)
 
@@ -295,6 +360,16 @@ class MeterCollection:
         else:
             energy_item_id = None
 
+        if 'product_id' in new_values['data'].keys() and \
+                new_values['data']['product_id'] is not None:
+            if not isinstance(new_values['data']['product_id'], int) or \
+                    new_values['data']['product_id'] <= 0:
+                raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                       description='API.INVALID_PRODUCT_ID')
+            product_id = new_values['data']['product_id']
+        else:
+            product_id = None
+
         if 'master_meter_id' in new_values['data'].keys():
             if not isinstance(new_values['data']['master_meter_id'], int) or \
                     new_values['data']['master_meter_id'] <= 0:
@@ -373,10 +448,12 @@ class MeterCollection:
                                 status=falcon.HTTP_404, title='API.BAD_REQUEST',
                                 description='API.MASTER_METER_DOES_NOT_BELONG_TO_SAME_ENERGY_CATEGORY')
 
+                validate_product_id(product_id)
+
                 add_values = (" INSERT INTO tbl_meters "
                               "    (name, uuid, energy_category_id, is_counted, hourly_low_limit, hourly_high_limit,"
-                              "     cost_center_id, energy_item_id, master_meter_id, description) "
-                              " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ")
+                              "     cost_center_id, energy_item_id, product_id, master_meter_id, description) "
+                              " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ")
                 cursor.execute(add_values, (name,
                                             str(uuid.uuid4()),
                                             energy_category_id,
@@ -385,6 +462,7 @@ class MeterCollection:
                                             hourly_high_limit,
                                             cost_center_id,
                                             energy_item_id,
+                                            product_id,
                                             master_meter_id,
                                             description))
                 new_id = cursor.lastrowid
@@ -515,7 +593,7 @@ class MeterItem:
 
                 query = (" SELECT id, name, uuid, energy_category_id, "
                          "        is_counted, hourly_low_limit, hourly_high_limit, "
-                         "        cost_center_id, energy_item_id, master_meter_id, description "
+                         "        cost_center_id, energy_item_id, product_id, master_meter_id, description "
                          " FROM tbl_meters "
                          " WHERE id = %s ")
                 cursor.execute(query, (id_,))
@@ -531,6 +609,8 @@ class MeterItem:
             raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                    description='API.METER_NOT_FOUND')
         
+        product_dict = get_product_dict([row[9]])
+
         meta_result = {"id": row[0],
                        "name": row[1],
                        "uuid": row[2],
@@ -540,8 +620,9 @@ class MeterItem:
                        "hourly_high_limit": row[6],
                        "cost_center": cost_center_dict.get(row[7], None),
                        "energy_item": energy_item_dict.get(row[8], None),
-                       "master_meter": master_meter_dict.get(row[9], None),
-                       "description": row[10],
+                   "product": product_dict.get(row[9], None),
+                   "master_meter": master_meter_dict.get(row[10], None),
+                   "description": row[11],
                        "qrcode": "meter:"+row[2]}
 
         # Store result in Redis cache
@@ -955,6 +1036,16 @@ class MeterItem:
         else:
             energy_item_id = None
 
+        if 'product_id' in new_values['data'].keys() and \
+                new_values['data']['product_id'] is not None:
+            if not isinstance(new_values['data']['product_id'], int) or \
+                    new_values['data']['product_id'] <= 0:
+                raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                       description='API.INVALID_PRODUCT_ID')
+            product_id = new_values['data']['product_id']
+        else:
+            product_id = None
+
         if 'master_meter_id' in new_values['data'].keys():
             if not isinstance(new_values['data']['master_meter_id'], int) or \
                     new_values['data']['master_meter_id'] <= 0 or \
@@ -1051,10 +1142,12 @@ class MeterItem:
                         raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                                description='API.CANNOT_SET_EXISTING_SUBMETER_AS_MASTER_METER')
 
+                validate_product_id(product_id)
+
                 update_row = (" UPDATE tbl_meters "
                               " SET name = %s, energy_category_id = %s, is_counted = %s, "
                               "     hourly_low_limit = %s, hourly_high_limit = %s, "
-                              "     cost_center_id = %s, energy_item_id = %s, master_meter_id = %s, description = %s "
+                              "     cost_center_id = %s, energy_item_id = %s, product_id = %s, master_meter_id = %s, description = %s "
                               " WHERE id = %s ")
                 cursor.execute(update_row, (name,
                                             energy_category_id,
@@ -1063,6 +1156,7 @@ class MeterItem:
                                             hourly_high_limit,
                                             cost_center_id,
                                             energy_item_id,
+                                            product_id,
                                             master_meter_id,
                                             description,
                                             id_,))

@@ -82,6 +82,8 @@ const SpaceEnergyCategory = ({ setRedirect, setRedirectUrl, t }) => {
   // Query Parameters
   const [selectedSpaceName, setSelectedSpaceName] = useState(undefined);
   const [selectedSpaceID, setSelectedSpaceID] = useState(undefined);
+  const [products, setProducts] = useState([]);
+  const [selectedProductID, setSelectedProductID] = useState(undefined);
   const [comparisonType, setComparisonType] = useState('none-comparison');
   const [periodType, setPeriodType] = useState('daily');
   const [cascaderOptions, setCascaderOptions] = useState(undefined);
@@ -851,61 +853,86 @@ const SpaceEnergyCategory = ({ setRedirect, setRedirectUrl, t }) => {
     ]
   );
 
+  const loadSpaceProducts = useCallback(
+    (spaceID, shouldLoadData = false) => {
+      let isResponseOK = false;
+      fetch(APIBaseURL + '/spaces/' + spaceID + '/products', {
+        method: 'GET',
+        headers: {
+          'Content-type': 'application/json',
+          'User-UUID': getCookieValue('user_uuid'),
+          Token: getCookieValue('token')
+        },
+        body: null
+      })
+        .then(response => {
+          if (response.ok) {
+            isResponseOK = true;
+          }
+          return response.json();
+        })
+        .then(json => {
+          if (isResponseOK) {
+            setProducts(json);
+            const nextProductID = json.length > 0 ? json[0].id : undefined;
+            setSelectedProductID(nextProductID);
+            setSubmitButtonDisabled(!nextProductID);
+            if (shouldLoadData && nextProductID) {
+              let url =
+                APIBaseURL +
+                '/reports/spaceenergycategory?' +
+                'spaceid=' +
+                spaceID +
+                '&productid=' +
+                nextProductID +
+                '&periodtype=' +
+                periodType +
+                '&baseperiodstartdatetime=' +
+                (basePeriodDateRange[0] != null ? moment(basePeriodDateRange[0]).format('YYYY-MM-DDTHH:mm:ss') : '') +
+                '&baseperiodenddatetime=' +
+                (basePeriodDateRange[1] != null ? moment(basePeriodDateRange[1]).format('YYYY-MM-DDTHH:mm:ss') : '') +
+                '&reportingperiodstartdatetime=' +
+                moment(reportingPeriodDateRange[0]).format('YYYY-MM-DDTHH:mm:ss') +
+                '&reportingperiodenddatetime=' +
+                moment(reportingPeriodDateRange[1]).format('YYYY-MM-DDTHH:mm:ss') +
+                '&language=' +
+                language;
+              loadData(url, null);
+            }
+          } else {
+            setProducts([]);
+            setSelectedProductID(undefined);
+            setSubmitButtonDisabled(true);
+            handleAPIError(json, setRedirect, setRedirectUrl, t, toast);
+          }
+        })
+        .catch(err => {
+          console.log(err);
+          setProducts([]);
+          setSelectedProductID(undefined);
+          setSubmitButtonDisabled(true);
+        });
+    },
+    [basePeriodDateRange, reportingPeriodDateRange, language, periodType, loadData, setRedirect, setRedirectUrl, t]
+  );
+
   const loadWithSpaceTree = useCallback(
     spaceTree => {
-      // there is spaceuuid in the url
       if (spaceUUID !== null && spaceUUID) {
-        // make api url with spaceuuid
-        let url =
-          APIBaseURL +
-          '/reports/spaceenergycategory?' +
-          'spaceuuid=' +
-          spaceUUID +
-          '&periodtype=' +
-          periodType +
-          '&baseperiodstartdatetime=' +
-          (basePeriodDateRange[0] != null ? moment(basePeriodDateRange[0]).format('YYYY-MM-DDTHH:mm:ss') : '') +
-          '&baseperiodenddatetime=' +
-          (basePeriodDateRange[1] != null ? moment(basePeriodDateRange[1]).format('YYYY-MM-DDTHH:mm:ss') : '') +
-          '&reportingperiodstartdatetime=' +
-          moment(reportingPeriodDateRange[0]).format('YYYY-MM-DDTHH:mm:ss') +
-          '&reportingperiodenddatetime=' +
-          moment(reportingPeriodDateRange[1]).format('YYYY-MM-DDTHH:mm:ss') +
-          '&language=' +
-          language;
-        loadData(url, spaceTree);
-      } else {
-        // there isn't spaceuuid in the url
-        // make api url with spaceid
-        if (spaceTree && spaceTree.length > 0) {
-          let spaceID = [spaceTree[0]].map(o => o.value)[0];
-          let url =
-            APIBaseURL +
-            '/reports/spaceenergycategory?' +
-            'spaceid=' +
-            spaceID +
-            '&periodtype=' +
-            periodType +
-            '&baseperiodstartdatetime=' +
-            (basePeriodDateRange[0] != null ? moment(basePeriodDateRange[0]).format('YYYY-MM-DDTHH:mm:ss') : '') +
-            '&baseperiodenddatetime=' +
-            (basePeriodDateRange[1] != null ? moment(basePeriodDateRange[1]).format('YYYY-MM-DDTHH:mm:ss') : '') +
-            '&reportingperiodstartdatetime=' +
-            moment(reportingPeriodDateRange[0]).format('YYYY-MM-DDTHH:mm:ss') +
-            '&reportingperiodenddatetime=' +
-            moment(reportingPeriodDateRange[1]).format('YYYY-MM-DDTHH:mm:ss') +
-            '&language=' +
-            language;
-          loadData(url, null);
-        }
+        return;
+      }
+
+      if (spaceTree && spaceTree.length > 0) {
+        let spaceID = [spaceTree[0]].map(o => o.value)[0];
+        loadSpaceProducts(spaceID, true);
       }
     },
-    [spaceUUID, periodType, basePeriodDateRange, reportingPeriodDateRange, language, loadData]
+    [spaceUUID, loadSpaceProducts]
   );
 
   useEffect(() => {
     if (cascaderOptions && cascaderOptions.length > 0) {
-      loadWithSpaceTree(cascaderOptions[0]);
+      loadWithSpaceTree(cascaderOptions);
     }
   }, [cascaderOptions, loadWithSpaceTree]);
 
@@ -943,7 +970,7 @@ const SpaceEnergyCategory = ({ setRedirect, setRedirectUrl, t }) => {
           // select root space name
           setSelectedSpaceName([json[0]].map(o => o.label));
           // select root space id
-          setSelectedSpaceID([json[0]].map(o => o.value));
+          setSelectedSpaceID([json[0]].map(o => o.value)[0]);
         } else {
           handleAPIError(json, setRedirect, setRedirectUrl, t, toast)
         }
@@ -956,8 +983,10 @@ const SpaceEnergyCategory = ({ setRedirect, setRedirectUrl, t }) => {
   const labelClasses = 'ls text-uppercase text-600 font-weight-semi-bold mb-0';
 
   let onSpaceCascaderChange = (value, selectedOptions) => {
+    setCascaderValue(value);
     setSelectedSpaceName(selectedOptions.map(o => o.label).join('/'));
     setSelectedSpaceID(value[value.length - 1]);
+    loadSpaceProducts(value[value.length - 1]);
   };
 
   let onComparisonTypeChange = ({ target }) => {
@@ -1107,11 +1136,16 @@ const SpaceEnergyCategory = ({ setRedirect, setRedirectUrl, t }) => {
   // Handler
   const handleSubmit = e => {
     e.preventDefault();
+    if (!selectedProductID) {
+      return;
+    }
     let url =
       APIBaseURL +
       '/reports/spaceenergycategory?' +
       'spaceid=' +
       selectedSpaceID +
+      '&productid=' +
+      selectedProductID +
       '&periodtype=' +
       periodType +
       '&baseperiodstartdatetime=' +
@@ -1173,6 +1207,31 @@ const SpaceEnergyCategory = ({ setRedirect, setRedirectUrl, t }) => {
                   >
                     <Input bsSize="sm" value={selectedSpaceName || ''} readOnly />
                   </Cascader>
+                </FormGroup>
+              </Col>
+              <Col xs="auto">
+                <FormGroup>
+                  <Label className={labelClasses} for="product">
+                    {t('Product')}
+                  </Label>
+                  <CustomInput
+                    type="select"
+                    id="product"
+                    name="product"
+                    bsSize="sm"
+                    value={selectedProductID || ''}
+                    onChange={({ target }) => setSelectedProductID(Number(target.value) || undefined)}
+                  >
+                    {products.length === 0 ? (
+                      <option value="">{t('No Product Available')}</option>
+                    ) : (
+                      products.map(product => (
+                        <option value={product.id} key={product.id}>
+                          {product.name}
+                        </option>
+                      ))
+                    )}
+                  </CustomInput>
                 </FormGroup>
               </Col>
               <Col xs="auto">

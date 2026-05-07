@@ -7,6 +7,7 @@ app.controller('MeterController', function($scope,
 	$translate,
 	$uibModal,
 	MeterService,
+	ProductService,
 	CategoryService,
 	CostCenterService,
 	EnergyItemService,
@@ -51,6 +52,16 @@ app.controller('MeterController', function($scope,
 	});
 
 };
+	$scope.getAllProducts = function() {
+		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
+		ProductService.getAllProducts(headers, function(response) {
+			if (angular.isDefined(response.status) && response.status === 200) {
+				$scope.products = response.data;
+			} else {
+				$scope.products = [];
+			}
+		});
+	};
 	$scope.getAllMeters = function() {
 		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
 		MeterService.getAllMeters(headers, function (response) {
@@ -227,6 +238,7 @@ app.controller('MeterController', function($scope,
 						categories: angular.copy($scope.categories),
 						costcenters: angular.copy($scope.costcenters),
 						energyitems: angular.copy($scope.energyitems),
+						products: angular.copy($scope.products),
 					};
 				}
 			}
@@ -239,6 +251,11 @@ app.controller('MeterController', function($scope,
 				meter.energy_item_id = meter.energy_item.id;
 			} else {
 				meter.energy_item_id = undefined;
+			}
+			if(angular.isDefined(meter.product) && angular.isDefined(meter.product.id)) {
+				meter.product_id = meter.product.id;
+			} else {
+				meter.product_id = undefined;
 			}
 			if(angular.isDefined(meter.master_meter)) {
 				meter.master_meter_id = meter.master_meter.id;
@@ -284,6 +301,7 @@ app.controller('MeterController', function($scope,
 						categories: angular.copy($scope.categories),
 						costcenters: angular.copy($scope.costcenters),
 						energyitems: angular.copy($scope.energyitems),
+						products: angular.copy($scope.products),
 					};
 				}
 			}
@@ -297,6 +315,11 @@ app.controller('MeterController', function($scope,
 				modifiedMeter.energy_item_id = modifiedMeter.energy_item.id;
 			} else {
 				modifiedMeter.energy_item_id = undefined;
+			}
+			if (modifiedMeter.product != null && modifiedMeter.product.id != null) {
+				modifiedMeter.product_id = modifiedMeter.product.id;
+			} else {
+				modifiedMeter.product_id = undefined;
 			}
 			if (modifiedMeter.master_meter != null && modifiedMeter.master_meter.id != null ) {
 				modifiedMeter.master_meter_id = modifiedMeter.master_meter.id;
@@ -468,6 +491,7 @@ app.controller('MeterController', function($scope,
 				$scope.getAllCategories();
 				$scope.getAllCostCenters();
 				$scope.getAllEnergyItems();
+				$scope.getAllProducts();
 			}
 		};
 		
@@ -487,6 +511,7 @@ app.controller('MeterController', function($scope,
 		$scope.getAllCategories();
 		$scope.getAllCostCenters();
 		$scope.getAllEnergyItems();
+		$scope.getAllProducts();
 	}
 
 	$scope.$on('handleBroadcastMeterChanged', function(event) {
@@ -502,6 +527,7 @@ app.controller('ModalAddMeterCtrl', function($scope, $uibModalInstance, params) 
 	$scope.operation = "SETTING.ADD_METER";
 	$scope.categories = params.categories;
 	$scope.costcenters = params.costcenters;
+	$scope.products = params.products;
 	$scope.energyitems = [];
 	$scope.parentmeters = params.parentmeters;
 	$scope.meter = {
@@ -546,6 +572,7 @@ app.controller('ModalEditMeterCtrl', function($scope, $uibModalInstance, params)
 	$scope.parentmeters = params.parentmeters;
 	$scope.categories = params.categories;
 	$scope.costcenters = params.costcenters;
+	$scope.products = params.products;
 	$scope.energyitems = [];
 	$scope.ok = function() {
 		$uibModalInstance.close($scope.meter);

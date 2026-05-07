@@ -459,65 +459,19 @@ def worker(space):
             return error_string
 
     ####################################################################################################################
-    # Step 8: Determine common time slot to aggregate
+    # Step 8: Determine incremental time slot window to aggregate
     ####################################################################################################################
 
-    # Initialize common time slot with the processing time range
-    common_start_datetime_utc = start_datetime_utc
-    common_end_datetime_utc = end_datetime_utc
+    aggregation_start_datetime_utc = start_datetime_utc
+    aggregation_end_datetime_utc = end_datetime_utc - timedelta(minutes=config.minutes_to_count)
 
-    # Find the intersection of time slots across all energy sources
-    print("Getting common time slot of energy values for all combined equipments")
-    if common_start_datetime_utc is not None and common_end_datetime_utc is not None:
-        if energy_combined_equipment_hourly is not None and len(energy_combined_equipment_hourly) > 0:
-            for combined_equipment_id, energy_hourly in energy_combined_equipment_hourly.items():
-                if energy_hourly is None or len(energy_hourly) == 0:
-                    common_start_datetime_utc = None
-                    common_end_datetime_utc = None
-                    break
-                else:
-                    # Adjust common time slot to match available data
-                    if common_start_datetime_utc < min(energy_hourly.keys()):
-                        common_start_datetime_utc = min(energy_hourly.keys())
-                    if common_end_datetime_utc > max(energy_hourly.keys()):
-                        common_end_datetime_utc = max(energy_hourly.keys())
-
-    # Find common time slot for equipment energy data
-    print("Getting common time slot of energy values for all equipments...")
-    if common_start_datetime_utc is not None and common_end_datetime_utc is not None:
-        if energy_equipment_hourly is not None and len(energy_equipment_hourly) > 0:
-            for equipment_id, energy_hourly in energy_equipment_hourly.items():
-                if energy_hourly is None or len(energy_hourly) == 0:
-                    common_start_datetime_utc = None
-                    common_end_datetime_utc = None
-                    break
-                else:
-                    # Adjust common time slot to match available data
-                    if common_start_datetime_utc < min(energy_hourly.keys()):
-                        common_start_datetime_utc = min(energy_hourly.keys())
-                    if common_end_datetime_utc > max(energy_hourly.keys()):
-                        common_end_datetime_utc = max(energy_hourly.keys())
-
-    # Find common time slot for child space energy data
-    print("Getting common time slot of energy values for all child spaces...")
-    if common_start_datetime_utc is not None and common_end_datetime_utc is not None:
-        if energy_child_space_hourly is not None and len(energy_child_space_hourly) > 0:
-            for child_space_id, energy_hourly in energy_child_space_hourly.items():
-                if energy_hourly is None or len(energy_hourly) == 0:
-                    common_start_datetime_utc = None
-                    common_end_datetime_utc = None
-                    break
-                else:
-                    # Adjust common time slot to match available data
-                    if common_start_datetime_utc < min(energy_hourly.keys()):
-                        common_start_datetime_utc = min(energy_hourly.keys())
-                    if common_end_datetime_utc > max(energy_hourly.keys()):
-                        common_end_datetime_utc = max(energy_hourly.keys())
+    active_combined_equipment_ids = [source_id for source_id, energy_hourly in energy_combined_equipment_hourly.items()
+                                     if energy_hourly]
+    active_equipment_ids = [source_id for source_id, energy_hourly in energy_equipment_hourly.items() if energy_hourly]
+    active_child_space_ids = [source_id for source_id, energy_hourly in energy_child_space_hourly.items() if energy_hourly]
 
     # Check if there's any energy data available for aggregation
-    if (energy_combined_equipment_hourly is None or len(energy_combined_equipment_hourly) == 0) and \
-            (energy_equipment_hourly is None or len(energy_equipment_hourly) == 0) and \
-            (energy_child_space_hourly is None or len(energy_child_space_hourly) == 0):
+    if len(active_combined_equipment_ids) == 0 and len(active_equipment_ids) == 0 and len(active_child_space_ids) == 0:
         # No energy data available for processing
         print("There isn't any energy data")
         # Continue to the next space in the loop
@@ -528,32 +482,30 @@ def worker(space):
             cnx_energy_db.close()
         return None
 
-    print("common_start_datetime_utc: " + str(common_start_datetime_utc))
-    print("common_end_datetime_utc: " + str(common_end_datetime_utc))
+    print("aggregation_start_datetime_utc: " + str(aggregation_start_datetime_utc))
+    print("aggregation_end_datetime_utc: " + str(aggregation_end_datetime_utc))
 
     ####################################################################################################################
-    # Step 9: Aggregate energy data in the common time slot by energy categories and hourly
+    # Step 9: Aggregate energy data in the incremental time slot window by energy categories and hourly
     ####################################################################################################################
 
-    print("Step 9: aggregate energy data in the common time slot by energy categories and hourly")
+    print("Step 9: aggregate energy data in the incremental time slot window by energy categories and hourly")
     aggregated_values = list()
     try:
-        # Process each hour in the common time slot
-        current_datetime_utc = common_start_datetime_utc
-        while common_start_datetime_utc is not None \
-                and common_end_datetime_utc is not None \
-                and current_datetime_utc <= common_end_datetime_utc:
+        # Process each slot in the incremental window and sum any source data present.
+        current_datetime_utc = aggregation_start_datetime_utc
+        while aggregation_start_datetime_utc is not None \
+                and aggregation_end_datetime_utc is not None \
+                and current_datetime_utc <= aggregation_end_datetime_utc:
             # Initialize aggregated value structure for current hour
             aggregated_value = dict()
             aggregated_value['start_datetime_utc'] = current_datetime_utc
             aggregated_value['meta_data'] = dict()
 
             # Aggregate energy data from combined equipment
-            if combined_equipment_list is not None and len(combined_equipment_list) > 0:
-                for combined_equipment in combined_equipment_list:
-                    combined_equipment_id = str(combined_equipment['id'])
-                    meta_data_dict = \
-                        energy_combined_equipment_hourly[combined_equipment_id].get(current_datetime_utc, None)
+            if active_combined_equipment_ids:
+                for combined_equipment_id in active_combined_equipment_ids:
+                    meta_data_dict = energy_combined_equipment_hourly[combined_equipment_id].get(current_datetime_utc, None)
                     if meta_data_dict is not None and len(meta_data_dict) > 0:
                         for energy_category_id, actual_value in meta_data_dict.items():
                             # Sum energy values by category
@@ -561,9 +513,8 @@ def worker(space):
                                 aggregated_value['meta_data'].get(energy_category_id, Decimal(0.0)) + actual_value
 
             # Aggregate energy data from equipment
-            if equipment_list is not None and len(equipment_list) > 0:
-                for equipment in equipment_list:
-                    equipment_id = str(equipment['id'])
+            if active_equipment_ids:
+                for equipment_id in active_equipment_ids:
                     meta_data_dict = energy_equipment_hourly[equipment_id].get(current_datetime_utc, None)
                     if meta_data_dict is not None and len(meta_data_dict) > 0:
                         for energy_category_id, actual_value in meta_data_dict.items():
@@ -572,9 +523,8 @@ def worker(space):
                                 aggregated_value['meta_data'].get(energy_category_id, Decimal(0.0)) + actual_value
 
             # Aggregate energy data from child spaces
-            if child_space_list is not None and len(child_space_list) > 0:
-                for child_space in child_space_list:
-                    child_space_id = str(child_space['id'])
+            if active_child_space_ids:
+                for child_space_id in active_child_space_ids:
                     meta_data_dict = energy_child_space_hourly[child_space_id].get(current_datetime_utc, None)
                     if meta_data_dict is not None and len(meta_data_dict) > 0:
                         for energy_category_id, actual_value in meta_data_dict.items():
@@ -582,8 +532,9 @@ def worker(space):
                             aggregated_value['meta_data'][energy_category_id] = \
                                 aggregated_value['meta_data'].get(energy_category_id, Decimal(0.0)) + actual_value
 
-            # Add aggregated value to the list
-            aggregated_values.append(aggregated_value)
+            # Add aggregated value to the list only when the slot has data.
+            if len(aggregated_value['meta_data']) > 0:
+                aggregated_values.append(aggregated_value)
 
             # Move to next time slot
             current_datetime_utc += timedelta(minutes=config.minutes_to_count)
@@ -602,6 +553,14 @@ def worker(space):
     # Step 10: Save energy data to energy database
     ####################################################################################################################
     print("Step 10: save energy data to energy database")
+
+    if len(aggregated_values) == 0:
+        print("There isn't any aggregated space output data to save in the current incremental window")
+        if cursor_energy_db:
+            cursor_energy_db.close()
+        if cnx_energy_db:
+            cnx_energy_db.close()
+        return None
 
     # Save aggregated values to database in batches of 100
     while len(aggregated_values) > 0:

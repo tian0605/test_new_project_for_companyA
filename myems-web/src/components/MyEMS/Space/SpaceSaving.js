@@ -1,5 +1,6 @@
 import React, { Fragment, useEffect, useState, useContext, useCallback } from 'react';
 import {
+  Alert,
   Breadcrumb,
   BreadcrumbItem,
   Row,
@@ -796,6 +797,9 @@ const SpaceSaving = ({ setRedirect, setRedirectUrl, t }) => {
       <Card className="bg-light mb-3">
         <CardBody className="p-3">
           <Form onSubmit={handleSubmit}>
+            <Alert color="warning" className="mb-3">
+              {t('Product Filter Not Supported Yet')}
+            </Alert>
             <Row form>
               <Col xs={6} sm={3}>
                 <FormGroup className="form-group">

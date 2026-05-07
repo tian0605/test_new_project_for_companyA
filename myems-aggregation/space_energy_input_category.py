@@ -1197,144 +1197,11 @@ def worker(space):
     ####################################################################################################################
 
     if blocking_sources:
-        print("Blocking incremental aggregation because these bound sources have never produced any hourly data: "
+        print("Ignoring bound sources with no hourly history in union aggregation mode: "
               + ', '.join(blocking_sources))
-        if cursor_energy_db:
-            cursor_energy_db.close()
-        if cnx_energy_db:
-            cnx_energy_db.close()
-        return None
 
-    # Initialize common time slot with the processing time range
-    common_start_datetime_utc = start_datetime_utc
-    common_end_datetime_utc = end_datetime_utc
-
-    # Find the intersection of time slots across all energy sources
-    print("Getting common time slot of energy values for all meters")
-    if energy_meter_hourly is not None and len(energy_meter_hourly) > 0:
-        for meter_id, energy_hourly in energy_meter_hourly.items():
-            if energy_hourly is None or len(energy_hourly) == 0:
-                common_start_datetime_utc = None
-                common_end_datetime_utc = None
-                break
-            else:
-                # Adjust common time slot to match available data
-                if common_start_datetime_utc < min(energy_hourly.keys()):
-                    common_start_datetime_utc = min(energy_hourly.keys())
-                if common_end_datetime_utc > max(energy_hourly.keys()):
-                    common_end_datetime_utc = max(energy_hourly.keys())
-
-    print("Getting common time slot of energy values for all virtual meters")
-    if common_start_datetime_utc is not None and common_end_datetime_utc is not None:
-        if energy_virtual_meter_hourly is not None and len(energy_virtual_meter_hourly) > 0:
-            for meter_id, energy_hourly in energy_virtual_meter_hourly.items():
-                if energy_hourly is None or len(energy_hourly) == 0:
-                    common_start_datetime_utc = None
-                    common_end_datetime_utc = None
-                    break
-                else:
-                    if common_start_datetime_utc < min(energy_hourly.keys()):
-                        common_start_datetime_utc = min(energy_hourly.keys())
-                    if common_end_datetime_utc > max(energy_hourly.keys()):
-                        common_end_datetime_utc = max(energy_hourly.keys())
-
-    print("Getting common time slot of energy values for all offline meters")
-    if common_start_datetime_utc is not None and common_end_datetime_utc is not None:
-        if energy_offline_meter_hourly is not None and len(energy_offline_meter_hourly) > 0:
-            for meter_id, energy_hourly in energy_offline_meter_hourly.items():
-                if energy_hourly is None or len(energy_hourly) == 0:
-                    common_start_datetime_utc = None
-                    common_end_datetime_utc = None
-                    break
-                else:
-                    if common_start_datetime_utc < min(energy_hourly.keys()):
-                        common_start_datetime_utc = min(energy_hourly.keys())
-                    if common_end_datetime_utc > max(energy_hourly.keys()):
-                        common_end_datetime_utc = max(energy_hourly.keys())
-
-    print("Getting common time slot of energy values for all combined equipments")
-    if common_start_datetime_utc is not None and common_end_datetime_utc is not None:
-        if energy_combined_equipment_hourly is not None and len(energy_combined_equipment_hourly) > 0:
-            for combined_equipment_id, energy_hourly in energy_combined_equipment_hourly.items():
-                if energy_hourly is None or len(energy_hourly) == 0:
-                    common_start_datetime_utc = None
-                    common_end_datetime_utc = None
-                    break
-                else:
-                    if common_start_datetime_utc < min(energy_hourly.keys()):
-                        common_start_datetime_utc = min(energy_hourly.keys())
-                    if common_end_datetime_utc > max(energy_hourly.keys()):
-                        common_end_datetime_utc = max(energy_hourly.keys())
-
-    print("Getting common time slot of energy values for all equipments")
-    if common_start_datetime_utc is not None and common_end_datetime_utc is not None:
-        if energy_equipment_hourly is not None and len(energy_equipment_hourly) > 0:
-            for equipment_id, energy_hourly in energy_equipment_hourly.items():
-                if energy_hourly is None or len(energy_hourly) == 0:
-                    common_start_datetime_utc = None
-                    common_end_datetime_utc = None
-                    break
-                else:
-                    if common_start_datetime_utc < min(energy_hourly.keys()):
-                        common_start_datetime_utc = min(energy_hourly.keys())
-                    if common_end_datetime_utc > max(energy_hourly.keys()):
-                        common_end_datetime_utc = max(energy_hourly.keys())
-
-    print("Getting common time slot of energy values for all shopfloors")
-    if common_start_datetime_utc is not None and common_end_datetime_utc is not None:
-        if energy_shopfloor_hourly is not None and len(energy_shopfloor_hourly) > 0:
-            for shopfloor_id, energy_hourly in energy_shopfloor_hourly.items():
-                if energy_hourly is None or len(energy_hourly) == 0:
-                    common_start_datetime_utc = None
-                    common_end_datetime_utc = None
-                    break
-                else:
-                    if common_start_datetime_utc < min(energy_hourly.keys()):
-                        common_start_datetime_utc = min(energy_hourly.keys())
-                    if common_end_datetime_utc > max(energy_hourly.keys()):
-                        common_end_datetime_utc = max(energy_hourly.keys())
-
-    print("Getting common time slot of energy values for all stores")
-    if common_start_datetime_utc is not None and common_end_datetime_utc is not None:
-        if energy_store_hourly is not None and len(energy_store_hourly) > 0:
-            for store_id, energy_hourly in energy_store_hourly.items():
-                if energy_hourly is None or len(energy_hourly) == 0:
-                    common_start_datetime_utc = None
-                    common_end_datetime_utc = None
-                    break
-                else:
-                    if common_start_datetime_utc < min(energy_hourly.keys()):
-                        common_start_datetime_utc = min(energy_hourly.keys())
-                    if common_end_datetime_utc > max(energy_hourly.keys()):
-                        common_end_datetime_utc = max(energy_hourly.keys())
-
-    print("Getting common time slot of energy values for all tenants")
-    if common_start_datetime_utc is not None and common_end_datetime_utc is not None:
-        if energy_tenant_hourly is not None and len(energy_tenant_hourly) > 0:
-            for tenant_id, energy_hourly in energy_tenant_hourly.items():
-                if energy_hourly is None or len(energy_hourly) == 0:
-                    common_start_datetime_utc = None
-                    common_end_datetime_utc = None
-                    break
-                else:
-                    if common_start_datetime_utc < min(energy_hourly.keys()):
-                        common_start_datetime_utc = min(energy_hourly.keys())
-                    if common_end_datetime_utc > max(energy_hourly.keys()):
-                        common_end_datetime_utc = max(energy_hourly.keys())
-
-    print("Getting common time slot of energy values for all child spaces")
-    if common_start_datetime_utc is not None and common_end_datetime_utc is not None:
-        if energy_child_space_hourly is not None and len(energy_child_space_hourly) > 0:
-            for child_space_id, energy_hourly in energy_child_space_hourly.items():
-                if energy_hourly is None or len(energy_hourly) == 0:
-                    common_start_datetime_utc = None
-                    common_end_datetime_utc = None
-                    break
-                else:
-                    if common_start_datetime_utc < min(energy_hourly.keys()):
-                        common_start_datetime_utc = min(energy_hourly.keys())
-                    if common_end_datetime_utc > max(energy_hourly.keys()):
-                        common_end_datetime_utc = max(energy_hourly.keys())
+    aggregation_start_datetime_utc = start_datetime_utc
+    aggregation_end_datetime_utc = end_datetime_utc - timedelta(minutes=config.minutes_to_count)
 
     if len(active_meter_list) == 0 and \
             len(active_virtual_meter_list) == 0 and \
@@ -1353,21 +1220,21 @@ def worker(space):
             cnx_energy_db.close()
         return None
 
-    print("common_start_datetime_utc: " + str(common_start_datetime_utc))
-    print("common_end_datetime_utc: " + str(common_end_datetime_utc))
+    print("aggregation_start_datetime_utc: " + str(aggregation_start_datetime_utc))
+    print("aggregation_end_datetime_utc: " + str(aggregation_end_datetime_utc))
 
     ####################################################################################################################
-    # Step 21: Aggregate energy data in the common time slot by energy categories and hourly
+    # Step 21: Aggregate energy data in the incremental time slot window by energy categories and hourly
     ####################################################################################################################
 
-    print("Step 21: aggregate energy data in the common time slot by energy categories and hourly")
+    print("Step 21: aggregate energy data in the incremental time slot window by energy categories and hourly")
     aggregated_values = list()
     try:
-        # Process each time slot within the common time range
-        current_datetime_utc = common_start_datetime_utc
-        while common_start_datetime_utc is not None \
-                and common_end_datetime_utc is not None \
-                and current_datetime_utc <= common_end_datetime_utc:
+        # Process each time slot within the incremental time range and sum any source data present.
+        current_datetime_utc = aggregation_start_datetime_utc
+        while aggregation_start_datetime_utc is not None \
+                and aggregation_end_datetime_utc is not None \
+                and current_datetime_utc <= aggregation_end_datetime_utc:
             aggregated_value = dict()
             aggregated_value['start_datetime_utc'] = current_datetime_utc
             aggregated_value['meta_data'] = dict()
@@ -1460,7 +1327,8 @@ def worker(space):
                             aggregated_value['meta_data'][energy_category_id] = \
                                 aggregated_value['meta_data'].get(energy_category_id, Decimal(0.0)) + actual_value
 
-            aggregated_values.append(aggregated_value)
+            if len(aggregated_value['meta_data']) > 0:
+                aggregated_values.append(aggregated_value)
 
             current_datetime_utc += timedelta(minutes=config.minutes_to_count)
 
@@ -1478,9 +1346,17 @@ def worker(space):
     ####################################################################################################################
     print("Step 22: save energy data to energy database")
 
-    if refresh_current_month and common_start_datetime_utc is not None and common_end_datetime_utc is not None:
+    if len(aggregated_values) == 0:
+        print("There isn't any aggregated space energy data to save in the current incremental window")
+        if cursor_energy_db:
+            cursor_energy_db.close()
+        if cnx_energy_db:
+            cnx_energy_db.close()
+        return None
+
+    if refresh_current_month and aggregation_start_datetime_utc is not None and aggregation_end_datetime_utc is not None:
         try:
-            delete_end_datetime_utc = common_end_datetime_utc + timedelta(minutes=config.minutes_to_count)
+            delete_end_datetime_utc = aggregation_end_datetime_utc + timedelta(minutes=config.minutes_to_count)
             cursor_energy_db.execute(
                 " DELETE FROM tbl_space_input_category_hourly "
                 " WHERE space_id = %s "

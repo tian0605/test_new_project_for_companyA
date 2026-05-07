@@ -25,6 +25,7 @@
 										<th class="text-center">{{'SETTING.NAME' | translate}}</th>
 										<th class="text-center">{{'SETTING.CATEGORY' | translate}}</th>
 										<th class="text-center">{{'SETTING.ENERGY_ITEM' | translate}} ({{'SETTING.OPTIONAL' | translate}})</th>
+										<th class="text-center">{{'SETTING.PRODUCT' | translate}} ({{'SETTING.OPTIONAL' | translate}})</th>
 										<th class="text-center">{{'SETTING.IS_INPUT_COUNTED' | translate}}</th>
 										<th class="text-center">{{'SETTING.COSTCENTER' | translate}}</th>
 										<th class="text-center">{{'METER.MASTER_METER' | translate}} ({{'SETTING.OPTIONAL' | translate}})</th>
@@ -39,6 +40,7 @@
 										<td class="text-center">{{ meter.name }}</td>
 										<td class="text-center">{{ meter.energy_category.name }}</td>
 										<td class="text-center">{{ meter.energy_item.name }}</td>
+										<td class="text-center">{{ meter.product.name }}</td>
 										<td class="text-center">
 											{{ meter.is_counted==false?'SETTING.NO':'SETTING.YES' | translate }}</td>
 										<td class="text-center">{{meter.cost_center.name}}</td>
@@ -179,6 +181,7 @@
 														<th class="text-center">{{'SETTING.NAME' | translate}}</th>
 														<th class="text-center">{{'SETTING.CATEGORY' | translate}}</th>
 														<th class="text-center">{{'SETTING.ENERGY_ITEM' | translate}} ({{'SETTING.OPTIONAL' | translate}})</th>
+														<th class="text-center">{{'SETTING.PRODUCT' | translate}} ({{'SETTING.OPTIONAL' | translate}})</th>
 														<th class="text-center">{{'SETTING.IS_INPUT_COUNTED' | translate}}</th>
 														<th class="text-center">{{'METER.HOURLY_LOW_LIMIT' | translate}}</th>
 														<th class="text-center">{{'METER.HOURLY_HIGH_LIMIT' | translate}}</th>
@@ -193,6 +196,7 @@
 														<td class="text-center">{{ meter.name }}</td>
 														<td class="text-center">{{ meter.energy_category.name }}</td>
 														<td class="text-center">{{ meter.energy_item.name }}</td>
+														<td class="text-center">{{ meter.product.name }}</td>
 														<td class="text-center">
 															{{ meter.is_counted==false?'SETTING.NO':'SETTING.YES' | translate }}
 														</td>
@@ -304,6 +308,7 @@
 										<th class="text-center">{{'SETTING.NAME' | translate}}</th>
 										<th class="text-center">{{'SETTING.CATEGORY' | translate}}</th>
 										<th class="text-center">{{'SETTING.ENERGY_ITEM' | translate}} ({{'SETTING.OPTIONAL' | translate}})</th>
+										<th class="text-center">{{'SETTING.PRODUCT' | translate}} ({{'SETTING.OPTIONAL' | translate}})</th>
 										<th class="text-center">{{'SETTING.IS_INPUT_COUNTED' | translate}}</th>
 										<th class="text-center">{{'METER.HOURLY_LOW_LIMIT' | translate}}</th>
 										<th class="text-center">{{'METER.HOURLY_HIGH_LIMIT' | translate}}</th>
@@ -318,6 +323,7 @@
 										<td class="text-center">{{ offlinemeter.name }}</td>
 										<td class="text-center">{{ offlinemeter.energy_category.name }}</td>
 										<td class="text-center">{{ offlinemeter.energy_item.name }}</td>
+										<td class="text-center">{{ offlinemeter.product.name }}</td>
 										<td class="text-center">
 											{{ offlinemeter.is_counted==false?'SETTING.NO':'SETTING.YES' | translate }}
 										</td>

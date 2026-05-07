@@ -128,6 +128,10 @@ td.action{
 	max-height: 500px;
 	overflow-y: auto;
 }
+.panel-body.tree-scroll-panel{
+	overflow: auto;
+	max-height: 700px;
+}
 [draggable] {
 	/* not applied by the directive, but useful to indicate a draggable element */
 	-moz-user-select: none;

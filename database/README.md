@@ -107,7 +107,7 @@ All databases use the following unified settings:
 |------|-------------|-------------|
 | `tbl_equipments` | Equipment information | `id`, `name`, `uuid`, `equipment_type_id`, `cost_center_id` |
 | `tbl_combined_equipments` | Combined equipment (a combination of multiple equipments) | `id`, `name`, `is_input_counted`, `is_output_counted` |
-| `tbl_meters` | Meter information | `id`, `name`, `uuid`, `energy_category_id`, `is_counted` |
+| `tbl_meters` | Meter information | `id`, `name`, `uuid`, `energy_category_id`, `is_counted`, `product_id` |
 | `tbl_offline_meters` | Offline meters (manual input) | `id`, `name`, `energy_category_id` |
 | `tbl_virtual_meters` | Virtual meters (calculated) | `id`, `name`, `expression` (JSON format) |
 | `tbl_points` | Point information | `id`, `name`, `data_source_id`, `object_type`, `object_id` |
@@ -130,6 +130,7 @@ The system uses many junction tables to build many-to-many relationships:
 - `tbl_equipments_virtual_meters`: Equipment-to-virtual-meter mapping
 - `tbl_spaces_equipments`: Space-to-equipment mapping
 - `tbl_spaces_meters`: Space-to-meter mapping
+- `tbl_spaces_products`: Space-to-product mapping
 - `tbl_combined_equipments_equipments`: Combined-equipment-to-equipment mapping
 - etc.
 

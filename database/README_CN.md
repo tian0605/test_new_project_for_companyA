@@ -107,7 +107,7 @@ MyEMS 采用**多数据库分离架构**，将不同类型的数据存储在不�
 |------|------|----------|
 | `tbl_equipments` | 设备信息 | `id`, `name`, `uuid`, `equipment_type_id`, `cost_center_id` |
 | `tbl_combined_equipments` | 组合设备（多个设备的组合） | `id`, `name`, `is_input_counted`, `is_output_counted` |
-| `tbl_meters` | 计量表信息 | `id`, `name`, `uuid`, `energy_category_id`, `is_counted` |
+| `tbl_meters` | 计量表信息 | `id`, `name`, `uuid`, `energy_category_id`, `is_counted`, `product_id` |
 | `tbl_offline_meters` | 离线计量表（手动录入） | `id`, `name`, `energy_category_id` |
 | `tbl_virtual_meters` | 虚拟计量表（计算得出） | `id`, `name`, `expression` (JSON格式) |
 | `tbl_points` | 数据点信息 | `id`, `name`, `data_source_id`, `object_type`, `object_id` |
@@ -130,6 +130,7 @@ MyEMS 采用**多数据库分离架构**，将不同类型的数据存储在不�
 - `tbl_equipments_virtual_meters`: 设备与虚拟计量表的关联
 - `tbl_spaces_equipments`: 空间与设备的关联
 - `tbl_spaces_meters`: 空间与计量表的关联
+- `tbl_spaces_products`: 空间与产品的关联
 - `tbl_combined_equipments_equipments`: 组合设备与设备的关联
 - 等等...
 

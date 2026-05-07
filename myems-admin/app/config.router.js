@@ -648,6 +648,41 @@ app
                             ]
                         }
                     })
+                    .state('settings.product', {
+                        url: "/product",
+                        templateUrl: "views/settings/product/product.html",
+                        data: {
+                            pageTitle: 'MENU.SETTINGS.PRODUCT'
+                        },
+                        resolve: {
+                            deps: [
+                                '$ocLazyLoad',
+                                function ($ocLazyLoad) {
+                                    return $ocLazyLoad.load(['ui.select', 'ui.checkbox', 'toaster']).then(
+                                        function () {
+                                            return $ocLazyLoad.load([{
+                                                files: ['js/plugins/sweetalert/sweetalert.min.js', 'css/plugins/sweetalert/sweetalert.css']
+                                            }, {
+                                                name: 'oitozero.ngSweetAlert',
+                                                files: ['js/plugins/sweetalert/angular-sweetalert.min.js']
+                                            }, {
+                                                files: ['js/plugins/footable/footable.all.min.js', 'css/plugins/footable/footable.core.css']
+                                            }, {
+                                                name: 'ui.footable',
+                                                files: ['js/plugins/footable/angular-footable.js']
+                                            }, {
+                                                serie: true,
+                                                files: [
+                                                    'app/services/settings/product/product.service.js',
+                                                    'app/controllers/settings/product/product.controller.js',
+                                                ]
+                                            }]);
+                                        }
+                                    );
+                                }
+                            ]
+                        }
+                    })
                     .state('settings.protocol', {
                         url: "/protocol",
                         templateUrl: "views/settings/protocol/protocol.html",
@@ -767,6 +802,7 @@ app
                                                     'app/services/settings/datasource/datasource.service.js',
                                                     'app/services/settings/datasource/point.service.js',
                                                     'app/services/settings/command/command.service.js',
+                                                    'app/services/settings/product/product.service.js',
                                                     'app/services/dragdropwarning.service.js',
                                                     'app/controllers/settings/meter/meter.master.controller.js',
                                                     'app/controllers/settings/meter/meter.controller.js',
@@ -999,6 +1035,7 @@ app
                                                     'app/services/settings/space/spacemeter.service.js',
                                                     'app/services/settings/space/spacephotovoltaicpowerstation.service.js',
                                                     'app/services/settings/space/spacepoint.service.js',
+                                                    'app/services/settings/space/spaceproduct.service.js',
                                                     'app/services/settings/space/spacestore.service.js',
                                                     'app/services/settings/space/spaceshopfloor.service.js',
                                                     'app/services/settings/space/spacesensor.service.js',
@@ -1016,6 +1053,7 @@ app
                                                     'app/controllers/settings/space/spacemeter.controller.js',
                                                     'app/controllers/settings/space/spacephotovoltaicpowerstation.controller.js',
                                                     'app/controllers/settings/space/spacepoint.controller.js',
+                                                    'app/controllers/settings/space/spaceproduct.controller.js',
                                                     'app/controllers/settings/space/spacestore.controller.js',
                                                     'app/controllers/settings/space/spaceshopfloor.controller.js',
                                                     'app/controllers/settings/space/spacesensor.controller.js',
