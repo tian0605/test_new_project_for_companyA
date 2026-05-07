@@ -85,6 +85,12 @@ class Reporting:
         reporting_period_end_datetime_local = req.params.get('reportingperiodenddatetime')
         language = req.params.get('language')
         quick_mode = req.params.get('quickmode')
+        product_id = req.params.get('productid')
+
+        if product_id is not None and len(str.strip(str(product_id))) > 0:
+            raise falcon.HTTPError(status=falcon.HTTP_400,
+                                   title='API.BAD_REQUEST',
+                                   description='API.PRODUCT_FILTER_NOT_SUPPORTED')
 
         ################################################################################################################
         # Step 1: valid parameters

@@ -36,6 +36,7 @@ export default {
             'Space Production': 'Space Production',
             'Please Select Product': 'Please Select Product',
             'No Product Available': 'No Product Available',
+            'Product Filter Not Supported Yet': 'Product filtering is temporarily unavailable on this report to avoid incorrect results.',
             'Equipment Tracking': 'Equipment Tracking',
             'Equipment Comparison': 'Comparison',
             'Shopfloor Comparison': 'Comparison',

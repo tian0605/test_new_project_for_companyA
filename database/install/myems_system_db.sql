@@ -1456,6 +1456,7 @@ CREATE TABLE IF NOT EXISTS `myems_system_db`.`tbl_offline_meters` (
   `name` VARCHAR(255) NOT NULL,
   `uuid` CHAR(36) NOT NULL,
   `energy_category_id` BIGINT NOT NULL,
+  `product_id` BIGINT,
   `is_counted` BOOL NOT NULL,
   `hourly_low_limit` DECIMAL(21, 6)  NOT NULL COMMENT 'Inclusive. Default is 0.',
   `hourly_high_limit` DECIMAL(21, 6)  NOT NULL COMMENT 'Inclusive. Maximum energy consumption per hour.',
@@ -1466,6 +1467,7 @@ CREATE TABLE IF NOT EXISTS `myems_system_db`.`tbl_offline_meters` (
 CREATE INDEX `tbl_offline_meters_index_1` ON `myems_system_db`.`tbl_offline_meters` (`name`);
 CREATE INDEX `tbl_offline_meters_index_2` ON `myems_system_db`.`tbl_offline_meters` (`energy_category_id`);
 CREATE INDEX `tbl_offline_meters_index_3` ON `myems_system_db`.`tbl_offline_meters` (`energy_item_id`);
+CREATE INDEX `tbl_offline_meters_index_4` ON `myems_system_db`.`tbl_offline_meters` (`product_id`);
 
 
 -- ---------------------------------------------------------------------------------------------------------------------

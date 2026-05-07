@@ -42,6 +42,11 @@ import config
 import excelexporters.spaceproduction
 from core import utilities
 from core.useractivity import access_control, api_key_control, get_request_context_value, get_user_permission_context
+from reports.productreporting import (
+    get_dimension_hourly_rows,
+    get_energy_category_ids_for_sources,
+    get_space_product_energy_sources,
+)
 
 
 def ensure_request_space_visible(req, space_id):
@@ -330,20 +335,7 @@ class Reporting:
 
                 ensure_space_product_bound(cursor_system, space_id, product_id)
 
-                cursor_system.execute(" SELECT m.id, m.energy_category_id "
-                                      " FROM tbl_spaces_meters sm, tbl_meters m "
-                                      " WHERE sm.space_id = %s "
-                                      "   AND sm.meter_id = m.id "
-                                      "   AND m.product_id = %s "
-                                      " ORDER BY m.id ",
-                                      (space_id, product_id))
-                rows_product_meters = cursor_system.fetchall()
-                energy_category_meter_dict = dict()
-                if rows_product_meters is not None and len(rows_product_meters) > 0:
-                    for row_product_meter in rows_product_meters:
-                        if row_product_meter[1] not in energy_category_meter_dict:
-                            energy_category_meter_dict[row_product_meter[1]] = list()
-                        energy_category_meter_dict[row_product_meter[1]].append(row_product_meter[0])
+                energy_sources = get_space_product_energy_sources(cursor_system, space_id, product_id)
 
                 ################################################################################################
                 # Step 3: query base period production
@@ -391,7 +383,7 @@ class Reporting:
                 #################################################################################################
                 # Step 4: query energy categories
                 #################################################################################################
-                energy_category_set = set(energy_category_meter_dict.keys())
+                energy_category_set = get_energy_category_ids_for_sources(energy_sources)
 
                 # query all energy categories in base period and reporting period
                 cursor_system.execute(" SELECT id, name, unit_of_measure, kgce, kgco2e "
@@ -508,6 +500,13 @@ class Reporting:
                 #####################################################################################################
                 # Step 7: query energy consumption data
                 #####################################################################################################
+                base_rows_by_energy_category = dict()
+                if base_start_datetime_utc is not None and base_end_datetime_utc is not None:
+                    base_rows_by_energy_category = get_dimension_hourly_rows(cursor_energy,
+                                                                            energy_sources,
+                                                                            base_start_datetime_utc,
+                                                                            base_end_datetime_utc)
+
                 base = dict()
                 if energy_category_set is not None and len(energy_category_set) > 0:
                     for energy_category_id in energy_category_set:
@@ -521,21 +520,7 @@ class Reporting:
                         base[energy_category_id]['subtotal_in_kgce'] = Decimal(0.0)
                         base[energy_category_id]['subtotal_in_kgco2e'] = Decimal(0.0)
 
-                        meter_id_list = energy_category_meter_dict.get(energy_category_id, list())
-                        if len(meter_id_list) == 0:
-                            rows_space_hourly = []
-                        else:
-                            placeholders = ', '.join(['%s'] * len(meter_id_list))
-                            query = (" SELECT start_datetime_utc, SUM(actual_value) "
-                                     " FROM tbl_meter_hourly "
-                                     " WHERE meter_id IN (" + placeholders + ") "
-                                     "   AND start_datetime_utc >= %s "
-                                     "   AND start_datetime_utc < %s "
-                                     " GROUP BY start_datetime_utc "
-                                     " ORDER BY start_datetime_utc ")
-                            cursor_energy.execute(query,
-                                                  tuple(meter_id_list) + (base_start_datetime_utc, base_end_datetime_utc))
-                            rows_space_hourly = cursor_energy.fetchall()
+                        rows_space_hourly = base_rows_by_energy_category.get(energy_category_id, [])
 
                         rows_space_periodically = utilities.aggregate_hourly_data_by_period(rows_space_hourly,
                                                                                             base_start_datetime_utc,
@@ -566,6 +551,11 @@ class Reporting:
                 ################################################################################################
                 # Step 8: query reporting period energy consumption
                 ################################################################################################
+                reporting_rows_by_energy_category = get_dimension_hourly_rows(cursor_energy,
+                                                                              energy_sources,
+                                                                              reporting_start_datetime_utc,
+                                                                              reporting_end_datetime_utc)
+
                 reporting = dict()
                 if energy_category_set is not None and len(energy_category_set) > 0:
                     for energy_category_id in energy_category_set:
@@ -579,22 +569,7 @@ class Reporting:
                         reporting[energy_category_id]['subtotal_in_kgce'] = Decimal(0.0)
                         reporting[energy_category_id]['subtotal_in_kgco2e'] = Decimal(0.0)
 
-                        meter_id_list = energy_category_meter_dict.get(energy_category_id, list())
-                        if len(meter_id_list) == 0:
-                            rows_space_hourly = []
-                        else:
-                            placeholders = ', '.join(['%s'] * len(meter_id_list))
-                            query = (" SELECT start_datetime_utc, SUM(actual_value) "
-                                     " FROM tbl_meter_hourly "
-                                     " WHERE meter_id IN (" + placeholders + ") "
-                                     "   AND start_datetime_utc >= %s "
-                                     "   AND start_datetime_utc < %s "
-                                     " GROUP BY start_datetime_utc "
-                                     " ORDER BY start_datetime_utc ")
-                            cursor_energy.execute(query,
-                                                  tuple(meter_id_list) +
-                                                  (reporting_start_datetime_utc, reporting_end_datetime_utc))
-                            rows_space_hourly = cursor_energy.fetchall()
+                        rows_space_hourly = reporting_rows_by_energy_category.get(energy_category_id, [])
 
                         rows_space_periodically = utilities.aggregate_hourly_data_by_period(
                             rows_space_hourly,

@@ -11,6 +11,8 @@ import config
 import excelexporters.spacecomparison
 from core import utilities
 from core.useractivity import access_control, api_key_control
+from reports.productreporting import ensure_request_space_visible, ensure_space_product_bound, \
+    get_space_product_energy_sources, get_dimension_hourly_rows
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,7 @@ class Reporting:
         space_uuid1 = req.params.get("spaceuuid1")
         space_id2 = req.params.get("spaceid2")
         space_uuid2 = req.params.get("spaceuuid2")
+        product_id = req.params.get("productid")
         energy_category_id = req.params.get("energycategoryid")
         period_type = req.params.get("periodtype")
         reporting_period_start_datetime_local = req.params.get(
@@ -120,6 +123,21 @@ class Reporting:
                     title="API.BAD_REQUEST",
                     name="API.INVALID_SPACE_ID",
                 )
+
+        if product_id is None:
+            raise falcon.HTTPError(
+                status=falcon.HTTP_400,
+                title="API.BAD_REQUEST",
+                name="API.INVALID_PRODUCT_ID",
+            )
+        product_id = str.strip(product_id)
+        if not product_id.isdigit() or int(product_id) <= 0:
+            raise falcon.HTTPError(
+                status=falcon.HTTP_400,
+                title="API.BAD_REQUEST",
+                name="API.INVALID_PRODUCT_ID",
+            )
+        product_id = int(product_id)
 
         if energy_category_id is None:
             raise falcon.HTTPError(
@@ -261,6 +279,7 @@ class Reporting:
                     "spaceuuid1": space_uuid1,
                     "spaceid2": space_id2,
                     "spaceuuid2": space_uuid2,
+                    "productid": product_id,
                     "energycategoryid": energy_category_id,
                     "periodtype": period_type,
                     "reporting_start_datetime_utc": reporting_start_datetime_utc.isoformat()
@@ -337,6 +356,8 @@ class Reporting:
                 space1 = dict()
                 space1["id"] = row_space1[0]
                 space1["name"] = row_space1[1]
+                ensure_request_space_visible(req, int(space1["id"]))
+                ensure_space_product_bound(cursor_system, int(space1["id"]), product_id)
 
                 # Query space 2
                 if space_id2 is not None:
@@ -375,6 +396,8 @@ class Reporting:
                 space2 = dict()
                 space2["id"] = row_space2[0]
                 space2["name"] = row_space2[1]
+                ensure_request_space_visible(req, int(space2["id"]))
+                ensure_space_product_bound(cursor_system, int(space2["id"]), product_id)
 
                 # Query energy category
                 cursor_system.execute(
@@ -409,44 +432,25 @@ class Reporting:
                 energy_category["name"] = row_energy_category[1]
                 energy_category["unit_of_measure"] = row_energy_category[2]
 
+                space1_sources = get_space_product_energy_sources(cursor_system, int(space1["id"]), product_id)
+                space2_sources = get_space_product_energy_sources(cursor_system, int(space2["id"]), product_id)
+
                 ###########################################################################################
                 # Step 3: query space input category hourly data (pre-aggregated by background service)
                 ###########################################################################################
-                # Query space 1 input category hourly data
-                cursor_energy.execute(
-                    " SELECT start_datetime_utc, actual_value "
-                    " FROM tbl_space_input_category_hourly "
-                    " WHERE space_id = %s "
-                    "     AND energy_category_id = %s "
-                    "     AND start_datetime_utc >= %s "
-                    "     AND start_datetime_utc < %s "
-                    " ORDER BY start_datetime_utc ",
-                    (
-                        space1["id"],
-                        energy_category_id,
-                        reporting_start_datetime_utc,
-                        reporting_end_datetime_utc,
-                    ),
-                )
-                rows_space1_hourly = cursor_energy.fetchall()
+                rows_space1_hourly = get_dimension_hourly_rows(
+                    cursor_energy,
+                    space1_sources,
+                    reporting_start_datetime_utc,
+                    reporting_end_datetime_utc,
+                ).get(int(energy_category_id), [])
 
-                # Query space 2 input category hourly data
-                cursor_energy.execute(
-                    " SELECT start_datetime_utc, actual_value "
-                    " FROM tbl_space_input_category_hourly "
-                    " WHERE space_id = %s "
-                    "     AND energy_category_id = %s "
-                    "     AND start_datetime_utc >= %s "
-                    "     AND start_datetime_utc < %s "
-                    " ORDER BY start_datetime_utc ",
-                    (
-                        space2["id"],
-                        energy_category_id,
-                        reporting_start_datetime_utc,
-                        reporting_end_datetime_utc,
-                    ),
-                )
-                rows_space2_hourly = cursor_energy.fetchall()
+                rows_space2_hourly = get_dimension_hourly_rows(
+                    cursor_energy,
+                    space2_sources,
+                    reporting_start_datetime_utc,
+                    reporting_end_datetime_utc,
+                ).get(int(energy_category_id), [])
 
                 ##############################################################################################
                 # Step 4: aggregate space energy consumption data by period

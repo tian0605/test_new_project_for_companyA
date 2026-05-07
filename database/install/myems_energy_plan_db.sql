@@ -490,12 +490,16 @@ CREATE TABLE IF NOT EXISTS `myems_energy_plan_db`.`tbl_space_input_category_hour
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `space_id` BIGINT NOT NULL,
   `energy_category_id` BIGINT NOT NULL,
+  `product_id` BIGINT,
   `start_datetime_utc` DATETIME NOT NULL,
   `actual_value` DECIMAL(21, 6) NOT NULL,
   PRIMARY KEY (`id`));
 CREATE INDEX `tbl_space_input_category_hourly_index_1`
  ON `myems_energy_plan_db`.`tbl_space_input_category_hourly`
  (`space_id`, `energy_category_id`, `start_datetime_utc`);
+CREATE INDEX `tbl_space_input_category_hourly_index_2`
+ ON `myems_energy_plan_db`.`tbl_space_input_category_hourly`
+ (`product_id`);
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Table `myems_energy_plan_db`.`tbl_space_input_item_hourly`

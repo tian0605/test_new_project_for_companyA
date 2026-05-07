@@ -36,6 +36,7 @@ export default {
             'Space Production': '產量能耗分析',
             'Please Select Product': '請選擇產品',
             'No Product Available': '當前空間未綁定產品',
+            'Product Filter Not Supported Yet': '該報表暫不支持按產品篩選，以避免產生錯誤結果。',
             'Equipment Tracking': '設備台賬',
             'Equipment Comparison': '對比分析',
             'Shopfloor Comparison': '對比分析',

@@ -75,6 +75,8 @@ const SpaceComparison = ({ setRedirect, setRedirectUrl, t }) => {
 
   const [selectedSpace1, setSelectedSpace1] = useState(undefined);
   const [selectedSpace2, setSelectedSpace2] = useState(undefined);
+  const [productOptions, setProductOptions] = useState([]);
+  const [selectedProductID, setSelectedProductID] = useState(undefined);
   const [energyCategoryList, setEnergyCategoryList] = useState([]);
   const [selectedEnergyCategory, setSelectedEnergyCategory] = useState(undefined);
   const [periodType, setPeriodType] = useState('daily');
@@ -138,6 +140,59 @@ const SpaceComparison = ({ setRedirect, setRedirectUrl, t }) => {
   const [detailedDataTableData, setDetailedDataTableData] = useState([]);
   const [excelBytesBase64, setExcelBytesBase64] = useState(undefined);
 
+  const syncSharedProducts = (spaceID1, spaceID2) => {
+    if (!spaceID1 || !spaceID2) {
+      setProductOptions([]);
+      setSelectedProductID(undefined);
+      setSubmitButtonDisabled(true);
+      return;
+    }
+
+    Promise.all([
+      fetch(APIBaseURL + '/spaces/' + spaceID1 + '/products', {
+        method: 'GET',
+        headers: {
+          'Content-type': 'application/json',
+          'User-UUID': getCookieValue('user_uuid'),
+          Token: getCookieValue('token')
+        },
+        body: null
+      }).then(response => response.json().then(json => ({ ok: response.ok, json }))),
+      fetch(APIBaseURL + '/spaces/' + spaceID2 + '/products', {
+        method: 'GET',
+        headers: {
+          'Content-type': 'application/json',
+          'User-UUID': getCookieValue('user_uuid'),
+          Token: getCookieValue('token')
+        },
+        body: null
+      }).then(response => response.json().then(json => ({ ok: response.ok, json })))
+    ])
+      .then(([space1ProductsResponse, space2ProductsResponse]) => {
+        if (!space1ProductsResponse.ok) {
+          handleAPIError(space1ProductsResponse.json, setRedirect, setRedirectUrl, t, toast);
+          return;
+        }
+        if (!space2ProductsResponse.ok) {
+          handleAPIError(space2ProductsResponse.json, setRedirect, setRedirectUrl, t, toast);
+          return;
+        }
+
+        const space2ProductIDSet = new Set(space2ProductsResponse.json.map(product => product.id));
+        const sharedProducts = space1ProductsResponse.json.filter(product => space2ProductIDSet.has(product.id));
+        setProductOptions(sharedProducts);
+        const nextProductID = sharedProducts.length > 0 ? sharedProducts[0].id : undefined;
+        setSelectedProductID(nextProductID);
+        setSubmitButtonDisabled(!(nextProductID && selectedEnergyCategory));
+      })
+      .catch(err => {
+        console.log(err);
+        setProductOptions([]);
+        setSelectedProductID(undefined);
+        setSubmitButtonDisabled(true);
+      });
+  };
+
   useEffect(() => {
     let isResponseOK = false;
     fetch(APIBaseURL + '/spaces/tree', {
@@ -168,8 +223,10 @@ const SpaceComparison = ({ setRedirect, setRedirectUrl, t }) => {
           setCascaderOptions(json);
           setSelectedSpaceName1([json[0]].map(o => o.label));
           setSelectedSpaceName2([json[0]].map(o => o.label));
-          setSelectedSpace1([json[0]].map(o => o.value));
-          setSelectedSpace2([json[0]].map(o => o.value));
+          const rootSpaceID = [json[0]].map(o => o.value)[0];
+          setSelectedSpace1(rootSpaceID);
+          setSelectedSpace2(rootSpaceID);
+          syncSharedProducts(rootSpaceID, rootSpaceID);
         } else {
           handleAPIError(json, setRedirect, setRedirectUrl, t, toast)
         }
@@ -206,11 +263,9 @@ const SpaceComparison = ({ setRedirect, setRedirectUrl, t }) => {
           setEnergyCategoryList(json[0]);
           if (json[0].length > 0) {
             setSelectedEnergyCategory(json[0][0].value);
-            // enable submit button
             setSubmitButtonDisabled(false);
           } else {
             setSelectedEnergyCategory(undefined);
-            // disable submit button
             setSubmitButtonDisabled(true);
           }
         } else {
@@ -228,12 +283,14 @@ const SpaceComparison = ({ setRedirect, setRedirectUrl, t }) => {
     setSelectedSpaceName1(selectedOptions.map(o => o.label).join('/'));
     let selectedSpaceID = value[value.length - 1];
     setSelectedSpace1(selectedSpaceID);
+    syncSharedProducts(selectedSpaceID, selectedSpace2);
   };
 
   let onSpaceCascaderChange2 = (value, selectedOptions) => {
     setSelectedSpaceName2(selectedOptions.map(o => o.label).join('/'));
     let selectedSpaceID = value[value.length - 1];
     setSelectedSpace2(selectedSpaceID);
+    syncSharedProducts(selectedSpace1, selectedSpaceID);
   };
 
 
@@ -310,6 +367,8 @@ const SpaceComparison = ({ setRedirect, setRedirectUrl, t }) => {
         selectedSpace1 +
         '&spaceid2=' +
         selectedSpace2 +
+        '&productid=' +
+        selectedProductID +
         '&energycategoryid=' +
         selectedEnergyCategory +
         '&periodtype=' +
@@ -547,6 +606,31 @@ const SpaceComparison = ({ setRedirect, setRedirectUrl, t }) => {
               </Col>
             </Row>
             <Row>
+              <Col xs="auto">
+                <FormGroup>
+                  <Label className={labelClasses} for="productSelect">
+                    {t('Product')}
+                  </Label>
+                  <CustomInput
+                    type="select"
+                    id="productSelect"
+                    name="productSelect"
+                    bsSize="sm"
+                    value={selectedProductID || ''}
+                    onChange={({ target }) => setSelectedProductID(Number(target.value) || undefined)}
+                  >
+                    {productOptions.length === 0 ? (
+                      <option value="">{t('No Product Available')}</option>
+                    ) : (
+                      productOptions.map(product => (
+                        <option value={product.id} key={product.id}>
+                          {product.name}
+                        </option>
+                      ))
+                    )}
+                  </CustomInput>
+                </FormGroup>
+              </Col>
               <Col xs="auto">
                 <FormGroup>
                   <Label className={labelClasses} for="energyCategorySelect">

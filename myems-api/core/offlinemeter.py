@@ -35,6 +35,63 @@ def get_offlinemeter_item_cache_key(req, offline_meter_id):
     return f'offlinemeter:item:{offline_meter_id}'
 
 
+def get_product_dict(product_ids=None):
+    product_dict = dict()
+
+    cnx = None
+    cursor = None
+    try:
+        cnx = mysql.connector.connect(**config.myems_production_db)
+        try:
+            cursor = cnx.cursor()
+            if product_ids is None:
+                cursor.execute(" SELECT id, name, uuid FROM tbl_products ")
+            else:
+                normalized_product_ids = [int(product_id) for product_id in product_ids if product_id is not None]
+                if len(normalized_product_ids) == 0:
+                    return product_dict
+                placeholders = ','.join(['%s'] * len(normalized_product_ids))
+                cursor.execute(
+                    f" SELECT id, name, uuid FROM tbl_products WHERE id IN ({placeholders}) ",
+                    tuple(normalized_product_ids)
+                )
+
+            rows_products = cursor.fetchall()
+            if rows_products is not None and len(rows_products) > 0:
+                for row in rows_products:
+                    product_dict[row[0]] = {"id": row[0], "name": row[1], "uuid": row[2]}
+        finally:
+            if cursor:
+                cursor.close()
+    finally:
+        if cnx:
+            cnx.close()
+
+    return product_dict
+
+
+def validate_product_id(product_id):
+    if product_id is None:
+        return
+
+    cnx = None
+    cursor = None
+    try:
+        cnx = mysql.connector.connect(**config.myems_production_db)
+        try:
+            cursor = cnx.cursor()
+            cursor.execute(" SELECT name FROM tbl_products WHERE id = %s ", (product_id,))
+            if cursor.fetchone() is None:
+                raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
+                                       description='API.PRODUCT_NOT_FOUND')
+        finally:
+            if cursor:
+                cursor.close()
+    finally:
+        if cnx:
+            cnx.close()
+
+
 def clear_offline_meter_cache(offline_meter_id=None):
     """
     Clear offline meter-related cache after data modification
@@ -208,7 +265,7 @@ class OfflineMeterCollection:
                 if visible_cost_center_ids == set():
                     rows_meters = []
                 else:
-                    query = (" SELECT id, name, uuid, energy_category_id, "
+                    query = (" SELECT id, name, uuid, energy_category_id, product_id, "
                              "        is_counted, hourly_low_limit, hourly_high_limit, "
                              "        energy_item_id, cost_center_id, description "
                              " FROM tbl_offline_meters ")
@@ -227,6 +284,8 @@ class OfflineMeterCollection:
                     query += " ORDER BY id "
                     cursor.execute(query, tuple(params))
                     rows_meters = cursor.fetchall()
+
+                product_dict = get_product_dict({row[4] for row in rows_meters})
             finally:
                 if cursor:
                     cursor.close()
@@ -241,12 +300,13 @@ class OfflineMeterCollection:
                                "name": row[1],
                                "uuid": row[2],
                                "energy_category": energy_category_dict.get(row[3], None),
-                               "is_counted": True if row[4] else False,
-                               "hourly_low_limit": row[5],
-                               "hourly_high_limit": row[6],
-                               "energy_item": energy_item_dict.get(row[7], None),
-                               "cost_center": cost_center_dict.get(row[8], None),
-                               "description": row[9]}
+                               "product": product_dict.get(row[4], None),
+                               "is_counted": True if row[5] else False,
+                               "hourly_low_limit": row[6],
+                               "hourly_high_limit": row[7],
+                               "energy_item": energy_item_dict.get(row[8], None),
+                               "cost_center": cost_center_dict.get(row[9], None),
+                               "description": row[10]}
                 result.append(meta_result)
 
         # Store result in Redis cache
@@ -332,6 +392,16 @@ class OfflineMeterCollection:
         else:
             energy_item_id = None
 
+        if 'product_id' in new_values['data'].keys() and \
+                new_values['data']['product_id'] is not None:
+            if not isinstance(new_values['data']['product_id'], int) or \
+                    new_values['data']['product_id'] <= 0:
+                raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                       description='API.INVALID_PRODUCT_ID')
+            product_id = new_values['data']['product_id']
+        else:
+            product_id = None
+
         if 'description' in new_values['data'].keys() and \
                 new_values['data']['description'] is not None and \
                 len(str(new_values['data']['description'])) > 0:
@@ -377,6 +447,8 @@ class OfflineMeterCollection:
                             raise falcon.HTTPError(status=falcon.HTTP_404, title='API.BAD_REQUEST',
                                                    description='API.ENERGY_ITEM_IS_NOT_BELONG_TO_ENERGY_CATEGORY')
 
+                validate_product_id(product_id)
+
                 cursor.execute(" SELECT name "
                                " FROM tbl_cost_centers "
                                " WHERE id = %s ",
@@ -387,13 +459,14 @@ class OfflineMeterCollection:
                                            description='API.COST_CENTER_NOT_FOUND')
 
                 add_values = (" INSERT INTO tbl_offline_meters "
-                              "    (name, uuid, energy_category_id, "
+                              "    (name, uuid, energy_category_id, product_id, "
                               "     is_counted, hourly_low_limit, hourly_high_limit, "
                               "     cost_center_id, energy_item_id, description) "
-                              " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ")
+                              " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ")
                 cursor.execute(add_values, (name,
                                             str(uuid.uuid4()),
                                             energy_category_id,
+                                            product_id,
                                             is_counted,
                                             hourly_low_limit,
                                             hourly_high_limit,
@@ -514,14 +587,16 @@ class OfflineMeterItem:
                                                     "name": row[1],
                                                     "uuid": row[2]}
 
-                query = (" SELECT id, name, uuid, energy_category_id, "
+                product_dict = get_product_dict([row[4]])
+
+                query = (" SELECT id, name, uuid, energy_category_id, product_id, "
                          "        is_counted, hourly_low_limit, hourly_high_limit, "
                          "        energy_item_id, cost_center_id, description "
                          " FROM tbl_offline_meters "
                          " WHERE id = %s ")
                 cursor.execute(query, (id_,))
                 row = cursor.fetchone()
-                if row is not None and visible_cost_center_ids is not None and row[8] not in visible_cost_center_ids:
+                if row is not None and visible_cost_center_ids is not None and row[9] not in visible_cost_center_ids:
                     row = None
             finally:
                 if cursor:
@@ -538,12 +613,13 @@ class OfflineMeterItem:
                        "name": row[1],
                        "uuid": row[2],
                        "energy_category": energy_category_dict.get(row[3], None),
-                       "is_counted": True if row[4] else False,
-                       "hourly_low_limit": row[5],
-                       "hourly_high_limit": row[6],
-                       "energy_item": energy_item_dict.get(row[7], None),
-                       "cost_center": cost_center_dict.get(row[8], None),
-                       "description": row[9]}
+                       "product": product_dict.get(row[4], None),
+                       "is_counted": True if row[5] else False,
+                       "hourly_low_limit": row[6],
+                       "hourly_high_limit": row[7],
+                       "energy_item": energy_item_dict.get(row[8], None),
+                       "cost_center": cost_center_dict.get(row[9], None),
+                       "description": row[10]}
 
         # Store result in Redis cache
         result_json = json.dumps(meta_result)
@@ -779,6 +855,16 @@ class OfflineMeterItem:
         else:
             energy_item_id = None
 
+        if 'product_id' in new_values['data'].keys() and \
+                new_values['data']['product_id'] is not None:
+            if not isinstance(new_values['data']['product_id'], int) or \
+                    new_values['data']['product_id'] <= 0:
+                raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                       description='API.INVALID_PRODUCT_ID')
+            product_id = new_values['data']['product_id']
+        else:
+            product_id = None
+
         if 'description' in new_values['data'].keys() and \
                 new_values['data']['description'] is not None and \
                 len(str(new_values['data']['description'])) > 0:
@@ -839,13 +925,16 @@ class OfflineMeterItem:
                             raise falcon.HTTPError(status=falcon.HTTP_404, title='API.BAD_REQUEST',
                                                    description='API.ENERGY_ITEM_IS_NOT_BELONG_TO_ENERGY_CATEGORY')
 
+                validate_product_id(product_id)
+
                 update_row = (" UPDATE tbl_offline_meters "
-                              " SET name = %s, energy_category_id = %s,"
+                              " SET name = %s, energy_category_id = %s, product_id = %s,"
                               "     is_counted = %s, hourly_low_limit = %s, hourly_high_limit = %s, "
                               "     cost_center_id = %s, energy_item_id = %s, description = %s "
                               " WHERE id = %s ")
                 cursor.execute(update_row, (name,
                                             energy_category_id,
+                                            product_id,
                                             is_counted,
                                             hourly_low_limit,
                                             hourly_high_limit,
@@ -964,7 +1053,9 @@ class OfflineMeterExport:
                                                     "name": row[1],
                                                     "uuid": row[2]}
 
-                query = (" SELECT id, name, uuid, energy_category_id, "
+                product_dict = get_product_dict([row[4]])
+
+                query = (" SELECT id, name, uuid, energy_category_id, product_id, "
                          "        is_counted, hourly_low_limit, hourly_high_limit, "
                          "        energy_item_id, cost_center_id, description "
                          " FROM tbl_offline_meters "
@@ -986,12 +1077,13 @@ class OfflineMeterExport:
                        "name": row[1],
                        "uuid": row[2],
                        "energy_category": energy_category_dict.get(row[3], None),
-                       "is_counted": True if row[4] else False,
-                       "hourly_low_limit": row[5],
-                       "hourly_high_limit": row[6],
-                       "energy_item": energy_item_dict.get(row[7], None),
-                       "cost_center": cost_center_dict.get(row[8], None),
-                       "description": row[9]}
+                       "product": product_dict.get(row[4], None),
+                       "is_counted": True if row[5] else False,
+                       "hourly_low_limit": row[6],
+                       "hourly_high_limit": row[7],
+                       "energy_item": energy_item_dict.get(row[8], None),
+                       "cost_center": cost_center_dict.get(row[9], None),
+                       "description": row[10]}
 
         # Store result in Redis cache
         result_json = json.dumps(meta_result)
@@ -1091,6 +1183,18 @@ class OfflineMeterImport:
         else:
             energy_item_id = None
 
+        if 'product' in new_values.keys() and \
+            new_values['product'] is not None and \
+                'id' in new_values['product'].keys() and \
+                new_values['product']['id'] is not None:
+            if not isinstance(new_values['product']['id'], int) or \
+                    new_values['product']['id'] <= 0:
+                raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
+                                       description='API.INVALID_PRODUCT_ID')
+            product_id = new_values['product']['id']
+        else:
+            product_id = None
+
         if 'description' in new_values.keys() and \
                 new_values['description'] is not None and \
                 len(str(new_values['description'])) > 0:
@@ -1136,6 +1240,8 @@ class OfflineMeterImport:
                             raise falcon.HTTPError(status=falcon.HTTP_404, title='API.BAD_REQUEST',
                                                    description='API.ENERGY_ITEM_IS_NOT_BELONG_TO_ENERGY_CATEGORY')
 
+                validate_product_id(product_id)
+
                 cursor.execute(" SELECT name "
                                " FROM tbl_cost_centers "
                                " WHERE id = %s ",
@@ -1146,13 +1252,14 @@ class OfflineMeterImport:
                                            description='API.COST_CENTER_NOT_FOUND')
 
                 add_values = (" INSERT INTO tbl_offline_meters "
-                              "    (name, uuid, energy_category_id, "
+                              "    (name, uuid, energy_category_id, product_id, "
                               "     is_counted, hourly_low_limit, hourly_high_limit, "
                               "     cost_center_id, energy_item_id, description) "
-                              " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ")
+                              " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ")
                 cursor.execute(add_values, (name,
                                             str(uuid.uuid4()),
                                             energy_category_id,
+                                            product_id,
                                             is_counted,
                                             hourly_low_limit,
                                             hourly_high_limit,
@@ -1242,7 +1349,7 @@ class OfflineMeterClone:
                                                     "name": row[1],
                                                     "uuid": row[2]}
 
-                query = (" SELECT id, name, uuid, energy_category_id, "
+                query = (" SELECT id, name, uuid, energy_category_id, product_id, "
                          "        is_counted, hourly_low_limit, hourly_high_limit, "
                          "        energy_item_id, cost_center_id, description "
                          " FROM tbl_offline_meters "
@@ -1253,17 +1360,20 @@ class OfflineMeterClone:
                 if row is None:
                     raise falcon.HTTPError(status=falcon.HTTP_404, title='API.NOT_FOUND',
                                            description='API.OFFLINE_METER_NOT_FOUND')
+
+                product_dict = get_product_dict([row[4]])
                 
                 meta_result = {"id": row[0],
                                "name": row[1],
                                "uuid": row[2],
                                "energy_category": energy_category_dict.get(row[3], None),
-                               "is_counted": True if row[4] else False,
-                               "hourly_low_limit": row[5],
-                               "hourly_high_limit": row[6],
-                               "energy_item": energy_item_dict.get(row[7], None),
-                               "cost_center": cost_center_dict.get(row[8], None),
-                               "description": row[9]}
+                               "product": product_dict.get(row[4], None),
+                               "is_counted": True if row[5] else False,
+                               "hourly_low_limit": row[6],
+                               "hourly_high_limit": row[7],
+                               "energy_item": energy_item_dict.get(row[8], None),
+                               "cost_center": cost_center_dict.get(row[9], None),
+                               "description": row[10]}
 
                 timezone_offset = int(config.utc_offset[1:3]) * 60 + int(config.utc_offset[4:6])
                 if config.utc_offset[0] == '-':
@@ -1274,15 +1384,17 @@ class OfflineMeterClone:
                             timedelta(minutes=timezone_offset)).isoformat(sep='-', timespec='seconds'))
                 
                 energy_item_id = meta_result['energy_item']['id'] if meta_result['energy_item'] is not None else None
+                product_id = meta_result['product']['id'] if meta_result['product'] is not None else None
                 
                 add_values = (" INSERT INTO tbl_offline_meters "
-                              "    (name, uuid, energy_category_id, "
+                              "    (name, uuid, energy_category_id, product_id, "
                               "     is_counted, hourly_low_limit, hourly_high_limit, "
                               "     cost_center_id, energy_item_id, description) "
-                              " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) ")
+                              " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ")
                 cursor.execute(add_values, (new_name,
                                             str(uuid.uuid4()),
                                             meta_result['energy_category']['id'],
+                                            product_id,
                                             meta_result['is_counted'],
                                             meta_result['hourly_low_limit'],
                                             meta_result['hourly_high_limit'],

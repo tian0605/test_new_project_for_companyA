@@ -8,6 +8,7 @@ app.controller('OfflineMeterController', function(
 	$uibModal,
 	$timeout,
 	OfflineMeterService,
+	ProductService,
 	CategoryService,
 	EnergyItemService,
 	CostCenterService,
@@ -49,6 +50,17 @@ app.controller('OfflineMeterController', function(
 		});
 	};
 
+	$scope.getAllProducts = function() {
+		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
+		ProductService.getAllProducts(headers, function(response) {
+			if (angular.isDefined(response.status) && response.status === 200) {
+				$scope.products = response.data;
+			} else {
+				$scope.products = [];
+			}
+		});
+	};
+
 	$scope.getAllOfflineMeters = function() {
 		let headers = { "User-UUID": $scope.cur_user.uuid, "Token": $scope.cur_user.token };
 		OfflineMeterService.getAllOfflineMeters(headers, function (response) {
@@ -71,6 +83,7 @@ app.controller('OfflineMeterController', function(
 					return {
 						offlinemeters: angular.copy($scope.offlinemeters),
 						categories: angular.copy($scope.categories),
+						products: angular.copy($scope.products),
 						energyitems: angular.copy($scope.energyitems),
 						costcenters: angular.copy($scope.costcenters)
 					};
@@ -79,6 +92,7 @@ app.controller('OfflineMeterController', function(
 		});
 		modalInstance.result.then(function(offlinemeter) {
 			offlinemeter.energy_category_id = offlinemeter.energy_category.id;
+			offlinemeter.product_id = offlinemeter.product ? offlinemeter.product.id : undefined;
 			if(angular.isDefined(offlinemeter.energy_item)) {
 				offlinemeter.energy_item_id = offlinemeter.energy_item.id;
 			} else {
@@ -122,6 +136,7 @@ app.controller('OfflineMeterController', function(
 						offlinemeter: angular.copy(offlinemeter),
 						offlinemeters: angular.copy($scope.offlinemeters),
 						categories: angular.copy($scope.categories),
+						products: angular.copy($scope.products),
 						energyitems: angular.copy($scope.energyitems),
 						costcenters: angular.copy($scope.costcenters)
 					};
@@ -131,6 +146,7 @@ app.controller('OfflineMeterController', function(
 
 		modalInstance.result.then(function(modifiedOfflineMeter) {
 			modifiedOfflineMeter.energy_category_id = modifiedOfflineMeter.energy_category.id;
+			modifiedOfflineMeter.product_id = modifiedOfflineMeter.product ? modifiedOfflineMeter.product.id : undefined;
 			if (modifiedOfflineMeter.energy_item != null && modifiedOfflineMeter.energy_item.id != null ) {
 				modifiedOfflineMeter.energy_item_id = modifiedOfflineMeter.energy_item.id;
 			} else {
@@ -333,6 +349,7 @@ app.controller('OfflineMeterController', function(
 			$scope.tabInitialized = true;
 			$scope.getAllOfflineMeters();
 			$scope.getAllCategories();
+			$scope.getAllProducts();
 			$scope.getAllEnergyItems();
 			$scope.getAllCostCenters();
 		}
@@ -355,6 +372,7 @@ app.controller('ModalAddOfflineMeterCtrl', function($scope, $uibModalInstance, p
 
 	$scope.operation = "SETTING.ADD_OFFLINE_METER";
 	$scope.categories = params.categories;
+	$scope.products = params.products;
 	$scope.energyitems = [];
 	$scope.costcenters = params.costcenters;
 	$scope.offlinemeter = {
@@ -398,6 +416,7 @@ app.controller('ModalEditOfflineMeterCtrl', function($scope, $uibModalInstance, 
 	$scope.offlinemeter = params.offlinemeter;
 	$scope.offlinemeters = params.offlinemeters;
 	$scope.categories = params.categories;
+	$scope.products = params.products;
 	$scope.energyitems = [];
 	$scope.costcenters = params.costcenters;
 
