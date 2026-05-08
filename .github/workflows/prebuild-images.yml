@@ -1,0 +1,174 @@
+name: Prebuild Release Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to use for image tags. Leave empty to use the current short SHA.
+        required: false
+        type: string
+      registry_prefix:
+        description: Registry prefix, for example ghcr.io/owner/myems
+        required: false
+        type: string
+      emqx_image:
+        description: EMQX image reference written to docker-images.env
+        required: false
+        default: emqx/emqx:latest
+        type: string
+      push_latest:
+        description: Also push latest for each custom image
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+      - 'release-*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.vars.outputs.release_tag }}
+      registry_prefix: ${{ steps.vars.outputs.registry_prefix }}
+      emqx_image: ${{ steps.vars.outputs.emqx_image }}
+      push_latest: ${{ steps.vars.outputs.push_latest }}
+    steps:
+      - name: Resolve release variables
+        id: vars
+        env:
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+          INPUT_REGISTRY_PREFIX: ${{ github.event.inputs.registry_prefix }}
+          INPUT_EMQX_IMAGE: ${{ github.event.inputs.emqx_image }}
+          INPUT_PUSH_LATEST: ${{ github.event.inputs.push_latest }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+
+          owner_lower="$(echo "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          default_registry="ghcr.io/${owner_lower}/myems"
+
+          if [[ -n "${INPUT_RELEASE_TAG:-}" ]]; then
+            release_tag="$INPUT_RELEASE_TAG"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+          else
+            release_tag="${GITHUB_SHA::7}"
+          fi
+
+          registry_prefix="${INPUT_REGISTRY_PREFIX:-$default_registry}"
+          emqx_image="${INPUT_EMQX_IMAGE:-emqx/emqx:latest}"
+          push_latest="${INPUT_PUSH_LATEST:-false}"
+
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "registry_prefix=$registry_prefix" >> "$GITHUB_OUTPUT"
+          echo "emqx_image=$emqx_image" >> "$GITHUB_OUTPUT"
+          echo "push_latest=$push_latest" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image_name: api
+            context: ./myems-api
+          - image_name: aggregation
+            context: ./myems-aggregation
+          - image_name: cleaning
+            context: ./myems-cleaning
+          - image_name: modbus-tcp
+            context: ./myems-modbus-tcp
+          - image_name: mqtt
+            context: ./myems-mqtt
+          - image_name: normalization
+            context: ./myems-normalization
+          - image_name: admin
+            context: ./myems-admin
+          - image_name: web
+            context: ./myems-web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: ${{ startsWith(needs.prepare.outputs.registry_prefix, 'ghcr.io/') }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tags
+        env:
+          REGISTRY_PREFIX: ${{ needs.prepare.outputs.registry_prefix }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          PUSH_LATEST: ${{ needs.prepare.outputs.push_latest }}
+          IMAGE_NAME: ${{ matrix.image_name }}
+        run: |
+          set -euo pipefail
+          image="${REGISTRY_PREFIX}/${IMAGE_NAME}"
+          tags="${image}:${RELEASE_TAG}"
+          if [[ "$PUSH_LATEST" == "true" ]]; then
+            tags="${tags},${image}:latest"
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push ${{ matrix.image_name }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          provenance: false
+          sbom: false
+
+  package-metadata:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate docker-images.env
+        run: |
+          chmod +x scripts/render-docker-images-env.sh
+          scripts/render-docker-images-env.sh \
+            "${{ needs.prepare.outputs.release_tag }}" \
+            "${{ needs.prepare.outputs.registry_prefix }}" \
+            "${{ needs.prepare.outputs.emqx_image }}" \
+            "release-artifacts/docker-images.env"
+
+      - name: Create build manifest
+        run: |
+          mkdir -p release-artifacts
+          cat > release-artifacts/image-manifest.txt <<EOF
+          release_tag=${{ needs.prepare.outputs.release_tag }}
+          registry_prefix=${{ needs.prepare.outputs.registry_prefix }}
+          emqx_image=${{ needs.prepare.outputs.emqx_image }}
+          api=${{ needs.prepare.outputs.registry_prefix }}/api:${{ needs.prepare.outputs.release_tag }}
+          aggregation=${{ needs.prepare.outputs.registry_prefix }}/aggregation:${{ needs.prepare.outputs.release_tag }}
+          cleaning=${{ needs.prepare.outputs.registry_prefix }}/cleaning:${{ needs.prepare.outputs.release_tag }}
+          modbus_tcp=${{ needs.prepare.outputs.registry_prefix }}/modbus-tcp:${{ needs.prepare.outputs.release_tag }}
+          mqtt=${{ needs.prepare.outputs.registry_prefix }}/mqtt:${{ needs.prepare.outputs.release_tag }}
+          normalization=${{ needs.prepare.outputs.registry_prefix }}/normalization:${{ needs.prepare.outputs.release_tag }}
+          admin=${{ needs.prepare.outputs.registry_prefix }}/admin:${{ needs.prepare.outputs.release_tag }}
+          web=${{ needs.prepare.outputs.registry_prefix }}/web:${{ needs.prepare.outputs.release_tag }}
+          EOF
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: prebuild-metadata-${{ needs.prepare.outputs.release_tag }}
+          path: release-artifacts/
+          if-no-files-found: error

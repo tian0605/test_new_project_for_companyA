@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 | --- | --- |
 | 文档名称 | MyEMS 生产运维与发布手册 |
-| 文档版本 | v1.1 |
-| 生效日期 | 2026-04-28 |
+| 文档版本 | v1.2 |
+| 生效日期 | 2026-05-07 |
 | 适用系统 | MyEMS Docker Compose 生产环境 |
 | 适用目录 | `/home/ubuntu/myems-complete` |
 | 运维入口目录 | `/home/ubuntu/myems-complete/others` |
@@ -19,6 +19,7 @@
 | --- | --- | --- | --- |
 | v1.0 | 2026-04-16 | GitHub Copilot | 初版，覆盖发布、停机、恢复、回滚、数据对账 |
 | v1.1 | 2026-04-28 | GitHub Copilot | 新增纯镜像生产部署模板、离线镜像交付要求、EMQX 与 myems-mqtt 初始化指引 |
+| v1.2 | 2026-05-07 | GitHub Copilot | 补充 GitHub Actions 预构建、GHCR 在线验证、离线镜像包交付、分批上线与验证 SOP |
 
 ## 3. 文档目的与适用范围
 
@@ -291,11 +292,11 @@ Compose 文件位置：
 
 目的：
 
-在正式执行前确认环境健康、窗口合规、回滚可用、外部接口已协调。
+在正式执行前确认环境健康、窗口合规、镜像产物可用、回滚可用、外部接口已协调。
 
 前提：
 
-1. 发布包、发布说明、回滚方案已准备完成。
+1. 发布说明、数据库脚本、镜像标签、回滚方案已准备完成。
 2. 关键责任人已到位。
 3. 发布通知已发送。
 
@@ -305,9 +306,12 @@ Compose 文件位置：
 2. 确认本次属于 A/B/C/D/E 哪一类发布。
 3. 确认是否涉及 `modbus_tcp`、`emqx`、`myems_mqtt` 或外部接口。
 4. 记录当前 Git 提交号。
-5. 记录容器状态、关键日志、关键时间戳。
-6. 备份数据库或相关配置。
-7. 预演回滚命令。
+5. 确认本次目标版本对应的 Git tag 或 release tag。
+6. 记录容器状态、关键日志、关键时间戳。
+7. 备份数据库或相关配置。
+8. 确认 `.github/workflows/prebuild-images.yml` 已在远程仓库可见且本次需要的镜像都已预构建完成。
+9. 从 Actions artifact 下载 `docker-images.env` 与 `image-manifest.txt`，或用 `scripts/render-docker-images-env.sh` 重新生成。
+10. 预演回滚命令。
 
 验证：
 
@@ -316,44 +320,94 @@ Compose 文件位置：
 3. 数据库连接正常。
 4. 若涉及采集链路，最新采集时间在正常推进。
 5. 若涉及 MQTT 链路，`emqx` Dashboard 与 `myems_mqtt` 最近日志无持续异常。
+6. 目标镜像在 GHCR 或目标镜像仓库中可见。
+7. `docker-images.env` 中的镜像标签与本次 release tag 一致。
 
 失败处理：
 
 1. 若基线环境已异常，禁止继续发布。
 2. 若回滚方案未准备，禁止继续发布。
+3. 若镜像产物未准备完成，禁止进入生产发布。
 
-### 10.2 发布中 SOP
+### 10.2 CI 预构建 SOP
 
 目的：
 
-按最小影响原则执行版本上线。
+在生产窗口前完成镜像构建、推送与标签文件生成，避免生产机现场构建。
 
 前提：
 
-1. 已完成发布前检查。
-2. 已确认具体命令和影响范围。
+1. 代码已合并到发布分支或主干。
+2. 已确认本次 release tag。
+3. 仓库 `Actions` 权限允许 `Read and write permissions`。
 
 步骤：
 
-1. 若仅前端发布，优先单独处理 `web` 或 `admin`。
-2. 若涉及 API，先处理 `api`，再恢复前端。
-3. 若涉及后台计算服务，优先恢复 `api` 后再恢复后台服务。
-4. 若涉及采集链路，必须在最后一步短暂停止 `modbus_tcp` 或同步处理 `emqx` / `myems_mqtt`，并在变更完成后第一时间恢复。
-5. 若生产已经准备好预构建镜像，优先执行 `pull + up -d --no-build`。
-6. 若涉及 `.env` 变更，更新配置后仍应优先使用预构建镜像并执行 `up -d --no-build`，不得把现场构建作为默认方案。
+1. 打发布 tag，例如 `v6.3.6-prod`，或手动触发 `Prebuild Release Images` 工作流。
+2. 等待工作流完成 `prepare`、`build`、`package-metadata` 三个阶段。
+3. 在 Packages 页面确认 `api`、`aggregation`、`cleaning`、`modbus-tcp`、`mqtt`、`normalization`、`admin`、`web` 镜像都已生成。
+4. 下载 artifact：`docker-images.env` 与 `image-manifest.txt`。
+5. 核对 `docker-images.env` 中的镜像前缀、release tag、EMQX 镜像是否正确。
+6. 在网络较好的验证机或预发机执行至少一轮 `web`、`admin` 在线拉取验证。
 
 验证：
 
-1. 关键容器重新启动完成。
-2. API 可达。
-3. 前后台页面可访问。
+1. Actions 工作流状态为成功。
+2. `docker-images.env` 已生成且与 release tag 一致。
+3. 至少一个验证环境已完成 `web` 和 `admin` 的 `HTTP 200` 检查。
 
 失败处理：
 
-1. 若单个服务无法恢复，优先回滚该服务。
-2. 若停机时长超出预设上限，立即升级处理并评估回滚。
+1. 若单个镜像构建失败，修复后重新触发工作流。
+2. 若 artifact 与镜像标签不一致，禁止进入生产发布。
 
-### 10.3 发布后 SOP
+### 10.3 生产发布路径选择 SOP
+
+目的：
+
+根据生产机资源和网络状况，在“在线拉取”与“离线镜像包”之间选择正确路径。
+
+决策原则：
+
+1. 若生产机到 GHCR 或企业镜像仓库下载稳定且发布窗口宽裕，可使用在线拉取。
+2. 若生产机低内存、低带宽、下载极慢，默认使用离线镜像包。
+3. 不得因在线拉取过慢而临时切回生产机现场 `build`。
+
+推荐结论：
+
+1. GitHub Actions 负责预构建和生成 `docker-images.env`。
+2. 正式生产发布优先使用离线镜像包。
+3. 在线拉取主要用于预发验证、轻量服务验证或临时应急。
+
+### 10.4 生产发布执行 SOP
+
+目的：
+
+按最小影响原则执行镜像上线，并把停机时间控制在可接受范围内。
+
+步骤：
+
+1. 将本次发布使用的 `docker-images.env` 放入生产机 `others/` 目录。
+2. 若走在线拉取，先执行分批 `pull`。
+3. 若走离线镜像包，先执行 `docker load`，确认本地镜像标签存在。
+4. 按顺序分批上线：`web` -> `admin` -> `api` -> `cleaning normalization aggregation` -> `emqx myems_mqtt` -> `modbus_tcp`。
+5. 每一批启动后立即执行状态、日志和 HTTP 检查，不要一次性重启全部服务。
+6. 若本次只涉及 `api`、`admin`、`web` 和数据库脚本，禁止顺带重启 `modbus_tcp`。
+7. 若涉及 `emqx`、`myems_mqtt` 或 `modbus_tcp`，必须记录停机前后的采集时间戳。
+
+验证：
+
+1. 每一批服务 `up -d --no-build` 后状态正常。
+2. `web` 返回 `HTTP 200`。
+3. `admin` 返回 `HTTP 200`。
+4. `api` `/version` 或健康接口可访问。
+
+失败处理：
+
+1. 若单批失败，先回滚当前批次，不扩大影响范围。
+2. 若停机时长超出预设上限，立即停止后续批次并启动回滚。
+
+### 10.5 发布后 SOP
 
 目的：
 
@@ -404,6 +458,10 @@ Compose 文件位置：
 | 14 | 若涉及采集链路，已记录最新采集时间 | [ ] | |
 | 15 | 若涉及 MQTT，已确认 `myems-mqtt/.env`、Broker 配置和镜像标签 | [ ] | |
 | 16 | 若走预构建方案，目标镜像已在仓库可拉取 | [ ] | |
+| 17 | 已从 Actions 下载 `docker-images.env` 与 `image-manifest.txt` | [ ] | |
+| 18 | 已确认在线拉取或离线镜像包发布路径 | [ ] | |
+| 19 | 若走离线方案，镜像 tar 包已生成并可校验 | [ ] | |
+| 20 | 若走在线方案，已在验证机完成 `web`、`admin` 拉取与访问检查 | [ ] | |
 
 ## 12. 发布操作命令清单
 
@@ -411,32 +469,56 @@ Compose 文件位置：
 
 ```bash
 cd /home/ubuntu/myems-complete/others
-cp docker-images.env.example docker-images.env
+# 把本次发布的 docker-images.env 放到当前目录
 ```
 
-### 12.1 场景一：仅前端发布
+### 12.1 生成或刷新镜像标签文件
+
+适用：需要根据 release tag 重建 `docker-images.env`，或验证 artifact 内容。
+
+```bash
+cd /home/ubuntu/myems-complete
+bash scripts/render-docker-images-env.sh \
+  v6.3.6-prod \
+  ghcr.io/tian0605/myems \
+  emqx/emqx:5.8.6 \
+  others/docker-images.env
+
+sed -n '1,20p' others/docker-images.env
+```
+
+### 12.2 场景一：仅前端发布
 
 适用：仅 `web` 或 `admin` 代码变更。
 
 ```bash
 cd /home/ubuntu/myems-complete/others
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull web admin
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build web admin
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull web admin
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build web
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps web
+curl -I --max-time 15 http://127.0.0.1/
+
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build admin
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps admin
+curl -I --max-time 15 http://127.0.0.1:8001/
 ```
 
-### 12.2 场景二：API 与后台服务发布
+### 12.3 场景二：API 与后台服务发布
 
 适用：`api`、`cleaning`、`normalization`、`aggregation` 变更，不涉及采集链路。
 
 ```bash
 cd /home/ubuntu/myems-complete/others
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull api cleaning normalization aggregation
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build api cleaning normalization aggregation
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull api cleaning normalization aggregation
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build api
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps api
+curl -i --max-time 15 http://127.0.0.1:8000/version | sed -n '1,20p'
+
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build cleaning normalization aggregation
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps cleaning normalization aggregation
 ```
 
-### 12.3 场景三：MQTT 链路发布
+### 12.4 场景三：MQTT 链路发布
 
 适用：`emqx`、`myems_mqtt`、MQTT Topic/数据源/点位接入逻辑变更。
 
@@ -444,35 +526,35 @@ sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.imag
 cd /home/ubuntu/myems-complete/others
 
 # 1. 检查发布前日志
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m emqx
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m myems_mqtt
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m emqx
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m myems_mqtt
 
 # 2. 若使用预构建镜像，先拉取
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull emqx myems_mqtt
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull emqx myems_mqtt
 
 # 3. 重新部署 MQTT 链路
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build emqx myems_mqtt
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build emqx myems_mqtt
 
 # 4. 检查状态
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=5m emqx
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=5m myems_mqtt
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps emqx myems_mqtt
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=5m emqx
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=5m myems_mqtt
 ```
 
-### 12.4 场景四：配置变更但仍使用预构建镜像
+### 12.5 场景四：配置变更但仍使用预构建镜像
 
 适用：`.env`、`nginx.conf`、EMQX 参数、镜像标签变更，且新镜像已提前构建完成。
 
 ```bash
 cd /home/ubuntu/myems-complete/others
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull api admin web cleaning normalization aggregation emqx myems_mqtt modbus_tcp
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build api admin web cleaning normalization aggregation emqx myems_mqtt modbus_tcp
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull api admin web cleaning normalization aggregation emqx myems_mqtt modbus_tcp
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build api admin web cleaning normalization aggregation emqx myems_mqtt modbus_tcp
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps
 ```
 
 警告：该命令影响范围大，执行前必须确认本次是否真的需要重启全部服务。
 
-### 12.5 场景五：采集链路发布
+### 12.6 场景五：采集链路发布
 
 适用：`modbus_tcp`、点位采集逻辑、外部计量接入逻辑变更。
 
@@ -480,28 +562,75 @@ sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.imag
 cd /home/ubuntu/myems-complete/others
 
 # 1. 发布前记录最新日志
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m modbus_tcp
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m modbus_tcp
 
 # 2. 拉取并恢复采集服务
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull modbus_tcp
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build modbus_tcp
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull modbus_tcp
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build modbus_tcp
 
 # 3. 发布后检查最新日志
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=5m modbus_tcp
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=5m modbus_tcp
 
 # 4. 查看容器状态
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps modbus_tcp
 ```
 
-### 12.6 场景六：全栈紧急维护
+### 12.7 场景六：离线镜像包交付
+
+适用：生产机下载外网镜像缓慢、发布窗口有限、低内存生产环境。
+
+在网络较好的中转机或验证机执行：
+
+```bash
+docker login ghcr.io -u <github-user>
+
+docker pull ghcr.io/tian0605/myems/web:v6.3.6-prod
+docker pull ghcr.io/tian0605/myems/admin:v6.3.6-prod
+docker pull ghcr.io/tian0605/myems/api:v6.3.6-prod
+docker pull ghcr.io/tian0605/myems/aggregation:v6.3.6-prod
+docker pull ghcr.io/tian0605/myems/cleaning:v6.3.6-prod
+docker pull ghcr.io/tian0605/myems/normalization:v6.3.6-prod
+docker pull ghcr.io/tian0605/myems/modbus-tcp:v6.3.6-prod
+docker pull ghcr.io/tian0605/myems/mqtt:v6.3.6-prod
+docker pull emqx/emqx:5.8.6
+
+docker save -o myems-v6.3.6-prod-images.tar \
+  ghcr.io/tian0605/myems/web:v6.3.6-prod \
+  ghcr.io/tian0605/myems/admin:v6.3.6-prod \
+  ghcr.io/tian0605/myems/api:v6.3.6-prod \
+  ghcr.io/tian0605/myems/aggregation:v6.3.6-prod \
+  ghcr.io/tian0605/myems/cleaning:v6.3.6-prod \
+  ghcr.io/tian0605/myems/normalization:v6.3.6-prod \
+  ghcr.io/tian0605/myems/modbus-tcp:v6.3.6-prod \
+  ghcr.io/tian0605/myems/mqtt:v6.3.6-prod \
+  emqx/emqx:5.8.6
+
+gzip -1 myems-v6.3.6-prod-images.tar
+```
+
+在生产机执行：
+
+```bash
+cd /home/ubuntu
+gunzip -f myems-v6.3.6-prod-images.tar.gz
+docker load -i myems-v6.3.6-prod-images.tar
+
+cd /home/ubuntu/myems-complete/others
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build web
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build admin
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build api
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build cleaning normalization aggregation
+```
+
+### 12.8 场景七：全栈紧急维护
 
 适用：重大配置变更、全栈重建、紧急恢复。
 
 ```bash
 cd /home/ubuntu/myems-complete/others
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build
-sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps
 ```
 
 警告：
@@ -510,7 +639,7 @@ sudo docker compose --env-file docker-images.env -f docker-compose-on-linux.imag
 2. 默认不作为常规发布方式。
 3. 若涉及 `modbus_tcp`、`emqx` 或 `myems_mqtt`，必须执行停机前后数据时点核对。
 
-### 12.7 场景七：审批后现场重建
+### 12.9 场景八：审批后现场重建
 
 适用：镜像产物损坏且离线包不可用，或必须在预发/应急环境现场验证 Dockerfile 变更。
 
@@ -532,22 +661,22 @@ sudo docker compose -f docker-compose-on-linux.yml ps
 
 ```bash
 cd /home/ubuntu/myems-complete/others
-sudo docker compose -f docker-compose-on-linux.yml ps
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps
 ```
 
 ### 13.2 关键日志检查
 
 ```bash
 cd /home/ubuntu/myems-complete/others
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=10m api
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=10m web
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=10m admin
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=10m cleaning
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=10m normalization
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=10m aggregation
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=10m emqx
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=10m myems_mqtt
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=10m modbus_tcp
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m api
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m web
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m admin
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m cleaning
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m normalization
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m aggregation
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m emqx
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m myems_mqtt
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=10m modbus_tcp
 ```
 
 ### 13.3 前后台连通性检查
@@ -581,7 +710,7 @@ mysql -h 127.0.0.1 -u root -p -e 'SELECT VERSION();'
 
 ```bash
 cd /home/ubuntu/myems-complete/others
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=5m modbus_tcp
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=5m modbus_tcp
 ```
 
 检查目标：
@@ -594,8 +723,8 @@ sudo docker compose -f docker-compose-on-linux.yml logs -t --since=5m modbus_tcp
 
 ```bash
 cd /home/ubuntu/myems-complete/others
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=5m emqx
-sudo docker compose -f docker-compose-on-linux.yml logs -t --since=5m myems_mqtt
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=5m emqx
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml logs -t --since=5m myems_mqtt
 ```
 
 检查目标：
