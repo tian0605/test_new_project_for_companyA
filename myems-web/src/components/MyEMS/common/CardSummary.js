@@ -102,6 +102,7 @@ const CardSummary = ({
   rate,
   color,
   children,
+  additionalContent,
   showFootnotes,
   footnote,
   footvalue,
@@ -122,6 +123,7 @@ const CardSummary = ({
           </span>
         </h6>
         <div className={getContentClassNames(color)}>{children}</div>
+        {additionalContent}
         {showFootnotes ? renderFootLine(footnote, footvalue, footunit, 'footnote') : null}
         {showFootnotes ? renderFootLine(secondfootnote, secondfootvalue, secondfootunit, 'secondfootnote') : null}
       </CardBody>
@@ -134,6 +136,7 @@ CardSummary.propTypes = {
   rate: PropTypes.string.isRequired,
   color: PropTypes.string,
   children: PropTypes.node,
+  additionalContent: PropTypes.node,
   showFootnotes: PropTypes.bool,
   footnote: PropTypes.string,
   footvalue: PropTypes.number,

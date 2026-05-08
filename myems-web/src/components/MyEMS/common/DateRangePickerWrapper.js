@@ -3,10 +3,24 @@ import moment from 'moment';
 import { DateRangePicker } from 'rsuite';
 import PropTypes from 'prop-types';
 
+const normalizeDateRange = value => {
+  if (!Array.isArray(value) || value.length !== 2 || !value[0] || !value[1]) {
+    return value;
+  }
+
+  return [
+    moment(value[0])
+      .startOf('day')
+      .toDate(),
+    moment(value[1])
+      .endOf('day')
+      .toDate()
+  ];
+};
+
 const DateRangePickerWrapper = ({
   id,
   disabled,
-  format,
   value,
   onChange,
   size,
@@ -18,26 +32,53 @@ const DateRangePickerWrapper = ({
   let flag = true;
   const Ref = React.useRef();
 
+  React.useEffect(() => {
+    const normalizedValue = normalizeDateRange(value);
+
+    if (
+      typeof onChange !== 'function' ||
+      !Array.isArray(value) ||
+      !Array.isArray(normalizedValue) ||
+      value.length !== 2 ||
+      normalizedValue.length !== 2 ||
+      !value[0] ||
+      !value[1] ||
+      !normalizedValue[0] ||
+      !normalizedValue[1]
+    ) {
+      return;
+    }
+
+    if (
+      value[0].getTime() !== normalizedValue[0].getTime() ||
+      value[1].getTime() !== normalizedValue[1].getTime()
+    ) {
+      onChange(normalizedValue);
+    }
+  }, [onChange, value]);
+
   const onSelected = date => {
     let time = moment(date).format('YYYY-MM-DD');
-    let calendarObj = Ref.current.overlay.children[0].children[0].children[0].children[0].children[1];
     let calendarTitleObj = Ref.current.overlay.children[0].children[0].children[0].children[0].children[0];
     if (flag) {
       setTimeout(() => {
-        calendarTitleObj.childNodes[0].nodeValue =
-          time + ' ' + calendarObj.children[0].children[0].children[1].innerText;
+        calendarTitleObj.childNodes[0].nodeValue = time;
       }, 0);
     }
     flag = !flag;
+  };
+
+  const handleChange = nextValue => {
+    onChange(normalizeDateRange(nextValue));
   };
 
   return (
     <DateRangePicker
       id={id}
       disabled={disabled}
-      format={format}
-      value={value}
-      onChange={onChange}
+      format="yyyy-MM-dd"
+      value={normalizeDateRange(value)}
+      onChange={handleChange}
       size={size}
       style={style}
       onClean={onClean}
