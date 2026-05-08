@@ -135,6 +135,57 @@ def get_space_energy_sources(cursor_system, space_id):
     return get_space_dimension_sources(cursor_system, space_id, 'energy_category_id')
 
 
+def get_space_products(cursor_system, cursor_production, space_id):
+    cursor_system.execute(" SELECT product_id "
+                          " FROM tbl_spaces_products "
+                          " WHERE space_id = %s "
+                          " ORDER BY product_id ",
+                          (space_id,))
+    rows_space_products = cursor_system.fetchall()
+
+    if rows_space_products is None or len(rows_space_products) == 0:
+        return list()
+
+    product_ids = [row[0] for row in rows_space_products if row[0] is not None]
+    if len(product_ids) == 0:
+        return list()
+
+    placeholders = ','.join(['%s'] * len(product_ids))
+    cursor_production.execute(
+        f" SELECT id, name, unit_of_measure FROM tbl_products WHERE id IN ({placeholders}) ORDER BY id ",
+        tuple(product_ids)
+    )
+    rows_products = cursor_production.fetchall()
+
+    if rows_products is None or len(rows_products) == 0:
+        return list()
+
+    return [
+        {
+            'id': row[0],
+            'name': row[1],
+            'unit_of_measure': row[2]
+        }
+        for row in rows_products
+    ]
+
+
+def get_product_count_sum(cursor_production, space_id, product_id, start_datetime_utc, end_datetime_utc):
+    cursor_production.execute(" SELECT SUM(product_count) "
+                              " FROM tbl_space_hourly "
+                              " WHERE space_id = %s "
+                              "   AND product_id = %s "
+                              "   AND start_datetime_utc >= %s "
+                              "   AND start_datetime_utc < %s ",
+                              (space_id, product_id, start_datetime_utc, end_datetime_utc))
+    row = cursor_production.fetchone()
+
+    if row is None or len(row) < 1 or row[0] is None:
+        return Decimal(0.0)
+
+    return row[0]
+
+
 def get_cost_hourly_rows(cost_center_id, energy_category_id, rows_energy_hourly, start_datetime_utc, end_datetime_utc):
     if cost_center_id is None or rows_energy_hourly is None or len(rows_energy_hourly) == 0 or \
             start_datetime_utc is None or end_datetime_utc is None:
@@ -360,17 +411,25 @@ class Reporting:
         cursor_energy = None
         cnx_billing = None
         cursor_billing = None
+        cnx_production = None
+        cursor_production = None
         cnx_historical = None
         cursor_historical = None
+        space_products = list()
+        reporting_product = dict()
+        base_product = dict()
         try:
             cnx_system = mysql.connector.connect(**config.myems_system_db)
             cnx_energy = mysql.connector.connect(**config.myems_energy_db)
             cnx_billing = mysql.connector.connect(**config.myems_billing_db)
+            cnx_production = mysql.connector.connect(**config.myems_production_db)
             try:
                 cursor_system = cnx_system.cursor()
                 cursor_energy = cnx_energy.cursor()
                 cursor_billing = cnx_billing.cursor()
+                cursor_production = cnx_production.cursor()
                 space_energy_sources = get_space_energy_sources(cursor_system, space['id'])
+                space_products = get_space_products(cursor_system, cursor_production, space['id'])
                 input_energy_category_set = get_energy_category_ids_for_sources(space_energy_sources)
 
                 output_energy_category_set = set()
@@ -488,6 +547,32 @@ class Reporting:
                 if rows_child_spaces is not None and len(rows_child_spaces) > 0:
                     for row in rows_child_spaces:
                         child_space_list.append({"id": row[0], "name": row[1]})
+
+                ########################################################################################################
+                # Step 5.1: query product production summary
+                ########################################################################################################
+                reporting_product = dict()
+                base_product = dict()
+
+                for product in space_products:
+                    reporting_product[product['id']] = {
+                        'subtotal': get_product_count_sum(
+                            cursor_production,
+                            space['id'],
+                            product['id'],
+                            reporting_start_datetime_utc,
+                            reporting_end_datetime_utc
+                        )
+                    }
+                    base_product[product['id']] = {
+                        'subtotal': get_product_count_sum(
+                            cursor_production,
+                            space['id'],
+                            product['id'],
+                            base_start_datetime_utc,
+                            base_end_datetime_utc
+                        ) if base_start_datetime_utc is not None and base_end_datetime_utc is not None else Decimal(0.0)
+                    }
 
                 ########################################################################################################
                 # Step 6: query base period energy input
@@ -769,7 +854,6 @@ class Reporting:
                                 actual_value = Decimal(0.0) if row_space_periodically[1] is None else \
                                     row_space_periodically[1]
                                 subtotal_list.append(actual_value)
-                                subtotal += actual_value
 
                             child_space_input[energy_category_id]['subtotals'].append(subtotal_list)
 
@@ -818,6 +902,8 @@ class Reporting:
                     cursor_energy.close()
                 if cursor_billing is not None:
                     cursor_billing.close()
+                if cursor_production is not None:
+                    cursor_production.close()
                 if cursor_historical is not None:
                     cursor_historical.close()
         finally:
@@ -827,6 +913,8 @@ class Reporting:
                 cnx_energy.close()
             if cnx_billing is not None:
                 cnx_billing.close()
+            if cnx_production is not None:
+                cnx_production.close()
             if cnx_historical is not None:
                 cnx_historical.close()
 
@@ -1037,6 +1125,26 @@ class Reporting:
                     if reporting_output[energy_category_id]['same_month_last_year_value'] is not None
                     and reporting_output[energy_category_id]['same_month_last_year_value'] > 0.0
                     else None)
+
+        result['reporting_period_product'] = dict()
+        result['reporting_period_product']['product_ids'] = list()
+        result['reporting_period_product']['names'] = list()
+        result['reporting_period_product']['units'] = list()
+        result['reporting_period_product']['subtotals'] = list()
+        result['reporting_period_product']['increment_rates'] = list()
+
+        for product in space_products:
+            current_subtotal = reporting_product[product['id']]['subtotal']
+            base_subtotal = base_product[product['id']]['subtotal']
+            result['reporting_period_product']['product_ids'].append(product['id'])
+            result['reporting_period_product']['names'].append(product['name'])
+            result['reporting_period_product']['units'].append(product['unit_of_measure'])
+            result['reporting_period_product']['subtotals'].append(current_subtotal)
+            result['reporting_period_product']['increment_rates'].append(
+                (current_subtotal - base_subtotal) / base_subtotal
+                if base_subtotal is not None and base_subtotal > Decimal(0.0)
+                else None
+            )
 
         result['child_space_input'] = dict()
         result['child_space_input']['energy_category_names'] = list()  # 1D array [energy category]

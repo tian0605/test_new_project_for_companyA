@@ -27,6 +27,123 @@ const formatPercentage = value =>
 
 const hasDisplayValue = value => value !== null && value !== undefined;
 
+const formatDisplayNumber = value => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '--';
+  }
+
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+};
+
+const PIE_COLOR_PALETTE = [
+  '#3a7bd5',
+  '#00a896',
+  '#ff9f1c',
+  '#d7263d',
+  '#6c5ce7',
+  '#2a9d8f',
+  '#e76f51',
+  '#577590',
+  '#8ab17d',
+  '#f4a261'
+];
+
+const getStablePieColor = key => {
+  const normalizedKey = String(key || 'default');
+  let hash = 0;
+
+  for (let index = 0; index < normalizedKey.length; index++) {
+    hash = (hash << 5) - hash + normalizedKey.charCodeAt(index);
+    hash |= 0;
+  }
+
+  return PIE_COLOR_PALETTE[Math.abs(hash) % PIE_COLOR_PALETTE.length];
+};
+
+const buildPieDataItem = (id, name, value, colorKey) => ({
+  id,
+  name,
+  value,
+  color: getStablePieColor(colorKey || `${id}-${name}`)
+});
+
+const buildProductionSummary = productData => {
+  if (!productData || !Array.isArray(productData.subtotals) || productData.subtotals.length === 0) {
+    return {
+      value: null,
+      unit: '',
+      rate: '',
+      items: []
+    };
+  }
+
+  const productItems = productData.subtotals
+    .map((subtotal, index) => ({
+      productId: productData.product_ids?.[index],
+      name: productData.names?.[index],
+      unit: productData.units?.[index],
+      subtotal,
+      incrementRate: productData.increment_rates?.[index]
+    }))
+    .filter(item => typeof item.subtotal === 'number' && Number.isFinite(item.subtotal));
+
+  if (productItems.length === 0) {
+    return {
+      value: null,
+      unit: '',
+      rate: '',
+      items: []
+    };
+  }
+
+  const firstUnit = productItems[0].unit;
+  const canAggregate = firstUnit && productItems.every(item => item.unit === firstUnit);
+  const productionValue =
+    canAggregate && productItems.length > 1
+      ? productItems.reduce((total, currentItem) => total + currentItem.subtotal, 0)
+      : productItems.length === 1
+        ? productItems[0].subtotal
+        : null;
+  const productionRate =
+    productItems.length === 1 ? formatPercentage(productItems[0].incrementRate) : '';
+
+  return {
+    value: productionValue,
+    unit: canAggregate ? firstUnit : '',
+    rate: productionRate,
+    items: productItems
+  };
+};
+
+const buildPerUnitMetricItems = (productItems, totalValue, numeratorUnit) => {
+  if (typeof totalValue !== 'number' || !Number.isFinite(totalValue)) {
+    return [];
+  }
+
+  return productItems
+    .filter(item => typeof item.subtotal === 'number' && Number.isFinite(item.subtotal) && item.subtotal > 0)
+    .map(item => ({
+      productId: item.productId,
+      name: item.name,
+      value: totalValue / item.subtotal,
+      unit: item.unit ? `${numeratorUnit}/${item.unit}` : `${numeratorUnit}/单位`
+    }));
+};
+
+const renderMetricAdditionalContent = metricItems =>
+  metricItems.length > 1 ? (
+    <div className="fs--1 text-600 mb-2">
+      {metricItems.map((item, index) => (
+        <div key={item.productId || item.name || `${item.unit}-${index}`}>
+          {`${index + 1}. ${item.name}: ${formatDisplayNumber(item.value)} (${item.unit})`}
+        </div>
+      ))}
+    </div>
+  ) : null;
+
 const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
   let current_moment = moment();
   const [isFetchDashboard, setIsFetchDashboard] = useState(true);
@@ -36,14 +153,19 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
       .subtract(1, 'years')
       .startOf('month')
   );
-  const [basePeriodEndsDatetime, setBasePeriodEndsDatetime] = useState(current_moment.clone().subtract(1, 'years'));
+  const [basePeriodEndsDatetime, setBasePeriodEndsDatetime] = useState(
+    current_moment
+      .clone()
+      .subtract(1, 'years')
+      .endOf('day')
+  );
   const [reportingPeriodBeginsDatetime, setReportingPeriodBeginsDatetime] = useState(
     current_moment
       .clone()
       .subtract(1, 'years')
       .startOf('month')
   );
-  const [reportingPeriodEndsDatetime, setReportingPeriodEndsDatetime] = useState(current_moment);
+  const [reportingPeriodEndsDatetime, setReportingPeriodEndsDatetime] = useState(current_moment.clone().endOf('day'));
 
   const [spinnerHidden, setSpinnerHidden] = useState(false);
 
@@ -61,6 +183,7 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
   const [barLabels, setBarLabels] = useState([]);
   const [totalInTCE, setTotalInTCE] = useState({});
   const [totalInTCO2E, setTotalInTCO2E] = useState({});
+  const [productionSummary, setProductionSummary] = useState({});
 
   const [spaceInputLineChartLabels, setSpaceInputLineChartLabels] = useState([]);
   const [spaceInputLineChartData, setSpaceInputLineChartData] = useState({});
@@ -238,40 +361,11 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
               json['reporting_period_input']['energy_category_ids'].forEach((currentValue, index) => {
                 if (currentValue === 1) {
                   // energy_category_id 1 electricity
-                  let timeOfUseItem = {};
-                  timeOfUseItem['id'] = 1;
-                  timeOfUseItem['name'] = t('Top-Peak');
-                  timeOfUseItem['value'] = json['reporting_period_input']['toppeaks'][index];
-                  timeOfUseItem['color'] = '#' + (((1 << 24) * Math.random()) | 0).toString(16);
-                  timeOfUseArray.push(timeOfUseItem);
-
-                  timeOfUseItem = {};
-                  timeOfUseItem['id'] = 2;
-                  timeOfUseItem['name'] = t('On-Peak');
-                  timeOfUseItem['value'] = json['reporting_period_input']['onpeaks'][index];
-                  timeOfUseItem['color'] = '#' + (((1 << 24) * Math.random()) | 0).toString(16);
-                  timeOfUseArray.push(timeOfUseItem);
-
-                  timeOfUseItem = {};
-                  timeOfUseItem['id'] = 3;
-                  timeOfUseItem['name'] = t('Mid-Peak');
-                  timeOfUseItem['value'] = json['reporting_period_input']['midpeaks'][index];
-                  timeOfUseItem['color'] = '#' + (((1 << 24) * Math.random()) | 0).toString(16);
-                  timeOfUseArray.push(timeOfUseItem);
-
-                  timeOfUseItem = {};
-                  timeOfUseItem['id'] = 4;
-                  timeOfUseItem['name'] = t('Off-Peak');
-                  timeOfUseItem['value'] = json['reporting_period_input']['offpeaks'][index];
-                  timeOfUseItem['color'] = '#' + (((1 << 24) * Math.random()) | 0).toString(16);
-                  timeOfUseArray.push(timeOfUseItem);
-
-                  timeOfUseItem = {};
-                  timeOfUseItem['id'] = 5;
-                  timeOfUseItem['name'] = t('Deep');
-                  timeOfUseItem['value'] = json['reporting_period_input']['deeps'][index];
-                  timeOfUseItem['color'] = '#' + (((1 << 24) * Math.random()) | 0).toString(16);
-                  timeOfUseArray.push(timeOfUseItem);
+                  timeOfUseArray.push(buildPieDataItem(1, t('Top-Peak'), json['reporting_period_input']['toppeaks'][index], 'tou-top-peak'));
+                  timeOfUseArray.push(buildPieDataItem(2, t('On-Peak'), json['reporting_period_input']['onpeaks'][index], 'tou-on-peak'));
+                  timeOfUseArray.push(buildPieDataItem(3, t('Mid-Peak'), json['reporting_period_input']['midpeaks'][index], 'tou-mid-peak'));
+                  timeOfUseArray.push(buildPieDataItem(4, t('Off-Peak'), json['reporting_period_input']['offpeaks'][index], 'tou-off-peak'));
+                  timeOfUseArray.push(buildPieDataItem(5, t('Deep'), json['reporting_period_input']['deeps'][index], 'tou-deep'));
                 }
               });
               setTimeOfUseShareData(timeOfUseArray);
@@ -288,12 +382,14 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
 
               let costDataArray = [];
               json['reporting_period_cost']['names'].forEach((currentValue, index) => {
-                let costDataItem = {};
-                costDataItem['id'] = index;
-                costDataItem['name'] = currentValue;
-                costDataItem['value'] = json['reporting_period_cost']['subtotals'][index];
-                costDataItem['color'] = '#' + (((1 << 24) * Math.random()) | 0).toString(16);
-                costDataArray.push(costDataItem);
+                costDataArray.push(
+                  buildPieDataItem(
+                    index,
+                    currentValue,
+                    json['reporting_period_cost']['subtotals'][index],
+                    `cost-${json['reporting_period_cost']['energy_category_ids']?.[index] ?? currentValue}`
+                  )
+                );
               });
 
               setCostShareData(costDataArray);
@@ -307,26 +403,31 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
                   ? parseFloat(1000.0 * totalInTCO2E['value'] / json['space']['number_of_occupants']).toFixed(3)
                   : 0.0;
               setTotalInTCO2E(totalInTCO2E);
+              setProductionSummary(buildProductionSummary(json['reporting_period_product']));
 
               let TCEDataArray = [];
               json['reporting_period_input']['names'].forEach((currentValue, index) => {
-                let TCEDataItem = {};
-                TCEDataItem['id'] = index;
-                TCEDataItem['name'] = currentValue;
-                TCEDataItem['value'] = json['reporting_period_input']['subtotals_in_kgce'][index] / 1000;
-                TCEDataItem['color'] = '#' + (((1 << 24) * Math.random()) | 0).toString(16);
-                TCEDataArray.push(TCEDataItem);
+                TCEDataArray.push(
+                  buildPieDataItem(
+                    index,
+                    currentValue,
+                    json['reporting_period_input']['subtotals_in_kgce'][index] / 1000,
+                    `energy-category-${json['reporting_period_input']['energy_category_ids']?.[index] ?? currentValue}`
+                  )
+                );
               });
               setTCEShareData(TCEDataArray);
 
               let TCO2EDataArray = [];
               json['reporting_period_input']['names'].forEach((currentValue, index) => {
-                let TCO2EDataItem = {};
-                TCO2EDataItem['id'] = index;
-                TCO2EDataItem['name'] = currentValue;
-                TCO2EDataItem['value'] = json['reporting_period_input']['subtotals_in_kgco2e'][index] / 1000; // convert from kg to t
-                TCO2EDataItem['color'] = '#' + (((1 << 24) * Math.random()) | 0).toString(16);
-                TCO2EDataArray.push(TCO2EDataItem);
+                TCO2EDataArray.push(
+                  buildPieDataItem(
+                    index,
+                    currentValue,
+                    json['reporting_period_input']['subtotals_in_kgco2e'][index] / 1000,
+                    `energy-category-${json['reporting_period_input']['energy_category_ids']?.[index] ?? currentValue}`
+                  )
+                );
               });
               setTCO2EShareData(TCO2EDataArray);
 
@@ -637,7 +738,7 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
                   geojson['features'] = geojsonData;
                   setGeojson(geojson);
                 } else {
-                  handleAPIError(json, setRedirect, setRedirectUrl, t, toast)
+                  handleAPIError(json, setRedirect, setRedirectUrl, t, toast);
                 }
               })
               .catch(err => {
@@ -645,7 +746,7 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
               });
             // end of get children of root Space
           } else {
-            handleAPIError(json, setRedirect, setRedirectUrl, t, toast)
+            handleAPIError(json, setRedirect, setRedirectUrl, t, toast);
           }
         })
         .catch(err => {
@@ -653,6 +754,28 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
         });
     }
   }, [setRedirect, setRedirectUrl, t]);
+
+  const productionValue = productionSummary['value'];
+  const productionUnit = productionSummary['unit'];
+  const productionItems = productionSummary['items'] || [];
+  const perUnitComprehensiveEnergyItems = buildPerUnitMetricItems(productionItems, totalInTCE['value'], 'TCE');
+  const perUnitCarbonEmissionItems = buildPerUnitMetricItems(productionItems, totalInTCO2E['value'], 'TCO2E');
+  const perUnitComprehensiveEnergy =
+    perUnitComprehensiveEnergyItems.length === 1 ? perUnitComprehensiveEnergyItems[0].value : null;
+  const perUnitCarbonEmissions =
+    perUnitCarbonEmissionItems.length === 1 ? perUnitCarbonEmissionItems[0].value : null;
+  const productionAdditionalContent =
+    productionItems.length > 1 ? (
+      <div className="fs--1 text-600 mb-2">
+        {productionItems.map((item, index) => (
+          <div key={item.productId || item.name}>
+            {`${index + 1}. ${item.name}: ${formatDisplayNumber(item.subtotal)}${item.unit ? ` (${item.unit})` : ''}`}
+          </div>
+        ))}
+      </div>
+    ) : null;
+  const perUnitComprehensiveEnergyAdditionalContent = renderMetricAdditionalContent(perUnitComprehensiveEnergyItems);
+  const perUnitCarbonEmissionsAdditionalContent = renderMetricAdditionalContent(perUnitCarbonEmissionItems);
 
   return (
     <Fragment>
@@ -748,24 +871,35 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
       </div>
       <div className="card-deck">
         {settings.showTCEData ? (
-          <CardSummary
-            rate={totalInTCE['increment_rate'] || ''}
-            title={t("This Month's Consumption CATEGORY VALUE UNIT", {
-              CATEGORY: t('Ton of Standard Coal'),
-              UNIT: '(TCE)'
-            })}
-            color="warning"
-            footnote={t('Per Unit Area')}
-            footvalue={totalInTCE['value_per_unit_area']}
-            footunit="(kgCE/m²)"
-            secondfootnote={t('Per Capita')}
-            secondfootvalue={totalInTCE['value_per_capita']}
-            secondfootunit="(kgCE)"
-          >
-            {hasDisplayValue(totalInTCE['value']) && (
-              <CountUp end={totalInTCE['value']} duration={2} prefix="" separator="," decimal="." decimals={2} />
-            )}
-          </CardSummary>
+          <>
+            <CardSummary
+              rate={totalInTCE['increment_rate'] || ''}
+              title={t("This Month's Consumption CATEGORY VALUE UNIT", {
+                CATEGORY: t('Ton of Standard Coal'),
+                UNIT: '(TCE)'
+              })}
+              color="warning"
+              footnote={t('Per Unit Area')}
+              footvalue={totalInTCE['value_per_unit_area']}
+              footunit="(kgCE/m²)"
+              secondfootnote={t('Per Capita')}
+              secondfootvalue={totalInTCE['value_per_capita']}
+              secondfootunit="(kgCE)"
+            >
+              {hasDisplayValue(totalInTCE['value']) && (
+                <CountUp end={totalInTCE['value']} duration={2} prefix="" separator="," decimal="." decimals={2} />
+              )}
+            </CardSummary>
+            <CardSummary
+              title={t('Per Unit Comprehensive Energy') + (productionUnit ? ` (TCE/${productionUnit})` : ' (TCE/单位)')}
+              color="info"
+              additionalContent={perUnitComprehensiveEnergyAdditionalContent}
+            >
+              {perUnitComprehensiveEnergyItems.length === 1 && hasDisplayValue(perUnitComprehensiveEnergy) ? (
+                <CountUp end={perUnitComprehensiveEnergy} duration={2} prefix="" separator="," decimal="." decimals={2} />
+              ) : null}
+            </CardSummary>
+          </>
         ) : (
           <></>
         )}
@@ -783,9 +917,21 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
           secondfootvalue={totalInTCO2E['value_per_capita']}
           secondfootunit="(kgCO2E)"
         >
-            {hasDisplayValue(totalInTCO2E['value']) && (
+          {hasDisplayValue(totalInTCO2E['value']) && (
             <CountUp end={totalInTCO2E['value']} duration={2} prefix="" separator="," decimal="." decimals={2} />
           )}
+        </CardSummary>
+        <CardSummary
+          title={
+            t('Per Unit Product Carbon Dioxide Emissions') +
+            (productionUnit ? ` (TCO2E/${productionUnit})` : ' (TCO2E/单位)')
+          }
+          color="info"
+          additionalContent={perUnitCarbonEmissionsAdditionalContent}
+        >
+          {perUnitCarbonEmissionItems.length === 1 && hasDisplayValue(perUnitCarbonEmissions) ? (
+            <CountUp end={perUnitCarbonEmissions} duration={2} prefix="" separator="," decimal="." decimals={2} />
+          ) : null}
         </CardSummary>
         <CardSummary
           rate={
@@ -831,6 +977,16 @@ const Dashboard = ({ setRedirect, setRedirectUrl, t }) => {
           ) : (
             '--'
           )}
+        </CardSummary>
+        <CardSummary
+          rate={productionSummary['rate'] || ''}
+          title={t('Production') + (productionUnit ? ` (${productionUnit})` : '')}
+          color="info"
+          additionalContent={productionAdditionalContent}
+        >
+          {productionItems.length === 1 && hasDisplayValue(productionValue) ? (
+            <CountUp end={productionValue} duration={2} prefix="" separator="," decimal="." decimals={2} />
+          ) : null}
         </CardSummary>
       </div>
       <div className="card-deck">

@@ -41,6 +41,38 @@ import blankPage from '../../../assets/img/generic/blank-page.png';
 const ChildSpacesTable = loadable(() => import('../common/ChildSpacesTable'));
 const DetailedDataTable = loadable(() => import('../common/DetailedDataTable'));
 
+const PIE_COLOR_PALETTE = [
+  '#3a7bd5',
+  '#00a896',
+  '#ff9f1c',
+  '#d7263d',
+  '#6c5ce7',
+  '#2a9d8f',
+  '#e76f51',
+  '#577590',
+  '#8ab17d',
+  '#f4a261'
+];
+
+const getStablePieColor = key => {
+  const normalizedKey = String(key || 'default');
+  let hash = 0;
+
+  for (let index = 0; index < normalizedKey.length; index++) {
+    hash = (hash << 5) - hash + normalizedKey.charCodeAt(index);
+    hash |= 0;
+  }
+
+  return PIE_COLOR_PALETTE[Math.abs(hash) % PIE_COLOR_PALETTE.length];
+};
+
+const buildPieDataItem = (id, name, value, colorKey) => ({
+  id,
+  name,
+  value,
+  color: getStablePieColor(colorKey || `${id}-${name}`)
+});
+
 const SpaceSaving = ({ setRedirect, setRedirectUrl, t }) => {
   let current_moment = moment();
   useEffect(() => {
@@ -87,7 +119,10 @@ const SpaceSaving = ({ setRedirect, setRedirectUrl, t }) => {
       .clone()
       .startOf('month')
       .toDate(),
-    current_moment.toDate()
+    current_moment
+      .clone()
+      .endOf('day')
+      .toDate()
   ]);
   const dateRangePickerLocale = {
     sunday: t('sunday'),
@@ -237,23 +272,27 @@ const SpaceSaving = ({ setRedirect, setRedirectUrl, t }) => {
 
             let TCEDataArray = [];
             json['reporting_period']['names'].forEach((currentValue, index) => {
-              let TCEDataItem = {};
-              TCEDataItem['id'] = index;
-              TCEDataItem['name'] = currentValue;
-              TCEDataItem['value'] = json['reporting_period']['subtotals_in_kgce_saving'][index] / 1000; // convert from kg to t
-              TCEDataItem['color'] = '#' + (((1 << 24) * Math.random()) | 0).toString(16);
-              TCEDataArray.push(TCEDataItem);
+              TCEDataArray.push(
+                buildPieDataItem(
+                  index,
+                  currentValue,
+                  json['reporting_period']['subtotals_in_kgce_saving'][index] / 1000,
+                  `energy-category-${json['reporting_period']['energy_category_ids']?.[index] ?? currentValue}`
+                )
+              );
             });
             setTCEShareData(TCEDataArray);
 
             let TCO2EDataArray = [];
             json['reporting_period']['names'].forEach((currentValue, index) => {
-              let TCO2EDataItem = {};
-              TCO2EDataItem['id'] = index;
-              TCO2EDataItem['name'] = currentValue;
-              TCO2EDataItem['value'] = json['reporting_period']['subtotals_in_kgco2e_saving'][index] / 1000; // convert from kg to t
-              TCO2EDataItem['color'] = '#' + (((1 << 24) * Math.random()) | 0).toString(16);
-              TCO2EDataArray.push(TCO2EDataItem);
+              TCO2EDataArray.push(
+                buildPieDataItem(
+                  index,
+                  currentValue,
+                  json['reporting_period']['subtotals_in_kgco2e_saving'][index] / 1000,
+                  `energy-category-${json['reporting_period']['energy_category_ids']?.[index] ?? currentValue}`
+                )
+              );
             });
             setTCO2EShareData(TCO2EDataArray);
 
@@ -546,7 +585,7 @@ const SpaceSaving = ({ setRedirect, setRedirectUrl, t }) => {
             // show result data
             setResultDataHidden(false);
           } else {
-            handleAPIError(json, setRedirect, setRedirectUrl, t, toast)
+            handleAPIError(json, setRedirect, setRedirectUrl, t, toast);
           }
         })
         .catch(err => {
@@ -602,7 +641,7 @@ const SpaceSaving = ({ setRedirect, setRedirectUrl, t }) => {
           // select root space ID
           setSelectedSpaceID([json[0]].map(o => o.value));
         } else {
-          handleAPIError(json, setRedirect, setRedirectUrl, t, toast)
+          handleAPIError(json, setRedirect, setRedirectUrl, t, toast);
         }
       })
       .catch(err => {
