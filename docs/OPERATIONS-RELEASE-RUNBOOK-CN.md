@@ -5,8 +5,8 @@
 | 项目 | 内容 |
 | --- | --- |
 | 文档名称 | MyEMS 生产运维与发布手册 |
-| 文档版本 | v1.2 |
-| 生效日期 | 2026-05-07 |
+| 文档版本 | v1.3 |
+| 生效日期 | 2026-05-08 |
 | 适用系统 | MyEMS Docker Compose 生产环境 |
 | 适用目录 | `/home/ubuntu/myems-complete` |
 | 运维入口目录 | `/home/ubuntu/myems-complete/others` |
@@ -20,6 +20,7 @@
 | v1.0 | 2026-04-16 | GitHub Copilot | 初版，覆盖发布、停机、恢复、回滚、数据对账 |
 | v1.1 | 2026-04-28 | GitHub Copilot | 新增纯镜像生产部署模板、离线镜像交付要求、EMQX 与 myems-mqtt 初始化指引 |
 | v1.2 | 2026-05-07 | GitHub Copilot | 补充 GitHub Actions 预构建、GHCR 在线验证、离线镜像包交付、分批上线与验证 SOP |
+| v1.3 | 2026-05-08 | GitHub Copilot | 补充当前仓库 GitHub Actions 触发规则、artifact 命名、分支到 tag 的发布路径与本版本上线剧本 |
 
 ## 3. 文档目的与适用范围
 
@@ -262,6 +263,34 @@ Compose 文件位置：
 4. 若生产网段不能访问镜像仓库，额外输出离线镜像包，例如 `docker save -o myems-images-<release>.tar ...`。
 5. 生产发布时执行 `docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull`，或先 `docker load` 再 `up -d --no-build`。
 
+### 8.5 当前仓库 GitHub Actions 规则说明
+
+当前仓库已存在工作流：
+
+`/.github/workflows/prebuild-images.yml`
+
+该工作流的实际行为为：
+
+1. 支持手动触发 `workflow_dispatch`。
+2. 也会在推送 tag 且 tag 名匹配 `v*` 或 `release-*` 时自动触发。
+3. 默认镜像前缀为 `ghcr.io/<repository_owner_lower>/myems`。
+4. 对当前仓库 owner `tian0605` 来说，默认镜像前缀即：`ghcr.io/tian0605/myems`。
+5. 工作流会构建并推送以下镜像：`api`、`aggregation`、`cleaning`、`modbus-tcp`、`mqtt`、`normalization`、`admin`、`web`。
+6. 工作流不会构建 EMQX 镜像，只会把 `emqx_image` 输入值写入 `docker-images.env`。
+7. 若不显式传入 `emqx_image`，当前默认值是 `emqx/emqx:latest`。
+
+执行要求：
+
+1. 生产发布时不要依赖 `emqx/emqx:latest`，必须在触发 Actions 时显式指定固定版本，例如 `emqx/emqx:5.8.6`。
+2. 生产发布优先使用 tag 触发，而不是直接依赖 SHA 默认 tag。
+3. 推荐统一使用 release tag，例如 `v2026.05.08-prod.1`。
+
+产物命名规则：
+
+1. Actions artifact 名称为 `prebuild-metadata-<release_tag>`。
+2. artifact 内包含：`docker-images.env` 与 `image-manifest.txt`。
+3. `image-manifest.txt` 会记录每个镜像的完整引用，可直接作为发布核对单使用。
+
 ## 9. 外部计量数据接口专项策略
 
 ### 9.1 Modbus TCP 接口
@@ -346,15 +375,17 @@ Compose 文件位置：
 1. 打发布 tag，例如 `v6.3.6-prod`，或手动触发 `Prebuild Release Images` 工作流。
 2. 等待工作流完成 `prepare`、`build`、`package-metadata` 三个阶段。
 3. 在 Packages 页面确认 `api`、`aggregation`、`cleaning`、`modbus-tcp`、`mqtt`、`normalization`、`admin`、`web` 镜像都已生成。
-4. 下载 artifact：`docker-images.env` 与 `image-manifest.txt`。
+4. 下载 artifact：`prebuild-metadata-<release_tag>`，并解压得到 `docker-images.env` 与 `image-manifest.txt`。
 5. 核对 `docker-images.env` 中的镜像前缀、release tag、EMQX 镜像是否正确。
-6. 在网络较好的验证机或预发机执行至少一轮 `web`、`admin` 在线拉取验证。
+6. 若本次通过 `workflow_dispatch` 触发，务必填写 `emqx_image`，不要让生产环境落到 `emqx/emqx:latest`。
+7. 在网络较好的验证机或预发机执行至少一轮 `web`、`admin` 在线拉取验证。
 
 验证：
 
 1. Actions 工作流状态为成功。
 2. `docker-images.env` 已生成且与 release tag 一致。
 3. 至少一个验证环境已完成 `web` 和 `admin` 的 `HTTP 200` 检查。
+4. `image-manifest.txt` 中各镜像引用与计划上线版本一致。
 
 失败处理：
 
@@ -394,6 +425,29 @@ Compose 文件位置：
 5. 每一批启动后立即执行状态、日志和 HTTP 检查，不要一次性重启全部服务。
 6. 若本次只涉及 `api`、`admin`、`web` 和数据库脚本，禁止顺带重启 `modbus_tcp`。
 7. 若涉及 `emqx`、`myems_mqtt` 或 `modbus_tcp`，必须记录停机前后的采集时间戳。
+
+### 10.4.1 GitHub Actions 驱动的标准发布路径
+
+适用：
+
+1. 代码已经合并或已确认当前分支提交可发布。
+2. 镜像构建在 GitHub Actions 完成。
+3. 生产机只负责拉取或装载镜像并重启服务。
+
+推荐路径：
+
+1. 先把业务代码推送到远端分支。
+2. 再创建并推送 release tag。
+3. 等待 `Prebuild Release Images` 完成。
+4. 下载 `prebuild-metadata-<release_tag>` artifact。
+5. 将 artifact 中的 `docker-images.env` 放到生产机 `others/` 目录。
+6. 按影响范围分批在生产机执行 `pull` / `up -d --no-build`。
+
+不推荐路径：
+
+1. 直接在生产机现场 build。
+2. 使用未固定版本的 EMQX 镜像。
+3. 在镜像尚未完成推送时提前执行生产升级。
 
 验证：
 
@@ -486,6 +540,47 @@ bash scripts/render-docker-images-env.sh \
 
 sed -n '1,20p' others/docker-images.env
 ```
+
+### 12.1.1 推送分支并创建发布 tag
+
+适用：当前版本已经在本地通过验收，需要推送远端并触发 GitHub Actions 预构建。
+
+```bash
+cd d:/VSCode/myems_development_enterprise-isolation-v2
+
+# 1. 推送当前功能分支
+git push origin feature/enterprise-isolation-v3
+
+# 2. 创建发布 tag，建议使用带日期和序号的 tag
+git tag v2026.05.08-prod.1
+
+# 3. 推送 tag，自动触发 Prebuild Release Images
+git push origin v2026.05.08-prod.1
+```
+
+说明：
+
+1. 若 tag 推送后 Actions 自动触发，则无需手动再点一次 workflow。
+2. 若希望手动指定 `emqx_image`，可不先推 tag，而是到 GitHub Actions 页面用 `workflow_dispatch` 触发，并填写：
+  - `release_tag`: `v2026.05.08-prod.1`
+  - `registry_prefix`: `ghcr.io/tian0605/myems`
+  - `emqx_image`: `emqx/emqx:5.8.6`
+3. 若选择手动触发，仍建议最终补一个同名 tag 以便版本追踪。
+
+### 12.1.2 下载并核对 Actions artifact
+
+```bash
+# 在 GitHub Actions 页面下载：prebuild-metadata-v2026.05.08-prod.1
+# 解压后应至少看到：
+#   docker-images.env
+#   image-manifest.txt
+```
+
+核对要求：
+
+1. `docker-images.env` 中各镜像 tag 必须都是 `v2026.05.08-prod.1`。
+2. `MYEMS_EMQX_IMAGE` 必须是固定版本，例如 `emqx/emqx:5.8.6`。
+3. `image-manifest.txt` 中的 registry 前缀必须为 `ghcr.io/tian0605/myems`。
 
 ### 12.2 场景一：仅前端发布
 
@@ -620,6 +715,57 @@ docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml
 docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build admin
 docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build api
 docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build cleaning normalization aggregation
+```
+
+### 12.7.1 当前版本推荐上线命令模板
+
+适用：本次版本以当前已验收提交发布，release tag 假定为 `v2026.05.08-prod.1`。
+
+生产机上线前准备：
+
+1. 从 GitHub Actions 下载 `prebuild-metadata-v2026.05.08-prod.1`。
+2. 将其中的 `docker-images.env` 上传到生产机：`/home/ubuntu/myems-complete/others/docker-images.env`。
+3. 确认生产机可访问 GHCR，或提前准备离线镜像包。
+
+若生产机可在线拉取，执行：
+
+```bash
+cd /home/ubuntu/myems-complete/others
+
+# 1. 先升级前端
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull web admin
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build web admin
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps web admin
+curl -I --max-time 15 http://127.0.0.1/
+curl -I --max-time 15 http://127.0.0.1:8001/
+
+# 2. 再升级 API
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull api
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build api
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps api
+curl -i --max-time 15 http://127.0.0.1:8000/version | sed -n '1,20p'
+
+# 3. 最后升级后台计算服务
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml pull cleaning normalization aggregation
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build cleaning normalization aggregation
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps cleaning normalization aggregation
+```
+
+若本次不涉及 MQTT 或采集链路：
+
+1. 不要重启 `emqx`。
+2. 不要重启 `myems_mqtt`。
+3. 不要重启 `modbus_tcp`。
+
+若需要补发离线包到生产机，执行：
+
+```bash
+cd /home/ubuntu
+docker load -i myems-v2026.05.08-prod.1-images.tar
+
+cd /home/ubuntu/myems-complete/others
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build web admin api cleaning normalization aggregation
+docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml ps
 ```
 
 ### 12.8 场景七：全栈紧急维护
@@ -911,3 +1057,45 @@ API 发布会直接影响前后台可用性和第三方接口调用，应避免�
 2. 发布通知模板。
 3. 发布失败升级路径。
 4. 数据对账结果归档规范。
+
+## 19. 当前版本发布指引
+
+本节用于指导当前已验收版本从本地仓库发布到 GitHub，并再由 GitHub Actions 进入生产升级。
+
+### 19.1 当前版本源码基线
+
+当前本地已确认提交：
+
+`6b0e93e Refine product dashboard and date-only report behavior`
+
+建议：
+
+1. 先推送当前分支 `feature/enterprise-isolation-v3`。
+2. 再创建 release tag `v2026.05.08-prod.1`。
+3. 由 Actions 构建镜像并生成 metadata artifact。
+
+### 19.2 当前版本推荐发布分类
+
+本次版本建议按以下发布分级处理：
+
+1. 前端：A 类。
+2. API：B 类。
+3. 后台计算服务：C 类。
+4. 采集链路：本次默认不涉及，不应重启 `modbus_tcp`、`emqx`、`myems_mqtt`。
+
+### 19.3 当前版本推荐生产升级顺序
+
+1. 升级 `web`。
+2. 升级 `admin`。
+3. 升级 `api`。
+4. 升级 `cleaning`、`normalization`、`aggregation`。
+5. 完成登录、总览、产量能耗分析、节能分析的页面回归。
+
+### 19.4 当前版本重点验收点
+
+上线后至少回归以下页面：
+
+1. 总览页面：多产品“产量”“产品单位综合能耗”“单位产品二氧化碳排放”卡片显示正常。
+2. 节能分析页面：饼图恢复显示，颜色与列表顺序一致。
+3. 产量能耗分析页面：详细数据列表在“自由比”和“不比”下均符合预期。
+4. 日期查询页面：结束日期已按整日 `23:59:59` 生效。
