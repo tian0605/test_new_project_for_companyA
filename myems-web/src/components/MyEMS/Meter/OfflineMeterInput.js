@@ -28,6 +28,11 @@ import cellEditFactory from 'react-bootstrap-table2-editor';
 
 const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
   let current_moment = moment();
+  const isBaselineInput = window.location.pathname.indexOf('/meter/baselinemeterinput') === 0;
+  const pageTitle = isBaselineInput ? t('Baseline Meter Input') : t('Offline Meter Input');
+  const dailyReportPath = isBaselineInput ? '/reports/baselinemeterdaily?' : '/reports/offlinemeterdaily?';
+  const inputPath = isBaselineInput ? '/reports/baselinemeterinput' : '/reports/offlinemeterinput';
+
   useEffect(() => {
     let timer = setInterval(() => {
       let is_logged_in = getCookieValue('is_logged_in');
@@ -59,6 +64,7 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
   const [meterList, setMeterList] = useState([]);
   const [OfflinemeterName, setOfflinemeterName] = useState([]);
   const [Offlinemeter, setOfflinemeter] = useState('');
+  const [batchValue, setBatchValue] = useState('');
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
 
   const hasSelectedOfflineMeter = value => value !== null && value !== undefined && String(value).trim().length > 0;
@@ -146,7 +152,7 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
     let isResponseOK = false;
     await fetch(
       APIBaseURL +
-        '/reports/offlinemeterdaily?' +
+        dailyReportPath +
         'offlinemeterid=' +
         Offlinemeter +
         '&reportingperiodstartdatetime=' +
@@ -179,6 +185,7 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
             });
           });
           setMeterList(meters);
+          setBatchValue('');
 
           // enable submit button
           setSubmitButtonDisabled(false);
@@ -294,6 +301,93 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
     setOfflinemeter(target.value);
     setSubmitButtonDisabled(!hasSelectedOfflineMeter(target.value));
   };
+
+  const buildDistributedDailyValues = (totalValue, days) => {
+    const scaledTotal = Math.round(Number(totalValue) * 1000000);
+    const baseScaledValue = Math.floor(scaledTotal / days);
+    const finalScaledValue = scaledTotal - baseScaledValue * (days - 1);
+
+    return Array.from({ length: days }, (_, index) => {
+      const currentScaledValue = index === days - 1 ? finalScaledValue : baseScaledValue;
+      return (currentScaledValue / 1000000).toFixed(6);
+    });
+  };
+
+  const saveBatchChange = async distributedValues => {
+    const param = {
+      meter: Offlinemeter,
+      value: distributedValues.map((dailyValue, index) => [meterList[index].monthdate, dailyValue])
+    };
+
+    let isResponseOK = false;
+    await fetch(APIBaseURL + inputPath, {
+      method: 'POST',
+      headers: {
+        'Content-type': 'application/json',
+        'User-UUID': getCookieValue('user_uuid'),
+        Token: getCookieValue('token')
+      },
+      body: JSON.stringify(param)
+    })
+      .then(response => {
+        if (response.ok) {
+          isResponseOK = true;
+        }
+        return response.json();
+      })
+      .then(json => {
+        if (isResponseOK) {
+          toast.success(t('Successfully Saved'));
+          getmeterslistdata();
+        } else {
+          handleAPIError(json, setRedirect, setRedirectUrl, t, toast);
+        }
+      })
+      .catch(err => {
+        console.log(err);
+      });
+  };
+
+  const handleBatchSubmit = async e => {
+    e.preventDefault();
+
+    if (!hasSelectedOfflineMeter(Offlinemeter) || meterList.length === 0) {
+      toast.error(t('Load Daily Values Before Batch Input'));
+      return;
+    }
+
+    if (batchValue == null || String(batchValue).trim() === '') {
+      toast.error(t('Invalid Batch Value'));
+      return;
+    }
+
+    const numericBatchValue = Number(batchValue);
+    if (Number.isNaN(numericBatchValue) || numericBatchValue < 0) {
+      toast.error(t('Invalid Batch Value'));
+      return;
+    }
+
+    const distributedValues = buildDistributedDailyValues(numericBatchValue, meterList.length);
+    setMeterList(meterList.map((row, index) => ({
+      ...row,
+      daily_value: distributedValues[index]
+    })));
+    await saveBatchChange(distributedValues);
+  };
+
+  const onBatchValueChange = value => {
+    if (value == null || value === '') {
+      setBatchValue('');
+      return;
+    }
+
+    if (!/^\d+(\.\d{0,6})?$/.test(value)) {
+      return;
+    }
+
+    setBatchValue(value);
+  };
+
   const saveChange = async (oldValue, newValue, row, column) => {
     if (newValue == null || newValue === '' || newValue < 0 || oldValue === newValue) {
       row.daily_value = oldValue;
@@ -322,7 +416,7 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
       value: [[row.monthdate, newValue]]
     };
     let isResponseOK = false;
-    await fetch(APIBaseURL + '/reports/offlinemeterinput', {
+    await fetch(APIBaseURL + inputPath, {
       method: 'POST',
       headers: {
         'Content-type': 'application/json',
@@ -354,7 +448,7 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
       <div>
         <Breadcrumb>
           <BreadcrumbItem>{t('Meter Data')}</BreadcrumbItem>
-          <BreadcrumbItem active>{t('Offline Meter Input')}</BreadcrumbItem>
+          <BreadcrumbItem active>{pageTitle}</BreadcrumbItem>
         </Breadcrumb>
       </div>
       <Card className="bg-light mb-3">
@@ -402,6 +496,38 @@ const OfflineMeterInput = ({ setRedirect, setRedirectUrl, t }) => {
                   <ButtonGroup id="submit">
                     <Button size="sm" color="success" disabled={submitButtonDisabled}>
                       {t('Search')}
+                    </Button>
+                  </ButtonGroup>
+                </FormGroup>
+              </Col>
+            </Row>
+          </Form>
+          <Form onSubmit={handleBatchSubmit}>
+            <Row form>
+              <Col xs={8} sm={3}>
+                <FormGroup className="form-group">
+                  <Label className={labelClasses}>{t('Monthly Total Value')}</Label>
+                  <br />
+                  <Input
+                    bsSize="sm"
+                    onChange={e => {
+                      onBatchValueChange(e.target.value);
+                    }}
+                    value={batchValue}
+                    placeholder={t('Enter Monthly Total Value')}
+                  />
+                </FormGroup>
+              </Col>
+              <Col xs="auto">
+                <FormGroup>
+                  <br />
+                  <ButtonGroup id="batch-submit">
+                    <Button
+                      size="sm"
+                      color="primary"
+                      disabled={!hasSelectedOfflineMeter(Offlinemeter) || meterList.length === 0 || batchValue === ''}
+                    >
+                      {t('Distribute To Each Day')}
                     </Button>
                   </ButtonGroup>
                 </FormGroup>

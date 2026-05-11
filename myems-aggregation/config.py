@@ -45,6 +45,16 @@ myems_energy_db = {
     'password': config('MYEMS_ENERGY_DB_PASSWORD', default=''),
 }
 
+# Database connection configuration for MyEMS Energy Baseline Database
+# This database stores baseline hourly aggregations used by saving reports
+myems_energy_baseline_db = {
+    'host': config('MYEMS_ENERGY_BASELINE_DB_HOST', default=myems_energy_db['host']),
+    'port': config('MYEMS_ENERGY_BASELINE_DB_PORT', default=myems_energy_db['port'], cast=int),
+    'database': config('MYEMS_ENERGY_BASELINE_DB_DATABASE', default='myems_energy_baseline_db'),
+    'user': config('MYEMS_ENERGY_BASELINE_DB_USER', default=myems_energy_db['user']),
+    'password': config('MYEMS_ENERGY_BASELINE_DB_PASSWORD', default=myems_energy_db['password']),
+}
+
 # Database connection configuration for MyEMS Billing Database
 # This database contains billing calculations and cost/income data
 myems_billing_db = {

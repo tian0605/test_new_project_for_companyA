@@ -40,23 +40,23 @@ from core.useractivity import access_control, api_key_control
 
 class Reporting:
 
-    def __init__(self):
-        pass
+    def __init__(self, use_baseline_db=False):
+        self.use_baseline_db = use_baseline_db
 
     @staticmethod
     def on_options(req, resp):
         _ = req
         resp.status = falcon.HTTP_200
 
-    @staticmethod
-    def on_post(req, resp):
+    def on_post(self, req, resp):
         if 'API-KEY' not in req.headers or \
                 not isinstance(req.headers['API-KEY'], str) or \
                 len(str.strip(req.headers['API-KEY'])) == 0:
             access_control(req)
         else:
             api_key_control(req)
-        cnx_energy = mysql.connector.connect(**config.myems_energy_db)
+        target_db = config.myems_energy_baseline_db if self.use_baseline_db else config.myems_energy_db
+        cnx_energy = mysql.connector.connect(**target_db)
         cursor_energy = cnx_energy.cursor()
         timezone_offset = int(config.utc_offset[1:3]) * 60 + int(config.utc_offset[4:6])
         if config.utc_offset[0] == '-':
@@ -65,7 +65,7 @@ class Reporting:
         energy_data_list = list()
         """Handles POST requests"""
         try:
-            raw_json = req.stream.read().decode('utf-8')
+            raw_json = req.bounded_stream.read().decode('utf-8')
             new_values = json.loads(raw_json)
             formdata = new_values['value']
             offline_meter_data = dict()

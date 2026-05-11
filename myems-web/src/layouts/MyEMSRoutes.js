@@ -187,6 +187,7 @@ const MyEMSRoutes = () => (
     <Route path="/meter/offlinemetersaving" exact component={OfflineMeterSaving} />
     <Route path="/meter/offlinemeterplan" exact component={OfflineMeterPlan} />
     <Route path="/meter/offlinemeterinput" exact component={OfflineMeterInput} />
+    <Route path="/meter/baselinemeterinput" exact component={OfflineMeterInput} />
 
     {/*Tenant*/}
     <Route path="/tenant/energycategory" exact component={TenantEnergyCategory} />

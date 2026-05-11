@@ -1000,6 +1000,7 @@ VALUES
 (319,'Virtual Meter Saving','/meter/virtualmetersaving',300,1),
 (320,'Meter Comparison','/meter/metercomparison',300,0),
 (321,'Offline Meter Input','/meter/offlinemeterinput',300,0),
+(327,'Baseline Meter Input','/meter/baselinemeterinput',300,0),
 (322,'Meter Plan','/meter/meterplan',300,1),
 (323,'Offline Meter Plan','/meter/offlinemeterplan',300,1),
 (324,'Virtual Meter Plan','/meter/virtualmeterplan',300,1),
