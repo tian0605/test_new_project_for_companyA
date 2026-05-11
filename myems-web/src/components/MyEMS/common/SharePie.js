@@ -76,6 +76,7 @@ const SharePie = ({ data, title }) => {
   const { isDark } = useContext(AppContext);
   const normalizedData = normalizePieData(data);
   const totalShare = normalizedData.map(d => d.value).reduce((total, currentValue) => total + currentValue, 0);
+  const totalShareFixed = Number.isInteger(totalShare) ? 0 : 2;
   return (
     <Card className="h-md-100">
       <CardBody>
@@ -95,7 +96,7 @@ const SharePie = ({ data, title }) => {
                 style={{ width: '6.625rem', height: '6.625rem' }}
               />
               <div className="absolute-centered font-weight-medium text-dark fs-2">
-                {numberFormatter(totalShare, 0)}
+                {numberFormatter(totalShare, totalShareFixed)}
               </div>
             </div>
           </Col>

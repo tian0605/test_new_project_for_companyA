@@ -220,7 +220,7 @@ class MenuTemplateCollection:
     def on_post(req, resp):
         admin_control(req)
         try:
-            raw_json = req.bounded_stream.read().decode('utf-8')
+            raw_json = req.stream.read().decode('utf-8')
             new_values = json.loads(raw_json)
         except UnicodeDecodeError:
             raise falcon.HTTPError(status=falcon.HTTP_400,
@@ -319,7 +319,7 @@ class MenuTemplateItem:
     def on_put(req, resp, id_):
         admin_control(req)
         try:
-            raw_json = req.bounded_stream.read().decode('utf-8')
+            raw_json = req.stream.read().decode('utf-8')
             new_values = json.loads(raw_json)
         except UnicodeDecodeError:
             raise falcon.HTTPError(status=falcon.HTTP_400,

@@ -676,6 +676,25 @@ docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml
 
 在网络较好的中转机或验证机执行：
 
+优先使用仓库内脚本自动打包当前发布范围：
+
+```bash
+cd /home/ubuntu/myems-complete
+bash scripts/package-release-offline-images.sh \
+  v2026.05.08-prod.1 \
+  ghcr.io/tian0605/myems \
+  /home/ubuntu/offline-packages \
+  emqx/emqx:latest
+```
+
+说明：
+
+1. 该脚本会拉取当前发布范围镜像：`web`、`admin`、`api`、`aggregation`、`cleaning`、`normalization`。
+2. 该脚本会同时生成离线 tar 包、manifest 和 `docker-images.env`。
+3. 若本次发布不涉及 MQTT 或采集链路，仍然不要顺带打包或重启 `emqx`、`myems_mqtt`、`modbus_tcp`。
+
+若需要手工打包，仍可执行以下命令：
+
 ```bash
 docker login ghcr.io -u <github-user>
 
@@ -761,7 +780,7 @@ docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml
 
 ```bash
 cd /home/ubuntu
-docker load -i myems-v2026.05.08-prod.1-images.tar
+docker load -i myems-v2026.05.08-prod.1-offline-images.tar
 
 cd /home/ubuntu/myems-complete/others
 docker compose --env-file docker-images.env -f docker-compose-on-linux.image.yml up -d --no-build web admin api cleaning normalization aggregation
@@ -795,11 +814,36 @@ sudo docker compose -f docker-compose-on-linux.yml up -d --build <service-name>
 sudo docker compose -f docker-compose-on-linux.yml ps
 ```
 
+若本次已经审批允许在生产机现场构建，且生产机内存紧张，应优先按“先停高内存后台服务，再逐个重建目标服务”的方式执行，而不是直接全量 `up -d --build`。
+
+适用范围：
+
+1. 本次主要变更服务为 `api`、`admin`、`web`。
+2. 不涉及 `modbus_tcp`、`emqx`、`myems_mqtt`。
+3. 已明确这是一次例外的现场构建发布。
+
+推荐命令：
+
+```bash
+cd /home/ubuntu/myems-complete/others
+chmod +x build-on-production-low-memory.sh
+sudo ./build-on-production-low-memory.sh api admin web
+```
+
+脚本行为：
+
+1. 先停止 `aggregation`、`cleaning`、`normalization` 以释放内存。
+2. 逐个停止并重建 `api`、`admin`、`web`，避免并发 build 占满内存。
+3. 每个服务启动后立即执行 `ps`、最近日志和 HTTP 检查。
+4. 构建完成后恢复 `aggregation`、`cleaning`、`normalization`。
+5. 默认拒绝操作 `modbus_tcp`、`emqx`、`myems_mqtt`。
+
 限制：
 
 1. 低内存生产环境默认禁止使用。
 2. 必须经运维负责人审批。
 3. 仅允许对受影响服务做最小范围重建。
+4. 若本次涉及采集链路，不能直接复用该脚本，必须单独设计停机与恢复顺序。
 
 ## 13. 发布后验证命令清单
 

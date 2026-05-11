@@ -13,6 +13,8 @@ services:
   api:
     image: ${MYEMS_API_IMAGE:-myems/api:latest}
     command: gunicorn app:api -b 0.0.0.0:8000 --timeout 600 --workers=4
+    env_file:
+      - ../myems-api/.env
     volumes:
       - /myems-upload:/var/www/myems-admin/upload
     restart: always
@@ -22,16 +24,22 @@ services:
   aggregation:
     image: ${MYEMS_AGGREGATION_IMAGE:-myems/aggregation:latest}
     command: python main.py
+    env_file:
+      - ../myems-aggregation/.env
     restart: always
 
   cleaning:
     image: ${MYEMS_CLEANING_IMAGE:-myems/cleaning:latest}
     command: python main.py
+    env_file:
+      - ../myems-cleaning/.env
     restart: always
 
   modbus_tcp:
     image: ${MYEMS_MODBUS_TCP_IMAGE:-myems/modbus-tcp:latest}
     command: python main.py
+    env_file:
+      - ../myems-modbus-tcp/.env
     restart: always
 
   myems_mqtt:
@@ -46,6 +54,8 @@ services:
   normalization:
     image: ${MYEMS_NORMALIZATION_IMAGE:-myems/normalization:latest}
     command: python main.py
+    env_file:
+      - ../myems-normalization/.env
     restart: always
 
   admin:
