@@ -969,7 +969,7 @@ class UserLogin:
     def on_put(req, resp):
         """Handles PUT requests"""
         try:
-            raw_json = req.stream.read().decode('utf-8')
+            raw_json = req.bounded_stream.read().decode('utf-8')
             new_values = json.loads(raw_json)
         except UnicodeDecodeError as ex:
             print("Failed to decode request")

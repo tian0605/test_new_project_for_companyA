@@ -1387,8 +1387,12 @@ api.add_route('/reports/offlinemeterenergy',
               offlinemeterenergy.Reporting())
 api.add_route('/reports/offlinemeterdaily',
               offlinemeterdaily.Reporting())
+api.add_route('/reports/baselinemeterdaily',
+              offlinemeterdaily.Reporting(use_baseline_db=True))
 api.add_route('/reports/offlinemeterinput',
               offlinemeterinput.Reporting())
+api.add_route('/reports/baselinemeterinput',
+              offlinemeterinput.Reporting(use_baseline_db=True))
 api.add_route('/reports/offlinemetersaving',
               offlinemetersaving.Reporting())
 api.add_route('/reports/offlinemeterplan',

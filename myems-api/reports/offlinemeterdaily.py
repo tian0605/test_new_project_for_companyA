@@ -40,9 +40,9 @@ from decimal import Decimal
 
 
 class Reporting:
-    def __init__(self):
+    def __init__(self, use_baseline_db=False):
         """"Initializes Reporting"""
-        pass
+        self.use_baseline_db = use_baseline_db
 
     @staticmethod
     def on_options(req, resp):
@@ -58,8 +58,7 @@ class Reporting:
     # Step 5: query tariff data
     # Step 6: construct the report
     ####################################################################################################################
-    @staticmethod
-    def on_get(req, resp):
+    def on_get(self, req, resp):
         if 'API-KEY' not in req.headers or \
                 not isinstance(req.headers['API-KEY'], str) or \
                 len(str.strip(req.headers['API-KEY'])) == 0:
@@ -135,7 +134,8 @@ class Reporting:
         cnx_system = mysql.connector.connect(**config.myems_system_db)
         cursor_system = cnx_system.cursor()
 
-        cnx_energy = mysql.connector.connect(**config.myems_energy_db)
+        target_db = config.myems_energy_baseline_db if self.use_baseline_db else config.myems_energy_db
+        cnx_energy = mysql.connector.connect(**target_db)
         cursor_historical = cnx_energy.cursor()
         if offline_meter_id is not None:
             cursor_system.execute(" SELECT id, name   "

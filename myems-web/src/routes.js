@@ -85,7 +85,8 @@ export const meterRoutes = {
     { to: '/meter/offlinemeterbatch', name: 'Offline Meter Batch Analysis' },
     { to: '/meter/offlinemetersaving', name: 'Offline Meter Saving' },
     { to: '/meter/offlinemeterplan', name: 'Offline Meter Plan' },
-    { to: '/meter/offlinemeterinput', name: 'Offline Meter Input' }
+    { to: '/meter/offlinemeterinput', name: 'Offline Meter Input' },
+    { to: '/meter/baselinemeterinput', name: 'Baseline Meter Input' }
   ]
 };
 

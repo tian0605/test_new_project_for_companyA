@@ -120,7 +120,8 @@ var WEB_MENU_SECTIONS = [
             { state: '/meter/offlinemeterbatch', name: 'Offline Meter Batch Analysis' },
             { state: '/meter/offlinemetersaving', name: 'Offline Meter Saving' },
             { state: '/meter/offlinemeterplan', name: 'Offline Meter Plan' },
-            { state: '/meter/offlinemeterinput', name: 'Offline Meter Input' }
+            { state: '/meter/offlinemeterinput', name: 'Offline Meter Input' },
+            { state: '/meter/baselinemeterinput', name: 'Baseline Meter Input' }
         ]
     },
     {

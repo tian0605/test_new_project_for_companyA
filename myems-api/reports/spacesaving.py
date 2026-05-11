@@ -133,6 +133,21 @@ class Reporting:
         if config.utc_offset[0] == '-':
             timezone_offset = -timezone_offset
 
+        def exclude_current_incomplete_local_day(end_datetime_utc):
+            if end_datetime_utc is None or period_type == 'hourly':
+                return end_datetime_utc
+
+            current_datetime_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+            current_datetime_local = current_datetime_utc + timedelta(minutes=timezone_offset)
+            current_day_start_local = current_datetime_local.replace(hour=0, minute=0, second=0, microsecond=0)
+            current_day_start_utc = current_day_start_local - timedelta(minutes=timezone_offset)
+            end_datetime_local = end_datetime_utc + timedelta(minutes=timezone_offset)
+
+            if end_datetime_local.date() == current_datetime_local.date() and end_datetime_utc > current_day_start_utc:
+                return current_day_start_utc - timedelta(seconds=1)
+
+            return end_datetime_utc
+
         base_start_datetime_utc = None
         if base_period_start_datetime_local is not None and len(str.strip(base_period_start_datetime_local)) > 0:
             base_period_start_datetime_local = str.strip(base_period_start_datetime_local)
@@ -159,6 +174,7 @@ class Reporting:
                                        description="API.INVALID_BASE_PERIOD_END_DATETIME")
             base_end_datetime_utc = \
                 base_end_datetime_utc.replace(tzinfo=timezone.utc) - timedelta(minutes=timezone_offset)
+            base_end_datetime_utc = exclude_current_incomplete_local_day(base_end_datetime_utc)
 
         if base_start_datetime_utc is not None and base_end_datetime_utc is not None and \
                 base_start_datetime_utc >= base_end_datetime_utc:
@@ -196,6 +212,7 @@ class Reporting:
             except ValueError:
                 raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',
                                        description="API.INVALID_REPORTING_PERIOD_END_DATETIME")
+            reporting_end_datetime_utc = exclude_current_incomplete_local_day(reporting_end_datetime_utc)
 
         if reporting_start_datetime_utc >= reporting_end_datetime_utc:
             raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST',

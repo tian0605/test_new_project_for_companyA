@@ -19,6 +19,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Removed
 - removed the defalut interval_in_seconds from config in myems-modbus-tcp
 
+## [v6.3.7] - 2026-05-10
+### Added
+- added baseline meter input menu, routes and API endpoints for baseline offline meter daily data entry
+- added baseline space energy category aggregation worker in myems-aggregation
+- added monthly total batch distribution input for offline meter data entry in myems-web
+- added offline image packaging scripts for production release preparation
+### Changed
+- clarified the space saving report warning that product filtering is not supported because the report is aggregated at the space level
+- updated menu templates and translations for baseline meter input in myems-admin and myems-web
+### Fixed
+- fixed spacesaving daily and higher-period charts to exclude the current unfinished day
+- fixed baseline steam and fresh water values not appearing in the space saving report after baseline aggregation
+- fixed request body reads in selected Falcon handlers by using bounded streams
+### Removed
+- removed the extra webpack-dev-server dependency from myems-web
+
 ## [v6.3.0] - 2026-03-28
 ### Added
 - added Japanese translations in myems-admin and myems-web

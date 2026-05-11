@@ -47,6 +47,7 @@ import shopfloor_billing_input_item
 import shopfloor_carbon_input_category
 import shopfloor_energy_input_category
 import shopfloor_energy_input_item
+import baseline_space_energy_input_category
 import space_billing_input_category
 import space_billing_input_item
 import space_billing_output_category
@@ -179,6 +180,8 @@ def main():
     Process(target=space_carbon_input_category.main, args=(logger,)).start()
     # Space energy input by energy categories
     Process(target=space_energy_input_category.main, args=(logger,)).start()
+    # Space baseline energy input by energy categories
+    Process(target=baseline_space_energy_input_category.main, args=(logger,)).start()
     # Space energy input by energy items
     Process(target=space_energy_input_item.main, args=(logger,)).start()
     # Space energy output by energy categories
