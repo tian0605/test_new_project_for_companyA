@@ -1057,6 +1057,10 @@ VALUES
 (800,'Auxiliary System','/auxiliarysystem',NULL,0),
 (801,'Energy Flow Diagram','/auxiliarysystem/energyflowdiagram',800,0),
 (802,'Distribution System','/auxiliarysystem/distributionsystem',800,0),
+(1300,'Product Carbon Footprint','/carbon',NULL,0),
+(1301,'Supply Material Maintenance','/carbon/supply',1300,0),
+(1303,'Product Carbon Dictionary','/carbon/dictionary',1300,0),
+(1302,'Product Carbon Footprint Accounting','/carbon/footprint',1300,0),
 (1200,'Knowledge Base','/knowledgebase',NULL,0);
 
 -- ---------------------------------------------------------------------------------------------------------------------

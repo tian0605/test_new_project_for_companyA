@@ -1,5 +1,3 @@
-import { Trans } from 'react-i18next';
-
 //  NOTE: if you changed names below, you must change names in i18n.js
 export const dashboardRoutes = {
   name: 'Dashboard',
@@ -176,6 +174,16 @@ export const auxiliarySystemRoutes = {
   ]
 };
 
+export const productCarbonRoutes = {
+  name: 'Product Carbon Footprint',
+  to: '/carbon',
+  icon: 'leaf',
+  children: [
+    { to: '/carbon/supply', name: 'Supply Material Maintenance' },
+    { to: '/carbon/dictionary', name: 'Product Carbon Dictionary' },
+    { to: '/carbon/footprint', name: 'Product Carbon Footprint Accounting' }
+  ]
+};
 
 export const knowledgeBaseRoutes = {
   name: 'Knowledge Base',
@@ -184,7 +192,7 @@ export const knowledgeBaseRoutes = {
   icon: 'folder'
 };
 
-export default [
+const routes = [
   dashboardRoutes,
   spaceRoutes,
   equipmentRoutes,
@@ -194,5 +202,8 @@ export default [
   shopfloorRoutes,
   combinedEquipmentRoutes,
   auxiliarySystemRoutes,
+  productCarbonRoutes,
   knowledgeBaseRoutes
 ];
+
+export default routes;

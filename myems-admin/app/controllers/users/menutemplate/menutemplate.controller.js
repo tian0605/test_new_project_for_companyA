@@ -196,6 +196,14 @@ var WEB_MENU_SECTIONS = [
         ]
     },
     {
+        groupTitle: 'Product Carbon Footprint',
+        routes: [
+            { state: '/carbon/supply', name: 'Supply Material Maintenance' },
+            { state: '/carbon/dictionary', name: 'Product Carbon Dictionary' },
+            { state: '/carbon/footprint', name: 'Product Carbon Footprint Accounting' }
+        ]
+    },
+    {
         groupTitle: 'Knowledge Base',
         routes: [
             { state: '/knowledgebase', name: 'Knowledge Base' }

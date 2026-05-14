@@ -9,7 +9,7 @@ from core import advancedreport, apikey, command, controlmode, energyflowdiagram
     costcenter, point, knowledgefile, meter, tariff, user, storetype, timezone, \
     costfile, offlinemeterfile, version, contact, emailserver, combinedequipment, datasource, equipment, tenant, \
     shopfloor, webmessage, distributionsystem, store, emailmessage, tenanttype, wechatmessage, space, gateway, \
-    offlinemeter, product, rule, energycategory, sensor, energyitem, notification, menu, datarepairfile, workingcalendar, \
+    offlinemeter, product, productcarbon, rule, energycategory, sensor, energyitem, notification, menu, datarepairfile, workingcalendar, \
     microgrid,  virtualpowerplant, energystoragecontainer, energystoragepowerstation, photovoltaicpowerstation, \
     windfarm, energyplanfile, svg, protocol, ticket, iotsimcard, log
 
@@ -281,6 +281,24 @@ api.add_route('/products',
               product.ProductCollection())
 api.add_route('/products/{id_}',
               product.ProductItem())
+api.add_route('/product-carbon-dictionaries',
+              productcarbon.ProductCarbonDictionaryCollection())
+api.add_route('/product-carbon-dictionaries/{id_}',
+              productcarbon.ProductCarbonDictionaryItem())
+api.add_route('/product-carbon-products',
+              productcarbon.ProductCarbonProductCollection())
+api.add_route('/product-carbon-supplies',
+              productcarbon.ProductCarbonSupplyCollection())
+api.add_route('/product-carbon-supplies/{id_}',
+              productcarbon.ProductCarbonSupplyItem())
+api.add_route('/product-carbon-footprints',
+              productcarbon.ProductCarbonFootprintCollection())
+api.add_route('/product-carbon-footprints/{id_}',
+              productcarbon.ProductCarbonFootprintItem())
+api.add_route('/product-carbon-activities',
+              productcarbon.ProductCarbonActivityCollection())
+api.add_route('/product-carbon-activities/{id_}',
+              productcarbon.ProductCarbonActivityItem())
 
 api.add_route('/controlmodes',
               controlmode.ControlModeCollection())

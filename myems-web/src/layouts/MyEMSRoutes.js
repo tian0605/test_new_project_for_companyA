@@ -111,6 +111,10 @@ import CombinedEquipmentComparison from '../components/MyEMS/CombinedEquipment/C
 // Auxiliary System
 import EnergyFlowDiagram from '../components/MyEMS/AuxiliarySystem/EnergyFlowDiagram';
 import DistributionSystem from '../components/MyEMS/AuxiliarySystem/DistributionSystem';
+// Product Carbon Footprint
+import ProductCarbonSupply from '../components/MyEMS/ProductCarbon/ProductCarbonSupply';
+import ProductCarbonFootprint from '../components/MyEMS/ProductCarbon/ProductCarbonFootprint';
+import ProductCarbonDictionary from '../components/MyEMS/ProductCarbon/ProductCarbonDictionary';
 // Knowledge Base
 import KnowledgeBase from '../components/MyEMS/KnowledgeBase/KnowledgeBase';
 // Notification
@@ -245,6 +249,11 @@ const MyEMSRoutes = () => (
     {/*Auxiliary System*/}
     <Route path="/auxiliarysystem/energyflowdiagram" exact component={EnergyFlowDiagram} />
     <Route path="/auxiliarysystem/distributionsystem" exact component={DistributionSystem} />
+
+    {/*Product Carbon Footprint*/}
+    <Route path="/carbon/supply" exact component={ProductCarbonSupply} />
+    <Route path="/carbon/dictionary" exact component={ProductCarbonDictionary} />
+    <Route path="/carbon/footprint" exact component={ProductCarbonFootprint} />
 
     {/*Knowledge Base*/}
     <Route path="/knowledgebase" exact component={KnowledgeBase} />

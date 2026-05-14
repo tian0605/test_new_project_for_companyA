@@ -1016,6 +1016,7 @@ app
                                                     'app/services/settings/meter/offlinemeter.service.js',
                                                     'app/services/settings/equipment/equipment.service.js',
                                                     'app/services/settings/combinedequipment/combinedequipment.service.js',
+                                                    'app/services/settings/product/product.service.js',
                                                     'app/services/settings/distributionsystem/distributionsystem.service.js',
                                                     'app/services/settings/energyflowdiagram/energyflowdiagram.service.js',
                                                     'app/services/settings/energystoragepowerstation/energystoragepowerstation.service.js',

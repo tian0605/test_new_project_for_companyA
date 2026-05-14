@@ -56,8 +56,8 @@ app.controller('SpaceProductController', function(
                 treedata.core.data.push(node);
             }
 
-            angular.element(spacetreewithproduct).jstree(treedata);
-            angular.element(spacetreewithproduct).on('changed.jstree', function(e, data) {
+            angular.element('#spacetreewithproduct').jstree(treedata);
+            angular.element('#spacetreewithproduct').on('changed.jstree', function(e, data) {
                 if (data.selected && data.selected.length > 0) {
                     $scope.currentSpaceID = parseInt(data.selected[0]);
                     $scope.isSpaceSelected = true;
@@ -118,7 +118,7 @@ app.controller('SpaceProductController', function(
             return;
         }
         var productid = angular.element('#' + dragEl).scope().product.id;
-        var spaceid = angular.element(spacetreewithproduct).jstree(true).get_top_selected();
+        var spaceid = angular.element('#spacetreewithproduct').jstree(true).get_top_selected();
         let headers = { 'User-UUID': $scope.cur_user.uuid, 'Token': $scope.cur_user.token };
         SpaceProductService.addPair(spaceid, productid, headers, function(response) {
             if (angular.isDefined(response.status) && response.status === 201) {
@@ -149,7 +149,7 @@ app.controller('SpaceProductController', function(
             return;
         }
         var spaceproductid = angular.element('#' + dragEl).scope().spaceproduct.id;
-        var spaceid = angular.element(spacetreewithproduct).jstree(true).get_top_selected();
+        var spaceid = angular.element('#spacetreewithproduct').jstree(true).get_top_selected();
         let headers = { 'User-UUID': $scope.cur_user.uuid, 'Token': $scope.cur_user.token };
         SpaceProductService.deletePair(spaceid, spaceproductid, headers, function(response) {
             if (angular.isDefined(response.status) && response.status === 204) {
@@ -226,8 +226,8 @@ app.controller('SpaceProductController', function(
                 treedata.core.data.push(node);
             }
 
-            angular.element(spacetreewithproduct).jstree(true).settings.core.data = treedata.core.data;
-            angular.element(spacetreewithproduct).jstree(true).refresh();
+            angular.element('#spacetreewithproduct').jstree(true).settings.core.data = treedata.core.data;
+            angular.element('#spacetreewithproduct').jstree(true).refresh();
             $scope.isSpaceSelected = false;
             $scope.spaceproducts = [];
             safeApply($scope);
