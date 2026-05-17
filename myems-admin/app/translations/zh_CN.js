@@ -2432,7 +2432,7 @@
       "Virtual Meter Comparison": "虚拟表对比分析",
       "Power Quality": "电能质量",
       "Product Carbon Footprint": "产品碳足迹",
-      "Supply Material Maintenance": "供应物料维护",
+        "Supply Material Maintenance": "供应链碳管理",
       "Product Carbon Dictionary": "物料类别字典",
       "Product Carbon Footprint Accounting": "产品碳足迹核算",
       "Tenant Data": "租户数据",
