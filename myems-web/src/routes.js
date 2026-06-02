@@ -179,6 +179,7 @@ export const productCarbonRoutes = {
   to: '/carbon',
   icon: 'leaf',
   children: [
+    { to: '/carbon/asset', name: 'Carbon Asset Management' },
     { to: '/carbon/supply', name: 'Supply Material Maintenance' },
     { to: '/carbon/dictionary', name: 'Product Carbon Dictionary' },
     { to: '/carbon/footprint', name: 'Product Carbon Footprint Accounting' }
