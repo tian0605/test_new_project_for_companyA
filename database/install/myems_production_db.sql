@@ -205,6 +205,80 @@ ON `myems_production_db`.`tbl_product_carbon_activities` (`enterprise_space_id`,
 CREATE INDEX `tbl_product_carbon_activities_index_2`
 ON `myems_production_db`.`tbl_product_carbon_activities` (`supply_id`);
 
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Table `myems_production_db`.`tbl_carbon_assets`
+-- ---------------------------------------------------------------------------------------------------------------------
+DROP TABLE IF EXISTS `myems_production_db`.`tbl_carbon_assets` ;
+
+CREATE TABLE IF NOT EXISTS `myems_production_db`.`tbl_carbon_assets` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `uuid` CHAR(36) NOT NULL,
+  `enterprise_space_id` BIGINT NOT NULL DEFAULT 0,
+  `space_id` BIGINT NOT NULL,
+  `accounting_year` INT NOT NULL,
+  `government_quota` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `previous_year_quota` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `purchased_quota` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `sold_quota` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `own_ccer` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `purchased_ccer` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `sold_ccer` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `purchased_green_certificate` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `sold_green_certificate` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `retired_green_certificate` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `quota_total` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `ccer_total` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `green_certificate_total` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `data_status` VARCHAR(32) NOT NULL DEFAULT 'active',
+  `remark` VARCHAR(255) NOT NULL DEFAULT '',
+  `created_datetime_utc` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_datetime_utc` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`));
+CREATE INDEX `tbl_carbon_assets_index_1`
+ON `myems_production_db`.`tbl_carbon_assets` (`enterprise_space_id`, `space_id`, `accounting_year`);
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Table `myems_production_db`.`tbl_carbon_asset_monthly_quotas`
+-- ---------------------------------------------------------------------------------------------------------------------
+DROP TABLE IF EXISTS `myems_production_db`.`tbl_carbon_asset_monthly_quotas` ;
+
+CREATE TABLE IF NOT EXISTS `myems_production_db`.`tbl_carbon_asset_monthly_quotas` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `carbon_asset_id` BIGINT NOT NULL,
+  `month_of_year` TINYINT NOT NULL,
+  `quota_amount` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `remark` VARCHAR(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (`id`));
+CREATE UNIQUE INDEX `tbl_carbon_asset_monthly_quotas_index_1`
+ON `myems_production_db`.`tbl_carbon_asset_monthly_quotas` (`carbon_asset_id`, `month_of_year`);
+
+-- ---------------------------------------------------------------------------------------------------------------------
+-- Table `myems_production_db`.`tbl_carbon_market_histories`
+-- ---------------------------------------------------------------------------------------------------------------------
+DROP TABLE IF EXISTS `myems_production_db`.`tbl_carbon_market_histories` ;
+
+CREATE TABLE IF NOT EXISTS `myems_production_db`.`tbl_carbon_market_histories` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `uuid` CHAR(36) NOT NULL,
+  `trade_date` DATE NOT NULL,
+  `market_code` VARCHAR(32) NOT NULL,
+  `variety_code` VARCHAR(32) NOT NULL,
+  `open_price` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `close_price` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `high_price` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `low_price` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `change_value` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `change_rate` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `trading_volume` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `trading_amount` DECIMAL(21, 6) NOT NULL DEFAULT 0,
+  `source_name` VARCHAR(128) NOT NULL DEFAULT '广州碳排放权交易中心',
+  `source_file_name` VARCHAR(255) NOT NULL DEFAULT '',
+  `import_batch_id` CHAR(36) NOT NULL DEFAULT '',
+  `import_datetime_utc` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`));
+CREATE UNIQUE INDEX `tbl_carbon_market_histories_index_1`
+ON `myems_production_db`.`tbl_carbon_market_histories` (`trade_date`, `market_code`, `variety_code`);
+
 
 -- ---------------------------------------------------------------------------------------------------------------------
 -- Table `myems_production_db`.`tbl_teams`

@@ -200,7 +200,8 @@ var WEB_MENU_SECTIONS = [
         routes: [
             { state: '/carbon/supply', name: 'Supply Material Maintenance' },
             { state: '/carbon/dictionary', name: 'Product Carbon Dictionary' },
-            { state: '/carbon/footprint', name: 'Product Carbon Footprint Accounting' }
+            { state: '/carbon/footprint', name: 'Product Carbon Footprint Accounting' },
+            { state: '/carbon/asset', name: 'Carbon Asset Management' }
         ]
     },
     {

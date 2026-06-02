@@ -10,7 +10,7 @@ from core import advancedreport, apikey, command, controlmode, energyflowdiagram
     costfile, offlinemeterfile, version, contact, emailserver, combinedequipment, datasource, equipment, tenant, \
     shopfloor, webmessage, distributionsystem, store, emailmessage, tenanttype, wechatmessage, space, gateway, \
     offlinemeter, product, productcarbon, rule, energycategory, sensor, energyitem, notification, menu, datarepairfile, workingcalendar, \
-    microgrid,  virtualpowerplant, energystoragecontainer, energystoragepowerstation, photovoltaicpowerstation, \
+    microgrid,  virtualpowerplant, energystoragecontainer, energystoragepowerstation, photovoltaicpowerstation, carbonasset, \
     windfarm, energyplanfile, svg, protocol, ticket, iotsimcard, log
 
 from reports import advancedreportfile
@@ -299,6 +299,18 @@ api.add_route('/product-carbon-activities',
               productcarbon.ProductCarbonActivityCollection())
 api.add_route('/product-carbon-activities/{id_}',
               productcarbon.ProductCarbonActivityItem())
+api.add_route('/carbon-assets',
+              carbonasset.CarbonAssetCollection())
+api.add_route('/carbon-assets/{id_}',
+              carbonasset.CarbonAssetItem())
+api.add_route('/carbon-assets/{id_}/monthly-quotas',
+              carbonasset.CarbonAssetMonthlyQuotaCollection())
+api.add_route('/carbon-assets/{id_}/overview',
+              carbonasset.CarbonAssetOverview())
+api.add_route('/carbon-market-histories',
+              carbonasset.CarbonMarketHistoryCollection())
+api.add_route('/carbon-market-histories/import',
+              carbonasset.CarbonMarketHistoryImport())
 
 api.add_route('/controlmodes',
               controlmode.ControlModeCollection())
