@@ -108,6 +108,42 @@ const marketCellStyle = {
   verticalAlign: 'middle'
 };
 
+const annualListHeaderCellStyle = {
+  padding: '8px 12px',
+  fontSize: '12px',
+  lineHeight: 1.15,
+  color: '#595959',
+  fontWeight: 500,
+  verticalAlign: 'middle'
+};
+
+const annualListHeaderTitleWrapStyle = {
+  minHeight: '34px',
+  display: 'flex',
+  alignItems: 'center'
+};
+
+const annualListHeaderMetricWrapStyle = {
+  minHeight: '34px',
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'center'
+};
+
+const annualListHeaderUnitStyle = {
+  marginTop: '2px',
+  fontSize: '10px',
+  lineHeight: 1.1,
+  fontWeight: 400,
+  color: '#8c8c8c'
+};
+
+const annualListCellStyle = {
+  padding: '10px 12px',
+  verticalAlign: 'middle',
+  whiteSpace: 'nowrap'
+};
+
 const CarbonAssetManagement = ({ setRedirect, setRedirectUrl, t }) => {
   const [spaces, setSpaces] = useState([]);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
@@ -789,81 +825,47 @@ const CarbonAssetManagement = ({ setRedirect, setRedirectUrl, t }) => {
 
       <Card className="mb-3 border-0" style={{ borderRadius: '6px', boxShadow: '0 1px 2px rgba(0, 0, 0, 0.06)' }}>
         <CardBody style={{ padding: 0 }}>
-          <Table hover responsive className="mb-0">
+          <Table hover responsive className="mb-0" style={{ tableLayout: 'fixed' }}>
             <thead style={{ backgroundColor: '#fafafa' }}>
               <tr>
-                <th
-                  className="border-top-0"
-                  style={{ padding: '8px 12px', fontSize: '12px', lineHeight: 1.15, color: '#595959', fontWeight: 500 }}
-                >
-                  {t('Year')}
+                <th className="border-top-0" style={{ ...annualListHeaderCellStyle, width: '8%' }}>
+                  <div style={annualListHeaderTitleWrapStyle}>{t('Year')}</div>
                 </th>
-                <th
-                  className="border-top-0"
-                  style={{ padding: '8px 12px', fontSize: '12px', lineHeight: 1.15, color: '#595959', fontWeight: 500 }}
-                >
-                  {t('Enterprise Space')}
+                <th className="border-top-0" style={{ ...annualListHeaderCellStyle, width: '28%' }}>
+                  <div style={annualListHeaderTitleWrapStyle}>{t('Enterprise Space')}</div>
                 </th>
-                <th
-                  className="border-top-0"
-                  style={{ padding: '8px 12px', fontSize: '12px', lineHeight: 1.15, color: '#595959', fontWeight: 500 }}
-                >
-                  {t('Allowance Quota')}
-                  <div
-                    style={{ marginTop: '2px', fontSize: '10px', lineHeight: 1.1, fontWeight: 400, color: '#8c8c8c' }}
-                  >
-                    (tCO2e)
+                <th className="border-top-0" style={{ ...annualListHeaderCellStyle, width: '8%' }}>
+                  <div style={annualListHeaderMetricWrapStyle}>
+                    {t('Allowance Quota')}
+                    <div style={annualListHeaderUnitStyle}>(tCO2e)</div>
                   </div>
                 </th>
-                <th
-                  className="border-top-0"
-                  style={{ padding: '8px 12px', fontSize: '12px', lineHeight: 1.15, color: '#595959', fontWeight: 500 }}
-                >
-                  CCER
-                  <div
-                    style={{ marginTop: '2px', fontSize: '10px', lineHeight: 1.1, fontWeight: 400, color: '#8c8c8c' }}
-                  >
-                    (tCO2e)
+                <th className="border-top-0" style={{ ...annualListHeaderCellStyle, width: '7%' }}>
+                  <div style={annualListHeaderMetricWrapStyle}>
+                    CCER
+                    <div style={annualListHeaderUnitStyle}>(tCO2e)</div>
                   </div>
                 </th>
-                <th
-                  className="border-top-0"
-                  style={{ padding: '8px 12px', fontSize: '12px', lineHeight: 1.15, color: '#595959', fontWeight: 500 }}
-                >
-                  {t('Green Certificate')}
-                  <div
-                    style={{ marginTop: '2px', fontSize: '10px', lineHeight: 1.1, fontWeight: 400, color: '#8c8c8c' }}
-                  >
-                    (kWh)
+                <th className="border-top-0" style={{ ...annualListHeaderCellStyle, width: '8%' }}>
+                  <div style={annualListHeaderMetricWrapStyle}>
+                    {t('Green Certificate')}
+                    <div style={annualListHeaderUnitStyle}>(kWh)</div>
                   </div>
                 </th>
-                <th
-                  className="border-top-0"
-                  style={{ padding: '8px 12px', fontSize: '12px', lineHeight: 1.15, color: '#595959', fontWeight: 500 }}
-                >
-                  {t('Annual Emissions')}
-                  <div
-                    style={{ marginTop: '2px', fontSize: '10px', lineHeight: 1.1, fontWeight: 400, color: '#8c8c8c' }}
-                  >
-                    (tCO2e)
+                <th className="border-top-0" style={{ ...annualListHeaderCellStyle, width: '11%' }}>
+                  <div style={annualListHeaderMetricWrapStyle}>
+                    {t('Annual Emissions')}
+                    <div style={annualListHeaderUnitStyle}>(tCO2e)</div>
                   </div>
                 </th>
-                <th
-                  className="border-top-0"
-                  style={{ padding: '8px 12px', fontSize: '12px', lineHeight: 1.15, color: '#595959', fontWeight: 500 }}
-                >
-                  {t('Remaining Allowance')}
-                  <div
-                    style={{ marginTop: '2px', fontSize: '10px', lineHeight: 1.1, fontWeight: 400, color: '#8c8c8c' }}
-                  >
-                    (tCO2e)
+                <th className="border-top-0" style={{ ...annualListHeaderCellStyle, width: '12%' }}>
+                  <div style={annualListHeaderMetricWrapStyle}>
+                    {t('Remaining Allowance')}
+                    <div style={annualListHeaderUnitStyle}>(tCO2e)</div>
                   </div>
                 </th>
-                <th
-                  className="border-top-0"
-                  style={{ padding: '8px 12px', fontSize: '12px', lineHeight: 1.15, color: '#595959', fontWeight: 500 }}
-                >
-                  {t('Operation')}
+                <th className="border-top-0" style={{ ...annualListHeaderCellStyle, width: '18%' }}>
+                  <div style={annualListHeaderTitleWrapStyle}>{t('Operation')}</div>
                 </th>
               </tr>
             </thead>
@@ -877,24 +879,29 @@ const CarbonAssetManagement = ({ setRedirect, setRedirectUrl, t }) => {
               )}
               {assets.map(asset => (
                 <tr key={asset.id} className={selectedAsset && selectedAsset.id === asset.id ? 'table-primary' : ''}>
-                  <td style={{ padding: '10px 12px', color: '#1890ff', fontWeight: 500 }}>{asset.accounting_year}</td>
-                  <td style={{ padding: '10px 12px' }}>{asset.space_name || asset.space_id}</td>
-                  <td style={{ padding: '10px 12px', color: '#1890ff', fontWeight: 500 }}>
+                  <td style={{ ...annualListCellStyle, color: '#1890ff', fontWeight: 500 }}>{asset.accounting_year}</td>
+                  <td
+                    style={{ ...annualListCellStyle, overflow: 'hidden', textOverflow: 'ellipsis' }}
+                    title={asset.space_name || asset.space_id}
+                  >
+                    {asset.space_name || asset.space_id}
+                  </td>
+                  <td style={{ ...annualListCellStyle, color: '#1890ff', fontWeight: 500 }}>
                     {formatValue(asset.quota_total)}
                   </td>
-                  <td style={{ padding: '10px 12px' }}>{formatValue(asset.ccer_total)}</td>
-                  <td style={{ padding: '10px 12px' }}>{formatValue(asset.green_certificate_total)}</td>
-                  <td style={{ padding: '10px 12px' }}>
+                  <td style={annualListCellStyle}>{formatValue(asset.ccer_total)}</td>
+                  <td style={annualListCellStyle}>{formatValue(asset.green_certificate_total)}</td>
+                  <td style={annualListCellStyle}>
                     {overview && selectedAsset && selectedAsset.id === asset.id
                       ? formatFixed2(overview.cards.annual_emissions)
                       : '-'}
                   </td>
-                  <td style={{ padding: '10px 12px', color: '#1890ff', fontWeight: 500 }}>
+                  <td style={{ ...annualListCellStyle, color: '#1890ff', fontWeight: 500 }}>
                     {overview && selectedAsset && selectedAsset.id === asset.id
                       ? formatFixed2(overview.cards.remaining_allowance)
                       : '-'}
                   </td>
-                  <td className="text-nowrap">
+                  <td style={{ ...annualListCellStyle, whiteSpace: 'normal' }}>
                     <Button size="sm" color="link" className="p-0 mr-2" onClick={() => setSelectedAsset(asset)}>
                       {t('Details')}
                     </Button>
