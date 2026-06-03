@@ -1,3 +1,4 @@
+import cgi
 import uuid
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -107,6 +108,52 @@ def _read_json(req):
     if not isinstance(parsed, dict) or not isinstance(parsed.get('data'), dict):
         raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST', description='API.INVALID_DATA')
     return parsed['data']
+
+
+def _read_uploaded_file(req, field_name='file'):
+    try:
+        raw_content_type = req.get_header('Content-Type') or req.get_header('content-type') or ''
+        environ = dict(req.env)
+        environ['REQUEST_METHOD'] = req.method
+        environ['CONTENT_TYPE'] = raw_content_type
+        environ['CONTENT_LENGTH'] = str(req.content_length or '0')
+        form = cgi.FieldStorage(fp=req.env.get('wsgi.input', req.bounded_stream), environ=environ, keep_blank_values=True)
+        field = form[field_name] if field_name in form else None
+        if isinstance(field, list):
+            field = field[0]
+        if field is not None and getattr(field, 'file', None) is not None:
+            return field.filename or '', field.file.read()
+    except Exception as ex:
+        print('carbon market upload cgi parse failed:', str(ex))
+
+    try:
+        media = req.get_media(default_when_empty=None)
+    except Exception:
+        media = None
+
+    if media is not None:
+        try:
+            for part in media:
+                if getattr(part, 'name', None) != field_name:
+                    continue
+                raw_blob = part.data
+                filename = getattr(part, 'filename', '') or ''
+                if raw_blob is None:
+                    break
+                return filename, raw_blob
+        except Exception as ex:
+            print('carbon market upload media parse failed:', str(ex))
+
+    try:
+        upload = req.get_param(field_name)
+        if upload is not None:
+            return upload.filename, upload.file.read()
+    except Exception as ex:
+        print('carbon market upload legacy param failed:', str(ex))
+
+    raise falcon.HTTPError(status=falcon.HTTP_400,
+                           title='API.ERROR',
+                           description='API.FAILED_TO_UPLOAD_ATTACHMENT_FILE')
 
 
 def _string_value(data, key, error, required=True, max_length=None):
@@ -730,12 +777,7 @@ class CarbonMarketHistoryImport:
     @staticmethod
     def on_post(req, resp):
         _authenticate(req)
-        try:
-            upload = req.get_param('file')
-            raw_blob = upload.file.read()
-            filename = upload.filename
-        except Exception:
-            raise falcon.HTTPError(status=falcon.HTTP_400, title='API.ERROR', description='API.FAILED_TO_UPLOAD_ATTACHMENT_FILE')
+        filename, raw_blob = _read_uploaded_file(req)
 
         try:
             workbook = load_workbook(filename=BytesIO(raw_blob), read_only=False, data_only=True)
@@ -775,12 +817,18 @@ class CarbonMarketHistoryImport:
                         raise falcon.HTTPError(status=falcon.HTTP_400, title='API.BAD_REQUEST', description='API.INVALID_DATA')
                     open_price = _decimal_value({'value': row[header_map['open_price']]}, 'value', 'API.INVALID_DATA', minimum='0')
                     close_price = _decimal_value({'value': row[header_map['close_price']]}, 'value', 'API.INVALID_DATA', minimum='0')
-                    high_price = _decimal_value({'value': row[header_map['high_price']]}, 'value', 'API.INVALID_DATA', minimum='0')
-                    low_price = _decimal_value({'value': row[header_map['low_price']]}, 'value', 'API.INVALID_DATA', minimum='0')
+                    raw_high_price = row[header_map['high_price']]
+                    raw_low_price = row[header_map['low_price']]
+                    high_price = _decimal_value({'value': raw_high_price}, 'value', 'API.INVALID_DATA', required=False, minimum='0')
+                    low_price = _decimal_value({'value': raw_low_price}, 'value', 'API.INVALID_DATA', required=False, minimum='0')
+                    if raw_high_price is None or str(raw_high_price).strip() == '':
+                        high_price = max(open_price, close_price)
+                    if raw_low_price is None or str(raw_low_price).strip() == '':
+                        low_price = min(open_price, close_price)
                     change_value = _decimal_value({'value': row[header_map['change_value']]}, 'value', 'API.INVALID_DATA', required=False)
                     change_rate = _decimal_value({'value': row[header_map['change_rate']]}, 'value', 'API.INVALID_DATA', required=False)
-                    trading_volume = _decimal_value({'value': row[header_map['trading_volume']]}, 'value', 'API.INVALID_DATA', minimum='0')
-                    trading_amount = _decimal_value({'value': row[header_map['trading_amount']]}, 'value', 'API.INVALID_DATA', minimum='0')
+                    trading_volume = _decimal_value({'value': row[header_map['trading_volume']]}, 'value', 'API.INVALID_DATA', required=False, minimum='0')
+                    trading_amount = _decimal_value({'value': row[header_map['trading_amount']]}, 'value', 'API.INVALID_DATA', required=False, minimum='0')
                     cursor.execute(
                         ' INSERT INTO tbl_carbon_market_histories '
                         ' (uuid, trade_date, market_code, variety_code, open_price, close_price, high_price, low_price, change_value, '
