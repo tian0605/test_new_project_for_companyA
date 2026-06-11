@@ -449,6 +449,46 @@ app
                             ]
                         }
                     })
+                    .state('settings.evaluationrule', {
+                        url: "/evaluationrule",
+                        templateUrl: "views/settings/evaluationrule/evaluationrule.html",
+                        data: {
+                            pageTitle: 'MENU.SETTINGS.EVALUATION_RULE'
+                        },
+                        resolve: {
+                            deps: [
+                                '$ocLazyLoad',
+                                function ($ocLazyLoad) {
+                                    return $ocLazyLoad.load(['ui.select', 'ui.checkbox', 'toaster']).then(
+                                        function () {
+                                            return $ocLazyLoad.load([{
+                                                files: ['js/plugins/sweetalert/sweetalert.min.js', 'css/plugins/sweetalert/sweetalert.css']
+                                            }, {
+                                                name: 'oitozero.ngSweetAlert',
+                                                files: ['js/plugins/sweetalert/angular-sweetalert.min.js']
+                                            }, {
+                                                files: ['js/plugins/footable/footable.all.min.js', 'css/plugins/footable/footable.core.css']
+                                            }, {
+                                                name: 'ui.footable',
+                                                files: ['js/plugins/footable/angular-footable.js']
+                                            }, {
+                                                serie: true,
+                                                files: [
+                                                    'app/services/settings/evaluationrule/evaluationrule.service.js',
+                                                    'app/services/settings/space/space.service.js',
+                                                    'app/services/settings/space/spaceproduct.service.js',
+                                                    'app/services/settings/product/product.service.js',
+                                                    'app/controllers/settings/evaluationrule/evaluationrule.controller.js',
+                                                    'app/controllers/common/export.controller.js',
+                                                    'app/controllers/common/import.controller.js',
+                                                ]
+                                            }]);
+                                        }
+                                    );
+                                }
+                            ]
+                        }
+                    })
                     .state('settings.tariff', {
                         url: "/tariff",
                         templateUrl: "views/settings/tariff/tariff.html",

@@ -19,6 +19,7 @@ export const spaceRoutes = {
     { to: '/space/output', name: 'Output' },
     { to: '/space/income', name: 'Income' },
     { to: '/space/efficiency', name: 'Efficiency' },
+    { to: '/space/evaluation', name: 'Evaluation Report' },
     { to: '/space/load', name: 'Load' },
     { to: '/space/statistics', name: 'Statistics' },
     { to: '/space/saving', name: 'Saving' },

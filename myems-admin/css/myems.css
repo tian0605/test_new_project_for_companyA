@@ -62,6 +62,24 @@ button.dim.date{
 	width:1200px !important;
 }
 
+.evaluation-rule-modal .modal-dialog{
+	width: 1400px !important;
+	max-width: calc(100vw - 40px);
+}
+
+.evaluation-rule-modal-body{
+	max-height: calc(100vh - 180px);
+	overflow-y: auto;
+}
+
+.evaluation-rule-detail-panel .form-control{
+	min-width: 100%;
+}
+
+.evaluation-rule-detail-panel textarea.form-control{
+	min-height: 96px;
+}
+
 td.sm{
 	padding:4px !important;
 	vertical-align: middle !important;

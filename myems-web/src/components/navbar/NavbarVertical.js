@@ -26,9 +26,18 @@ const buildVisibleRoutes = menuMap => {
       continue;
     }
 
-    if (Object.prototype.hasOwnProperty.call(menuMap, route.to) && Array.isArray(route.children)) {
-      const showChildren = route.children.filter(child => menuMap[route.to].indexOf(child.to) !== -1);
-      visibleRoutes.push({ ...route, children: showChildren });
+    if (Array.isArray(route.children)) {
+      const visibleChildren = route.children.filter(child => {
+        if (Object.prototype.hasOwnProperty.call(menuMap, route.to) && Array.isArray(menuMap[route.to])) {
+          return menuMap[route.to].indexOf(child.to) !== -1;
+        }
+
+        return Object.prototype.hasOwnProperty.call(menuMap, child.to);
+      });
+
+      if (visibleChildren.length > 0) {
+        visibleRoutes.push({ ...route, children: visibleChildren });
+      }
     } else if (Object.prototype.hasOwnProperty.call(menuMap, route.to)) {
       visibleRoutes.push({ ...route });
     }

@@ -62,6 +62,7 @@ var WEB_MENU_SECTIONS = [
             { state: '/space/output', name: 'Output' },
             { state: '/space/income', name: 'Income' },
             { state: '/space/efficiency', name: 'Efficiency' },
+            { state: '/space/evaluation', name: 'Evaluation Report' },
             { state: '/space/load', name: 'Load' },
             { state: '/space/statistics', name: 'Statistics' },
             { state: '/space/saving', name: 'Saving' },

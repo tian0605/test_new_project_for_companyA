@@ -6,6 +6,7 @@ import SpaceEnergyCategory from '../components/MyEMS/Space/SpaceEnergyCategory';
 import SpaceEnergyItem from '../components/MyEMS/Space/SpaceEnergyItem';
 import SpaceCarbon from '../components/MyEMS/Space/SpaceCarbon';
 import SpaceCost from '../components/MyEMS/Space/SpaceCost';
+import SpaceEvaluation from '../components/MyEMS/Space/SpaceEvaluation';
 import SpaceOutput from '../components/MyEMS/Space/SpaceOutput';
 import SpaceIncome from '../components/MyEMS/Space/SpaceIncome';
 import SpaceEfficiency from '../components/MyEMS/Space/SpaceEfficiency';
@@ -136,6 +137,7 @@ const MyEMSRoutes = () => (
     <Route path="/space/energyitem" exact component={SpaceEnergyItem} />
     <Route path="/space/carbon" exact component={SpaceCarbon} />
     <Route path="/space/cost" exact component={SpaceCost} />
+    <Route path="/space/evaluation" exact component={SpaceEvaluation} />
     <Route path="/space/output" exact component={SpaceOutput} />
     <Route path="/space/income" exact component={SpaceIncome} />
     <Route path="/space/efficiency" exact component={SpaceEfficiency} />
