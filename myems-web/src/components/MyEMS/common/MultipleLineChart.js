@@ -3,7 +3,6 @@ import { Row, Col, Card, CardBody } from 'reactstrap';
 import { CheckPicker } from 'rsuite';
 import { rgbaColor, themeColors, isIterableArray, getGrays } from '../../../helpers/utils';
 import AppContext from '../../../context/Context';
-import moment from 'moment';
 import ReactEchartsCore from 'echarts-for-react/lib/core';
 import * as echarts from 'echarts/lib/echarts';
 import { LineChart } from 'echarts/charts';
@@ -17,24 +16,66 @@ import {
 
 echarts.use([LineChart, GridComponent, ToolboxComponent, DataZoomComponent, MarkLineComponent, MarkPointComponent]);
 
-const MultipleLineChart = ({ reportingTitle, baseTitle, labels, data, options }) => {
-  const colors = ['#2c7be5', '#00d27a', '#27bcfd', '#f5803e', '#e63757'];
-  const [values, setValues] = useState(['a0']);
-  const [oldValues, setOldValues] = useState(['a0']);
+const chartColors = ['#2c7be5', '#00d27a', '#27bcfd', '#f5803e', '#e63757'];
+
+const formatValue = (value, formatter) => {
+  if (typeof formatter === 'function') {
+    return formatter(value);
+  }
+
+  return value;
+};
+
+const MultipleLineChart = ({
+  reportingTitle,
+  baseTitle,
+  labels,
+  data,
+  options,
+  initialValues,
+  valueFormatter,
+  yAxes,
+  seriesAxisMap
+}) => {
   const { isDark } = useContext(AppContext);
-  const [nodes, setNodes] = useState([
-    {
-      name: options.label,
-      borderWidth: 2,
-      data: data['a0'],
+  const [values, setValues] = useState([]);
+  const [nodes, setNodes] = useState([]);
+  const [lineLabels, setLineLabels] = useState([]);
+  const [interval, setInterval] = useState(0);
+
+  const handleChange = arr => {
+    if (!isIterableArray(arr) || arr.length < 1) {
+      return;
+    }
+    setValues(arr);
+  };
+
+  useEffect(() => {
+    const getDefaultValues = () => {
+      const preferredValues = isIterableArray(initialValues) && initialValues.length > 0 ? initialValues : [];
+      const fallbackValues =
+        preferredValues.length > 0
+          ? preferredValues
+          : isIterableArray(options) && options.length > 0
+          ? [options[0].value]
+          : ['a0'];
+
+      return fallbackValues.filter(value => options[Number(String(value).slice(1))] && data[value] && labels[value]);
+    };
+
+    const buildSeriesNode = (key, colorIndex) => ({
+      data: data[key],
       type: 'line',
+      smooth: true,
+      yAxisIndex: seriesAxisMap && Number.isInteger(seriesAxisMap[key]) ? seriesAxisMap[key] : 0,
+      name: options[Number(String(key).slice(1))] ? options[Number(String(key).slice(1))].label : '',
+      itemStyle: {
+        color: chartColors[colorIndex % chartColors.length]
+      },
+      lineStyle: {
+        color: chartColors[colorIndex % chartColors.length]
+      },
       markPoint: {
-        label: {
-          color: rgbaColor(isDark ? '#fff' : '#000', 0.8)
-        },
-        itemStyle: {
-          color: colors[0]
-        },
         data: [
           {
             type: 'max',
@@ -44,158 +85,96 @@ const MultipleLineChart = ({ reportingTitle, baseTitle, labels, data, options })
             type: 'min',
             name: 'Min Value'
           }
-        ]
+        ],
+        label: {
+          color: rgbaColor(isDark ? '#fff' : '#000', 0.8),
+          formatter: params => formatValue(params.value, valueFormatter)
+        },
+        itemStyle: {
+          color: chartColors[colorIndex % chartColors.length]
+        }
       },
       markLine: {
         lineStyle: {
-          color: colors[0]
+          color: chartColors[colorIndex % chartColors.length]
+        },
+        label: {
+          color: rgbaColor(isDark ? '#fff' : '#000', 0.8),
+          formatter: params => formatValue(params.value, valueFormatter)
         },
         data: [
           {
             type: 'average',
             name: 'Average Value'
           }
-        ],
-        label: {
-          color: rgbaColor(isDark ? '#fff' : '#000', 0.8)
-        }
+        ]
       }
-    }
-  ]);
-  const [lastMoment, setLastMoment] = useState(moment());
-  const [lineLabels, setLineLabels] = useState([]);
-  const [interval, setInterval] = useState(0);
+    });
 
-  let handleChange = arr => {
-    if (arr.length < 1) {
+    const validValues = values.filter(value => options[Number(String(value).slice(1))] && data[value] && labels[value]);
+    const nextValues = validValues.length > 0 ? validValues : getDefaultValues();
+
+    if (nextValues.length < 1) {
+      setNodes([]);
+      setLineLabels([]);
+      setInterval(0);
+      if (values.length > 0) {
+        setValues([]);
+      }
       return;
     }
-    let currentMoment = moment();
-    setOldValues(values);
-    setValues(arr);
-    setLastMoment(currentMoment);
-  };
 
-  useEffect(() => {
-    let tempNodes = [...nodes];
-    let index = values[0];
-    if (options[index.slice(1)] && data[index] && tempNodes.length > 0 && tempNodes[0].label === undefined) {
-      tempNodes = [];
-      tempNodes[0] = {
-        data: data[index],
-        type: 'line',
-        smooth: true,
-        name: options[index.slice(1)] ? options[index.slice(1)].label : '',
-        lineStyle: {
-          color: colors[0]
-        },
-        itemStyle: {
-          color: colors[0]
-        },
-        markPoint: {
-          data: [
-            {
-              type: 'max',
-              name: 'Max Value'
-            },
-            {
-              type: 'min',
-              name: 'Min Value'
-            }
-          ],
-          label: {
-            color: rgbaColor(isDark ? '#fff' : '#000', 0.8)
-          },
-          itemStyle: {
-            color: colors[0]
-          }
-        },
-        markLine: {
-          lineStyle: {
-            color: colors[0]
-          },
-          data: [
-            {
-              type: 'average',
-              name: 'Average Value'
-            }
-          ],
-          label: {
-            color: rgbaColor(isDark ? '#fff' : '#000', 0.8)
-          }
-        }
-      };
+    if (nextValues.join('|') !== values.join('|')) {
+      setValues(nextValues);
+      return;
     }
-    setNodes(tempNodes);
-    setLineLabels(labels[values[0]]);
-    setInterval(labels[values[0]] ? parseInt(labels[values[0]].length / 20) : 0);
-    setValues(['a0']);
-    setOldValues(['a0']);
-  }, [data, labels, options]);
 
-  useEffect(() => {
-    let tempNodes = [...nodes];
-    if (oldValues.length < values.length) {
-      let index = values[values.length - 1];
-      tempNodes.push({
-        data: data[index],
-        type: 'line',
-        smooth: true,
-        name: options[index.slice(1)].label,
-        itemStyle: {
-          color: colors[index.slice(1) % 5]
-        },
-        lineStyle: {
-          color: colors[index.slice(1) % 5]
-        },
-        markPoint: {
-          data: [
-            {
-              type: 'max',
-              name: 'Max Value'
+    setNodes(nextValues.map((value, index) => buildSeriesNode(value, index)));
+    setLineLabels(labels[nextValues[0]] || []);
+    setInterval(labels[nextValues[0]] ? parseInt(labels[nextValues[0]].length / 20) : 0);
+  }, [data, initialValues, isDark, labels, options, seriesAxisMap, valueFormatter, values]);
+
+  const getOption = () => {
+    const resolvedYAxis =
+      isIterableArray(yAxes) && yAxes.length > 0
+        ? yAxes.map(axis => ({
+            type: 'value',
+            splitLine: { show: false },
+            name: axis.name || '',
+            position: axis.position || 'left',
+            axisLabel: {
+              color: rgbaColor(isDark ? '#fff' : '#000', 0.8),
+              formatter: value => {
+                if (typeof axis.valueFormatter === 'function') {
+                  return axis.valueFormatter(value);
+                }
+
+                return formatValue(value, valueFormatter);
+              }
             },
-            {
-              type: 'min',
-              name: 'Min Value'
+            axisLine: {
+              lineStyle: {
+                color: rgbaColor(isDark ? '#fff' : '#000', 0.8)
+              }
+            },
+            nameTextStyle: {
+              color: rgbaColor(isDark ? '#fff' : '#000', 0.8)
             }
-          ],
-          label: {
-            color: rgbaColor(isDark ? '#fff' : '#000', 0.8)
-          },
-          itemStyle: {
-            color: colors[index.slice(1) % 5]
-          }
-        },
-        markLine: {
-          lineStyle: {
-            color: colors[index.slice(1) % 5]
-          },
-          label: {
-            color: rgbaColor(isDark ? '#fff' : '#000', 0.8)
-          },
-          data: [
-            {
-              type: 'average',
-              name: 'Average Value'
+          }))
+        : {
+            type: 'value',
+            splitLine: { show: false },
+            axisLabel: {
+              color: rgbaColor(isDark ? '#fff' : '#000', 0.8),
+              formatter: value => formatValue(value, valueFormatter)
+            },
+            axisLine: {
+              lineStyle: {
+                color: rgbaColor(isDark ? '#fff' : '#000', 0.8)
+              }
             }
-          ]
-        }
-      });
-    } else {
-      let i = 0;
-      for (; i <= oldValues.length; i++) {
-        if (i === values.length || oldValues[i] !== values[i]) {
-          break;
-        }
-      }
-      tempNodes.splice(i, 1);
-    }
-    setNodes(tempNodes);
-    setLineLabels(labels[values[0]]);
-    setInterval(labels[values[0]] ? parseInt(labels[values[0]].length / 20) : 0);
-  }, [lastMoment]);
+          };
 
-  let getOption = () => {
     return {
       legend: {
         orient: 'horizontal',
@@ -207,7 +186,16 @@ const MultipleLineChart = ({ reportingTitle, baseTitle, labels, data, options })
         trigger: 'axis',
         backgroundColor: getGrays(isDark)[100],
         borderColor: getGrays(isDark)[300],
-        color: isDark ? themeColors.light : themeColors.dark
+        color: isDark ? themeColors.light : themeColors.dark,
+        formatter: params => {
+          if (!isIterableArray(params) || params.length < 1) {
+            return '';
+          }
+
+          return [params[0].axisValueLabel || params[0].axisValue]
+            .concat(params.map(item => `${item.marker}${item.seriesName}: ${formatValue(item.value, valueFormatter)}`))
+            .join('<br/>');
+        }
       },
       grid: {
         left: '5%',
@@ -229,18 +217,7 @@ const MultipleLineChart = ({ reportingTitle, baseTitle, labels, data, options })
           }
         }
       },
-      yAxis: {
-        type: 'value',
-        splitLine: { show: false },
-        axisLabel: {
-          color: rgbaColor(isDark ? '#fff' : '#000', 0.8)
-        },
-        axisLine: {
-          lineStyle: {
-            color: rgbaColor(isDark ? '#fff' : '#000', 0.8)
-          }
-        }
-      },
+      yAxis: resolvedYAxis,
       series: nodes,
       toolbox: {
         right: 10,
@@ -275,7 +252,7 @@ const MultipleLineChart = ({ reportingTitle, baseTitle, labels, data, options })
                 placeholder="select"
                 searchable={false}
                 countable={false}
-                onSelect={handleChange}
+                onChange={handleChange}
                 style={{ width: 224, borderRadius: '.25rem' }}
               />
             </Col>

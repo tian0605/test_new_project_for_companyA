@@ -10,7 +10,7 @@ from core import advancedreport, apikey, command, controlmode, energyflowdiagram
     shopfloor, webmessage, distributionsystem, store, emailmessage, tenanttype, wechatmessage, space, gateway, \
     offlinemeter, product, productcarbon, rule, energycategory, sensor, energyitem, notification, menu, datarepairfile, workingcalendar, \
     microgrid,  virtualpowerplant, energystoragecontainer, energystoragepowerstation, photovoltaicpowerstation, carbonasset, \
-    windfarm, energyplanfile, svg, protocol, ticket, iotsimcard, log
+    windfarm, energyplanfile, svg, protocol, ticket, iotsimcard, log, evaluationrule
 
 from reports import advancedreportfile
 from reports import combinedequipmentbatch
@@ -142,6 +142,7 @@ from reports import shopfloorsaving
 from reports import shopfloorstatistics
 from reports import spacecarbon
 from reports import spacecost
+from reports import spaceevaluation
 from reports import spaceefficiency
 from reports import spaceenergycategory
 from reports import spaceenergyitem
@@ -846,6 +847,19 @@ api.add_route('/rules/import',
 api.add_route('/rules/{id_}/clone',
               rule.RuleClone())
 
+api.add_route('/evaluationrules',
+              evaluationrule.EvaluationRuleCollection())
+api.add_route('/evaluationrules/validate',
+              evaluationrule.EvaluationRuleValidate())
+api.add_route('/evaluationrules/import',
+              evaluationrule.EvaluationRuleImport())
+api.add_route('/evaluationrules/{id_}',
+              evaluationrule.EvaluationRuleItem())
+api.add_route('/evaluationrules/{id_}/export',
+              evaluationrule.EvaluationRuleExport())
+api.add_route('/evaluationrules/{id_}/clone',
+              evaluationrule.EvaluationRuleClone())
+
 api.add_route('/sensors',
               sensor.SensorCollection())
 api.add_route('/sensors/{id_}',
@@ -1488,6 +1502,8 @@ api.add_route('/reports/spacecarbon',
               spacecarbon.Reporting())
 api.add_route('/reports/spacecost',
               spacecost.Reporting())
+api.add_route('/reports/spaceevaluation',
+              spaceevaluation.Reporting())
 api.add_route('/reports/spaceefficiency',
               spaceefficiency.Reporting())
 api.add_route('/reports/spaceenergycategory',

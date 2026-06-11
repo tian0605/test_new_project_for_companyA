@@ -103,6 +103,10 @@ const CardSummary = ({
   color,
   children,
   additionalContent,
+  cardClassName,
+  bodyClassName,
+  titleClassName,
+  valueClassName,
   showFootnotes,
   footnote,
   footvalue,
@@ -111,18 +115,25 @@ const CardSummary = ({
   secondfootvalue,
   secondfootunit
 }) => {
+  const showRateBadge = typeof rate === 'string' ? rate.trim().length > 0 : !!rate;
+
   return (
-    <Card className="mb-3 overflow-hidden" style={{ minWidth: '15rem' }}>
+    <Card
+      className={`mb-2 overflow-hidden w-100 border-0 shadow-sm ${cardClassName || ''}`}
+      style={{ minWidth: '13.5rem' }}
+    >
       <Background image={getImage(color)} className="bg-card" />
-      <CardBody className="position-relative">
-        <h6 className="font-weight-normal fs--1">
+      <CardBody className={`position-relative py-3 px-3 ${bodyClassName || ''}`}>
+        <h6 className={`text-600 font-weight-semi-bold mb-2 ${titleClassName || ''}`}>
           {title}
-          <span className={`badge badge-soft-${color} rounded-capsule ml-2`}>
-            {getIcon(rate)}
-            {rate}
-          </span>
+          {showRateBadge ? (
+            <span className={`badge badge-soft-${color} rounded-capsule ml-2`}>
+              {getIcon(rate)}
+              {rate}
+            </span>
+          ) : null}
         </h6>
-        <div className={getContentClassNames(color)}>{children}</div>
+        <div className={`${getContentClassNames(color)} mb-1 ${valueClassName || ''}`}>{children}</div>
         {additionalContent}
         {showFootnotes ? renderFootLine(footnote, footvalue, footunit, 'footnote') : null}
         {showFootnotes ? renderFootLine(secondfootnote, secondfootvalue, secondfootunit, 'secondfootnote') : null}
@@ -137,6 +148,10 @@ CardSummary.propTypes = {
   color: PropTypes.string,
   children: PropTypes.node,
   additionalContent: PropTypes.node,
+  cardClassName: PropTypes.string,
+  bodyClassName: PropTypes.string,
+  titleClassName: PropTypes.string,
+  valueClassName: PropTypes.string,
   showFootnotes: PropTypes.bool,
   footnote: PropTypes.string,
   footvalue: PropTypes.number,
@@ -148,7 +163,11 @@ CardSummary.propTypes = {
 
 CardSummary.defaultProps = {
   color: 'primary',
-  showFootnotes: false
+  showFootnotes: false,
+  cardClassName: '',
+  bodyClassName: '',
+  titleClassName: '',
+  valueClassName: ''
 };
 
 export default CardSummary;
