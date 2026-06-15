@@ -4,7 +4,7 @@ import classNames from 'classnames';
 import { Link } from 'react-router-dom';
 import logo from '../../assets/img/logos/myems.png';
 
-const Logo = ({ at, width, className, ...rest }) => {
+const Logo = ({ at, width, className, label, imageAlt, imageSrc, ...rest }) => {
   return (
     <Link
       to="/"
@@ -26,8 +26,8 @@ const Logo = ({ at, width, className, ...rest }) => {
           className
         )}
       >
-        <img className="mr-2" src={logo} alt="Logo" width={width} />
-        <span className="text-sans-serif">MyEMS</span>
+        <img className="mr-2 flex-shrink-0" src={imageSrc || logo} alt={imageAlt} width={width} />
+        <span className="text-sans-serif font-weight-bold text-800">{label}</span>
       </div>
     </Link>
   );
@@ -36,9 +36,18 @@ const Logo = ({ at, width, className, ...rest }) => {
 Logo.propTypes = {
   at: PropTypes.oneOf(['navbar-vertical', 'navbar-top', 'auth']),
   width: PropTypes.number,
-  className: PropTypes.string
+  className: PropTypes.string,
+  label: PropTypes.string,
+  imageAlt: PropTypes.string,
+  imageSrc: PropTypes.string
 };
 
-Logo.defaultProps = { at: 'auth', width: 58 };
+Logo.defaultProps = {
+  at: 'auth',
+  width: 58,
+  label: 'MyEMS',
+  imageAlt: 'Logo',
+  imageSrc: null
+};
 
 export default Logo;

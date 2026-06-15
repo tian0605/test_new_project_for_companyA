@@ -1,9 +1,9 @@
 import classNames from 'classnames';
-import validator from 'validator'; 
 import PropTypes from 'prop-types';
 import React, { useContext, useEffect, useRef, useState } from 'react';
-import { Button, Collapse, Nav, Navbar } from 'reactstrap';
+import { Collapse, Nav, Navbar } from 'reactstrap';
 import bgNavbarImg from '../../assets/img/generic/bg-navbar.png';
+import enterpriseCarbonSystemLogo from '../../assets/img/logos/enterprise-carbon-system.svg';
 import { APIBaseURL, settings, navbarBreakPoint, topNavbarBreakpoint } from '../../config';
 import AppContext from '../../context/Context';
 import routes from '../../routes';
@@ -83,7 +83,6 @@ const NavbarVertical = ({ setRedirectUrl, setRedirect, navbarStyle, t }) => {
     showBurgerMenu,
     isNavbarVerticalCollapsed,
     setIsNavbarVerticalCollapsed,
-    isDark,
     isCombo,
     setShowBurgerMenu,
     setNavbarCollapsed
@@ -165,12 +164,19 @@ const NavbarVertical = ({ setRedirectUrl, setRedirect, navbarStyle, t }) => {
       })}
       light
     >
-      <Flex align="center">
+      <Flex align="center" className="sidebar-brand-row">
         <ToggleButton
           isNavbarVerticalCollapsed={isNavbarVerticalCollapsed}
           setIsNavbarVerticalCollapsed={setIsNavbarVerticalCollapsed}
         />
-        <Logo at="navbar-vertical" width={40} />
+        <Logo
+          at="navbar-vertical"
+          width={36}
+          className="sidebar-brand"
+          label="能碳系统"
+          imageAlt="能碳系统"
+          imageSrc={enterpriseCarbonSystemLogo}
+        />
       </Flex>
 
       <Collapse

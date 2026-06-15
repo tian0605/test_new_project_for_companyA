@@ -101,6 +101,53 @@
 .rc-cascader-menu-item-active:hover {
   background: #d5f1fd;
 }
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  width: 14rem;
+  max-width: 14rem;
+  margin-left: 2.75rem;
+  min-width: 0;
+  overflow: visible;
+  position: relative;
+  z-index: 1022;
+}
+
+.sidebar-brand-row {
+  position: relative;
+  width: 14.75rem;
+  min-height: 3.5rem;
+  overflow: visible;
+  z-index: 1021;
+}
+
+.sidebar-brand-row .toggle-icon-wrapper {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+}
+
+.sidebar-brand img {
+  width: 1.75rem;
+  height: auto;
+  margin-right: 0.125rem !important;
+}
+
+.sidebar-brand span {
+  display: inline-block;
+  min-width: 0;
+  flex: 0 0 auto;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  transform: scaleX(0.92);
+  transform-origin: left center;
+}
+
 .rc-cascader-menu-item-expand {
   position: relative;
 }
